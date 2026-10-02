@@ -43,6 +43,8 @@ export interface Settings {
   scramble: boolean;
   /** Forage level 0–15; sets which crate sizes are likely (the real game decides this on its server). */
   forageLevel: number;
+  /** Normal mode's chest mix: relative chances of a 1x1, 2x2 and 3x2. */
+  normalRatios: [number, number, number];
 }
 
 /** [bone boxes, jars, chests] cleared. */

@@ -46,7 +46,7 @@ const COLOUR_IMAGES: Record<string, string> = {
 const ANT_NUMBER_AT: Record<number, [number, number]> = { 0: [28, 13], 1: [15, 28], 2: [1, 14], 3: [13, 0] };
 /**
  * The duty meter beside the board (ForagePanel.java:22, 66-69; puzzle/client/d, the same meter as
- * carpentry's stars): forage level + 1 bananas stacked from the bottom, 19px apart, all empty at
+ * carpentry's stars): bananas stacked from the bottom, 19px apart (see bananaCount), all empty at
  * the start. A board brings one crate per banana, and each crate collected, whatever its size,
  * fills one banana from the bottom up, taking 500ms. bananas.png holds 21x21 tiles: empty, full,
  * and a pop-in frame.
@@ -77,6 +77,12 @@ const MODES: Option<Mode>[] = [
 const SCORED = new Set<Mode>(['ci', 'normal']);
 
 /** Every special is on by default, as in the real game past the first difficulty levels. */
+/**
+ * Normal mode's default chest mix: observed rates of 0.65, 0.345 and 0.0047 for 1x1, 2x2 and
+ * 3x2, as ratios, with the 3x2 doubled.
+ */
+const NORMAL_RATIOS: Settings['normalRatios'] = [0.6472, 0.3435, 0.0094];
+
 const DEFAULT_SETTINGS: Settings = {
   mode: 'ci',
   bb: true,
@@ -89,6 +95,7 @@ const DEFAULT_SETTINGS: Settings = {
   ants: true,
   scramble: true,
   forageLevel: 6,
+  normalRatios: [...NORMAL_RATIOS],
 };
 
 interface PuzzleRecord {
@@ -145,12 +152,12 @@ export default (async ({ screen, input, panel, store, ticks }) => {
 
   const ciKey = () =>
     (['bb', 'fj', 'cc', 'eq', 'machete', 'shovel', 'monkey'] as const).map((k) => (settings[k] ? 'b' : 'a')).join('') +
-    settings.forageLevel +
+    (settings.mode === 'normal' ? settings.normalRatios.join('-') : settings.forageLevel) +
     // Older bests were all without ants, so those keep their keys.
     (settings.ants ? 'ants' : '');
 
   function rules(): Rules {
-    const weights = CHEST_WEIGHTINGS[settings.forageLevel];
+    const weights = settings.mode === 'normal' ? settings.normalRatios : CHEST_WEIGHTINGS[settings.forageLevel];
     return {
       specials: { n: settings.shovel, m: settings.machete, p: settings.monkey, o: settings.eq, ants: settings.ants },
       crates: settings.mode === 'puzzle' ? null : [settings.bb ? weights[0] : 0, settings.fj ? weights[1] : 0, settings.cc ? weights[2] : 0],
@@ -295,8 +302,8 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     min: 0,
     max: 15,
     disabled: locked,
-    hidden: isPuzzle,
-    title: 'Sets which crate sizes are likely, and how many bananas fill the meter',
+    hidden: () => isPuzzle() || settings.mode === 'normal',
+    title: 'Sets which crate sizes are likely',
   });
   bind(setup, 'Scramble', 'scramble', () => !isPuzzle());
 
@@ -304,6 +311,18 @@ export default (async ({ screen, input, panel, store, ticks }) => {
   bind(crateGroup, 'Bone box', 'bb');
   bind(crateGroup, 'Fetish jar', 'fj');
   bind(crateGroup, 'Cursed chest', 'cc');
+
+  const ratios = panel.group('Chest ratios', { columns: 3, hidden: () => settings.mode !== 'normal' });
+  (['1x1', '2x2', '3x2'] as const).forEach((label, i) =>
+    ratios.number(label, () => settings.normalRatios[i], (value) => {
+      settings.normalRatios[i] = value;
+      saveSettings();
+    }, { min: 0, step: 0.0001, disabled: locked }),
+  );
+  ratios.button('Defaults', () => {
+    settings.normalRatios = [...NORMAL_RATIOS];
+    saveSettings();
+  }, { disabled: locked, title: 'Rates of 0.65, 0.345 and 0.0047 as ratios, with the 3x2 doubled' });
 
   const specials = panel.group('Specials');
   bind(specials, 'Earthquake', 'eq');
@@ -424,7 +443,8 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     }
   }
 
-  const bananaCount = () => Math.min(MAX_BANANAS, settings.forageLevel + 1);
+  /** Every board brings a full meter of 9; here forage level only sets the chest mix. */
+  const bananaCount = () => MAX_BANANAS;
 
   /** How full the meter should be, 0-100%: each crate is one banana (puzzle/client/d). */
   const meterTarget = () => Math.min(100, (crates * 100) / bananaCount());

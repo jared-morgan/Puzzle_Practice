@@ -16,6 +16,7 @@ const rows = (board: string[][]) => board.map((r) => r.join(''));
 
 const base: Settings = {
   mode: 'ci',
+  normalRatios: [0.6472, 0.3435, 0.0094],
   bb: true,
   fj: true,
   cc: true,
