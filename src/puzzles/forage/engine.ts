@@ -45,6 +45,8 @@ export interface Step {
   grid: Grid;
   sprites: Sprite[];
   duration: number;
+  /** A sound to play as the step starts. */
+  sound?: 'ants';
 }
 
 /** Animation timings in milliseconds. */
@@ -591,6 +593,7 @@ export class Forage {
       }
     }
     this.record(sprites, still);
+    this.steps[this.steps.length - 1].sound = 'ants';
     return true;
   }
 

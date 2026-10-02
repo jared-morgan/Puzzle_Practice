@@ -1,8 +1,9 @@
 // The Forage simulator (app.pyw and gui_functions.py), rebuilt on the shared core, playing by
 // the real game's rules and timings (engine.ts). The panel follows the desktop version's
-// layout. Options it showed but never implemented (Normal mode, Animations, Skip, Custom ID)
+// layout. Options it showed but never implemented (Animations, Skip, Custom ID)
 // are left out; its unused Ants checkbox now turns ants on and off.
 import { Images } from '../../core/assets';
+import { SoundBank } from '../../core/audio';
 import { pygameFont } from '../../core/fonts';
 import { within, type InputEvent, type Point } from '../../core/input';
 import type { PuzzleFactory } from '../../core/puzzle';
@@ -22,6 +23,7 @@ import {
 } from './logic';
 import { PUZZLES } from './puzzles';
 
+const soundUrls = import.meta.glob<string>('./sounds/*.mp3', { eager: true, query: '?url', import: 'default' });
 const imageUrls = import.meta.glob<string>('./media/*.png', { eager: true, query: '?url', import: 'default' });
 
 const BLACK = 'rgb(31, 31, 31)';
@@ -43,6 +45,8 @@ const COLOUR_IMAGES: Record<string, string> = {
   x: 'piece_yellow',
   y: 'piece_grey',
 };
+/** Where the ant's count sits in its cell, by facing: left, up, right, down. */
+const ANT_NUMBER_AT: Record<number, [number, number]> = { 0: [28, 13], 1: [15, 28], 2: [1, 14], 3: [13, 0] };
 const TOOL_IMAGES: Record<string, string> = { m: 'machete', p: 'monkey', o: 'earthquake', n: 'shovel' };
 const CRATE_IMAGES = ['', 'bb', 'fj', 'cc'];
 /** Puzzles the random pick chooses between (the desktop version drew from 1–14). */
@@ -111,6 +115,9 @@ export default (async ({ screen, input, store, ticks }) => {
   const images = await Images.load(imageUrls);
   const img = (name: string) => images.get(name);
   const rng = new PyRandom();
+  const sounds = new SoundBank<'ants'>(soundUrls);
+  /** The step whose sound has played, so each plays once. */
+  let sounded: Step | null = null;
 
   const settings: Settings = { ...DEFAULT_SETTINGS, ...store.get<Partial<Settings>>('settings', {}) };
   const saveSettings = () => store.set('settings', settings);
@@ -308,45 +315,25 @@ export default (async ({ screen, input, store, ticks }) => {
 
   // ---- Drawing ----
 
-  /** Ants have no picture in the desktop media, so they're drawn: a small ant facing its way, and how much it can still eat. */
-  function drawAnt(cell: Extract<Cell, { kind: 'ant' }>, x: number, y: number, alpha: number): void {
+  /**
+   * Ants from the game's media: ant.png holds 4 walking frames facing left, turned a quarter
+   * clockwise per direction, with the count from ant_numbers.png placed by facing
+   * (ForageBoardView.java:51, 138-148, 469-471). Still ants show frame 0; walking ones cycle at 10fps.
+   */
+  function drawAnt(cell: Extract<Cell, { kind: 'ant' }>, x: number, y: number, alpha: number, frame = 0): void {
     const ctx = screen.ctx;
     ctx.save();
     ctx.globalAlpha = alpha;
-    ctx.fillStyle = 'rgba(70, 45, 20, 0.85)';
-    ctx.fillRect(x + 2, y + 2, CELL - 4, CELL - 4);
-    ctx.translate(x + CELL / 2, y + CELL / 2);
-    ctx.rotate(((cell.dir - 1) * Math.PI) / 2);
-    ctx.strokeStyle = '#1b1008';
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    for (const ly of [-4, 2, 8]) {
-      ctx.moveTo(-11, ly - 3);
-      ctx.lineTo(11, ly + 1);
-      ctx.moveTo(11, ly - 3);
-      ctx.lineTo(-11, ly + 1);
-    }
-    ctx.moveTo(-2, -14);
-    ctx.lineTo(-6, -19);
-    ctx.moveTo(2, -14);
-    ctx.lineTo(6, -19);
-    ctx.stroke();
-    ctx.fillStyle = '#2a170a';
-    for (const [cy, r] of [
-      [-11, 4],
-      [-2, 4.5],
-      [9, 6.5],
-    ]) {
-      ctx.beginPath();
-      ctx.ellipse(0, cy, r * 0.85, r, 0, 0, Math.PI * 2);
-      ctx.fill();
-    }
+    ctx.translate(Math.trunc(x) + CELL / 2, Math.trunc(y) + CELL / 2);
+    ctx.rotate((cell.dir * Math.PI) / 2);
+    ctx.drawImage(img('ant'), frame * CELL, 0, CELL, CELL, -CELL / 2, -CELL / 2, CELL, CELL);
     ctx.restore();
-    screen.text(String(cell.count), x + 31, y + 28, fontSmall, WHITE, alpha * 255);
+    const [nx, ny] = ANT_NUMBER_AT[cell.dir];
+    screen.blit(img('ant_numbers'), x + nx, y + ny, { area: [(cell.count - 1) * 17, 0, 17, 17], alpha: alpha * 255 });
   }
 
-  function drawCell(cell: Cell, x: number, y: number, alpha = 1): void {
-    if (cell.kind === 'ant') return drawAnt(cell, x, y, alpha);
+  function drawCell(cell: Cell, x: number, y: number, alpha = 1, frame = 0): void {
+    if (cell.kind === 'ant') return drawAnt(cell, x, y, alpha, frame);
     const name = cell.kind === 'colour' ? COLOUR_IMAGES[cell.colour] : cell.kind === 'tool' ? TOOL_IMAGES[cell.tool] : CRATE_IMAGES[cell.width];
     screen.blit(img(name), x, y, alpha < 1 ? { alpha: alpha * 255 } : {});
   }
@@ -365,6 +352,10 @@ export default (async ({ screen, input, store, ticks }) => {
   function currentStep(): [Step, number] | null {
     while (playing.length) {
       const elapsed = ticks() - stepStart;
+      if (playing[0] !== sounded) {
+        sounded = playing[0];
+        if (sounded.sound) sounds.play(sounded.sound);
+      }
       if (elapsed < playing[0].duration) return [playing[0], elapsed];
       // Cleared pieces pop after they dim; the pop doesn't hold up the next step.
       for (const s of playing[0].sprites) if (s.fade === 'clear') pops.push({ cell: s.cell, at: s.to, start: stepStart + s.delay + s.duration });
@@ -396,7 +387,8 @@ export default (async ({ screen, input, store, ticks }) => {
       y -= Math.abs(Math.sin((local / 100) * Math.PI)) * 8;
       x += Math.sin((local / 200) * Math.PI) * 4;
     }
-    drawCell(s.cell, x, y, alpha);
+    const walking = s.cell.kind === 'ant' && (s.from[0] !== s.to[0] || s.from[1] !== s.to[1]) && t < 1;
+    drawCell(s.cell, x, y, alpha, walking ? Math.floor(local / 100) % 4 : 0);
   }
 
   function drawPops(now: number): void {
@@ -530,7 +522,7 @@ export default (async ({ screen, input, store, ticks }) => {
     drawPanel();
   }
 
-  return { frame };
+  return { frame, dispose: () => sounds.dispose() };
 }) satisfies PuzzleFactory;
 
 /** board_pool_reserve.py's first reserve, which the desktop version used when filling puzzles. */
