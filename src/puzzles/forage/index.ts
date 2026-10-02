@@ -32,7 +32,6 @@ const BLUE = 'rgb(85, 162, 250)';
 const GREY = 'rgb(150, 150, 150)';
 const font = pygameFont(32);
 const fontLarge = pygameFont(96);
-const fontSmall = pygameFont(16);
 
 const CI_DURATION = 120000;
 const CELL = 45;
@@ -47,6 +46,14 @@ const COLOUR_IMAGES: Record<string, string> = {
 };
 /** Where the ant's count sits in its cell, by facing: left, up, right, down. */
 const ANT_NUMBER_AT: Record<number, [number, number]> = { 0: [28, 13], 1: [15, 28], 2: [1, 14], 3: [13, 0] };
+/**
+ * The duty meter beside the board (ForagePanel.java:22, 66-69; puzzle/client/d): 9 slots stacked
+ * from the bottom, 19px apart. It shows forage level + 1 bananas; collecting that many crates
+ * earns the next one. bananas.png holds full, partly filled and empty tiles of 21x21.
+ */
+const MAX_BANANAS = 9;
+const BANANA_X = 20;
+const BANANA_BOTTOM = 335 + 173 - 21;
 const TOOL_IMAGES: Record<string, string> = { m: 'machete', p: 'monkey', o: 'earthquake', n: 'shovel' };
 const CRATE_IMAGES = ['', 'bb', 'fj', 'cc'];
 /** Puzzles the random pick chooses between (the desktop version drew from 1–14). */
@@ -123,7 +130,8 @@ export default (async ({ screen, input, store, ticks }) => {
   const saveSettings = () => store.set('settings', settings);
   const puzzleRecords = store.get<Record<string, PuzzleRecord>>('puzzleRecords', {});
   const ciBest = store.get<Record<string, number>>('ciBest', {});
-  const normalBest = store.get<Record<string, number>>('normalBest', {});
+  // Normal's score is points per move.
+  const normalBest = store.get<Record<string, number>>('normalBestPerMove', {});
   const bests = () => (settings.mode === 'normal' ? normalBest : ciBest);
 
   let game = new Forage(rng, rules());
@@ -131,6 +139,9 @@ export default (async ({ screen, input, store, ticks }) => {
   let ended = false;
   let movesUsed = 0;
   let score = 0;
+  /** The banana meter: bananas earned this run, and crates toward the next one. */
+  let bananas = 0;
+  let cratesTowardNext = 0;
   let startTime = 0;
   let timePassed = 0;
   let bestScore: number | null = null;
@@ -195,6 +206,8 @@ export default (async ({ screen, input, store, ticks }) => {
     } else {
       newRandomBoard();
       score = 0;
+      bananas = Math.min(MAX_BANANAS, settings.forageLevel + 1);
+      cratesTowardNext = 0;
       bestScore = TIMED.has(settings.mode) ? (bests()[ciKey()] ?? 0) : null;
     }
     startTime = ticks();
@@ -211,16 +224,23 @@ export default (async ({ screen, input, store, ticks }) => {
     store.set('puzzleRecords', puzzleRecords);
   }
 
+  /** Normal foraging rates a run by points per move; the other modes show total points. */
+  function shownScore(): number {
+    return settings.mode === 'normal' ? (movesUsed ? score / movesUsed : 0) : score;
+  }
+  const scoreText = (n: number) => (settings.mode === 'normal' ? n.toFixed(2) : String(n));
+
   function finishCi(): void {
     ended = true;
     boardActive = false;
     const key = ciKey();
     const best = bests();
-    if (score > (best[key] ?? 0)) {
-      best[key] = score;
-      store.set(settings.mode === 'normal' ? 'normalBest' : 'ciBest', best);
+    const final = shownScore();
+    if (final > (best[key] ?? 0)) {
+      best[key] = final;
+      store.set(settings.mode === 'normal' ? 'normalBestPerMove' : 'ciBest', best);
     }
-    bestScore = Math.max(bestScore ?? 0, score);
+    bestScore = Math.max(bestScore ?? 0, final);
   }
 
   /** A rotation or tool at the cell under `pos`. Ignored while a move is still playing out, as in the game. */
@@ -238,7 +258,15 @@ export default (async ({ screen, input, store, ticks }) => {
     if (counts) {
       movesUsed++;
       const result = game.settle();
-      if (settings.mode !== 'puzzle') score += result.points;
+      if (settings.mode !== 'puzzle') {
+        score += result.points;
+        // Each crate, whatever its size, fills 1/(level + 1) of the next banana (client/o.java:586-591).
+        cratesTowardNext += result.collected[0] + result.collected[1] + result.collected[2];
+        while (bananas < MAX_BANANAS && cratesTowardNext >= bananas) {
+          cratesTowardNext -= bananas;
+          bananas++;
+        }
+      }
       pendingBanner = result.crateSteps >= 3 ? 'Triple!' : result.crateSteps === 2 ? 'Double!' : '';
     }
     playing = game.steps;
@@ -406,6 +434,21 @@ export default (async ({ screen, input, store, ticks }) => {
     }
   }
 
+  function drawBananas(): void {
+    const sheet = img('bananas');
+    const progress = bananas < MAX_BANANAS ? cratesTowardNext / bananas : 0;
+    for (let i = 0; i < MAX_BANANAS; i++) {
+      const y = BANANA_BOTTOM - 19 * i;
+      const tile = i < bananas ? 0 : i === bananas && progress > 0 ? 1 : 2;
+      screen.blit(sheet, BANANA_X, y, { area: [tile * 21, 0, 21, 21] });
+      if (tile === 1) {
+        // The next banana fills from the bottom as crates come in.
+        const h = Math.round(21 * progress);
+        screen.blit(sheet, BANANA_X, y + 21 - h, { area: [0, 21 - h, 21, h] });
+      }
+    }
+  }
+
   function drawBoard(): void {
     const step = currentStep();
     const ctx = screen.ctx;
@@ -461,13 +504,12 @@ export default (async ({ screen, input, store, ticks }) => {
     text('Score', 460, 500);
     text(seconds(timePassed), 537, 450);
     text(movesUsed > 9999 ? 'Lots!' : String(movesUsed), 537, 475);
-    text(String(score), 537, 500);
+    text(scoreText(shownScore()), 537, 500);
     if (settings.mode === 'puzzle' && !settings.scramble && record) {
       text(seconds(record.time), 602, 450);
       text(String(record.moves), 602, 475);
     }
-    if (TIMED.has(settings.mode) && bestScore !== null) text(String(bestScore), 605, 500);
-    screen.text('Created by: IGN: Jice, Discord: Jc#4182', 588, 585, fontSmall, GREY);
+    if (TIMED.has(settings.mode) && bestScore !== null) text(scoreText(bestScore), 605, 500);
     drawDropdown();
   }
 
@@ -519,6 +561,7 @@ export default (async ({ screen, input, store, ticks }) => {
       screen.text('Puzzle', 105, 210, fontLarge);
       screen.text('Cleared', 105, 265, fontLarge);
     }
+    if (settings.mode !== 'puzzle' && bananas > 0) drawBananas();
     drawPanel();
   }
 
