@@ -452,28 +452,6 @@ a {
 
 /* ---- Layout by screen width ---- */
 
-/* Wide screens: two columns of panel groups, so the controls fit beside the board. */
-@media (min-width: 1200px) {
-  #app {
-    max-width: 1280px;
-  }
-
-  .play {
-    grid-template-columns: minmax(0, auto) minmax(0, 600px);
-  }
-
-  .panel {
-    display: block;
-    columns: 2;
-    column-gap: 10px;
-  }
-
-  .panel > .panel-group {
-    margin-bottom: 10px;
-    break-inside: avoid;
-  }
-}
-
 @media (max-width: 760px) {
   .play {
     grid-template-columns: minmax(0, 1fr);
