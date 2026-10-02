@@ -24,7 +24,8 @@ export const COLOURS = ['u', 'v', 'w', 'x', 'y'] as const;
 const COLOUR_SET = new Set<string>(COLOURS);
 const FALLS_ALONE = new Set(['u', 'v', 'w', 'x', 'y', 'k', 'm', 'n', 'o', 'p', 'q']);
 const MULTI_CELL = new Set(['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j']);
-export type Mode = 'puzzle' | 'ci' | 'infinite';
+/** CI is cursed isle (Gauntlet) foraging; Normal plays it with normal foraging's scoring and crates. */
+export type Mode = 'puzzle' | 'ci' | 'infinite' | 'normal';
 
 export interface Settings {
   mode: Mode;

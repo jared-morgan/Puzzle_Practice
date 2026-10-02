@@ -52,12 +52,23 @@ const RANDOM_POOL = Object.keys(PUZZLES)
 
 type Toggle = 'scramble' | 'bb' | 'fj' | 'cc' | 'eq' | 'machete' | 'shovel' | 'monkey' | 'ants';
 
-/** Labels and checkboxes, at their desktop positions. Infinite takes the unused Normal row. */
-const MODES: { mode: Mode; label: string; y: number }[] = [
-  { mode: 'puzzle', label: 'Puzzle', y: 15 },
-  { mode: 'ci', label: 'CI', y: 40 },
-  { mode: 'infinite', label: 'Infinite', y: 65 },
+/**
+ * The modes are exclusive, so they share one dropdown where the desktop version had a column of
+ * checkboxes. CI and Infinite are cursed isle (Gauntlet) foraging; Normal is timed like CI but
+ * scores and spawns crates like normal foraging.
+ */
+const MODES: { mode: Mode; label: string }[] = [
+  { mode: 'puzzle', label: 'Puzzle' },
+  { mode: 'ci', label: 'CI' },
+  { mode: 'infinite', label: 'Infinite' },
+  { mode: 'normal', label: 'Normal' },
 ];
+const DROPDOWN: Point = [460, 35];
+const DROPDOWN_W = 115;
+const DROPDOWN_H = 30;
+/** Timed modes, which keep a best score. */
+const TIMED = new Set<Mode>(['ci', 'normal']);
+
 const TOGGLES: { key: Toggle; label: string; text: Point; box: Point }[] = [
   { key: 'scramble', label: 'Scramble', text: [615, 115], box: [723, 118] },
   { key: 'bb', label: 'BB', text: [460, 140], box: [497, 143] },
@@ -105,6 +116,8 @@ export default (async ({ screen, input, store, ticks }) => {
   const saveSettings = () => store.set('settings', settings);
   const puzzleRecords = store.get<Record<string, PuzzleRecord>>('puzzleRecords', {});
   const ciBest = store.get<Record<string, number>>('ciBest', {});
+  const normalBest = store.get<Record<string, number>>('normalBest', {});
+  const bests = () => (settings.mode === 'normal' ? normalBest : ciBest);
 
   let game = new Forage(rng, rules());
   let boardActive = false;
@@ -128,6 +141,7 @@ export default (async ({ screen, input, store, ticks }) => {
   let pickedRandomly = false;
   let forageText = String(settings.forageLevel);
   let editing: 'puzzle' | 'forage' | null = null;
+  let dropdownOpen = false;
 
   const ciKey = () =>
     (['bb', 'fj', 'cc', 'eq', 'machete', 'shovel', 'monkey'] as const).map((k) => (settings[k] ? 'b' : 'a')).join('') +
@@ -141,7 +155,7 @@ export default (async ({ screen, input, store, ticks }) => {
       specials: { n: settings.shovel, m: settings.machete, p: settings.monkey, o: settings.eq, ants: settings.ants },
       crates: settings.mode === 'puzzle' ? null : [settings.bb ? weights[0] : 0, settings.fj ? weights[1] : 0, settings.cc ? weights[2] : 0],
       // CI and Infinite are cursed isle (Gauntlet) foraging: bone boxes, fetish jars and cursed chests.
-      mode: 'gauntlet',
+      mode: settings.mode === 'normal' ? 'forage' : 'gauntlet',
     };
   }
 
@@ -174,7 +188,7 @@ export default (async ({ screen, input, store, ticks }) => {
     } else {
       newRandomBoard();
       score = 0;
-      bestScore = settings.mode === 'ci' ? (ciBest[ciKey()] ?? 0) : null;
+      bestScore = TIMED.has(settings.mode) ? (bests()[ciKey()] ?? 0) : null;
     }
     startTime = ticks();
     timePassed = 0;
@@ -194,9 +208,10 @@ export default (async ({ screen, input, store, ticks }) => {
     ended = true;
     boardActive = false;
     const key = ciKey();
-    if (score > (ciBest[key] ?? 0)) {
-      ciBest[key] = score;
-      store.set('ciBest', ciBest);
+    const best = bests();
+    if (score > (best[key] ?? 0)) {
+      best[key] = score;
+      store.set(settings.mode === 'normal' ? 'normalBest' : 'ciBest', best);
     }
     bestScore = Math.max(bestScore ?? 0, score);
   }
@@ -225,11 +240,24 @@ export default (async ({ screen, input, store, ticks }) => {
   }
 
   function click(pos: Point, button: 1 | 3): void {
+    const [dx, dy] = DROPDOWN;
+    if (dropdownOpen) {
+      // An open list takes the click: pick a mode or close it.
+      dropdownOpen = false;
+      const i = Math.floor((pos[1] - dy - DROPDOWN_H) / DROPDOWN_H);
+      if (within(pos, dx, dx + DROPDOWN_W - 1, dy + DROPDOWN_H, dy + DROPDOWN_H * (MODES.length + 1) - 1) && MODES[i]) {
+        settings.mode = MODES[i].mode;
+        saveSettings();
+      }
+      return;
+    }
     if (!boardActive) {
-      const mode = MODES.find((m) => within(pos, 545, 560, m.y + 3, m.y + 18));
+      const mode = within(pos, dx, dx + DROPDOWN_W - 1, dy, dy + DROPDOWN_H - 1);
+      if (mode) dropdownOpen = true;
       const toggle = TOGGLES.find((t) => within(pos, t.box[0], t.box[0] + 15, t.box[1], t.box[1] + 15));
-      if (mode) settings.mode = mode.mode;
-      else if (toggle) settings[toggle.key] = !settings[toggle.key];
+      if (mode) {
+        // Opening the list; the pick comes with the next click.
+      } else if (toggle) settings[toggle.key] = !settings[toggle.key];
       else if (within(pos, 576, 789, 36, 64)) {
         editing = 'puzzle';
         puzzleId = '';
@@ -237,7 +265,7 @@ export default (async ({ screen, input, store, ticks }) => {
         editing = 'forage';
         forageText = '';
       }
-      if (mode || toggle) saveSettings();
+      if (toggle) saveSettings();
     }
     if (within(pos, 460, 573, 225, 253)) {
       if (boardActive) boardActive = false;
@@ -418,10 +446,7 @@ export default (async ({ screen, input, store, ticks }) => {
   const text = (value: string, x: number, y: number, colour = WHITE) => screen.text(value, x, y, font, colour);
 
   function drawPanel(): void {
-    for (const m of MODES) {
-      screen.blit(img(settings.mode === m.mode ? 'checkbox_yes' : 'checkbox_no'), 545, m.y + 3);
-      text(m.label, 460, m.y);
-    }
+    text('Mode:', 460, 10);
     for (const t of TOGGLES) {
       screen.blit(img(settings[t.key] ? 'checkbox_yes' : 'checkbox_no'), t.box[0], t.box[1]);
       text(t.label, t.text[0], t.text[1]);
@@ -449,8 +474,32 @@ export default (async ({ screen, input, store, ticks }) => {
       text(seconds(record.time), 602, 450);
       text(String(record.moves), 602, 475);
     }
-    if (settings.mode === 'ci' && bestScore !== null) text(String(bestScore), 605, 500);
+    if (TIMED.has(settings.mode) && bestScore !== null) text(String(bestScore), 605, 500);
     screen.text('Created by: IGN: Jice, Discord: Jc#4182', 588, 585, fontSmall, GREY);
+    drawDropdown();
+  }
+
+  /** The mode dropdown, with its list drawn over the panel while open. */
+  function drawDropdown(): void {
+    const [dx, dy] = DROPDOWN;
+    const ctx = screen.ctx;
+    const label = MODES.find((m) => m.mode === settings.mode)?.label ?? '';
+    screen.blit(img('box_one'), dx, dy);
+    text(label, dx + 8, dy + 4, boardActive ? GREY : WHITE);
+    ctx.fillStyle = boardActive ? GREY : WHITE;
+    ctx.beginPath();
+    ctx.moveTo(dx + DROPDOWN_W - 24, dy + 12);
+    ctx.lineTo(dx + DROPDOWN_W - 12, dy + 12);
+    ctx.lineTo(dx + DROPDOWN_W - 18, dy + 20);
+    ctx.fill();
+    if (!dropdownOpen) return;
+    MODES.forEach((m, i) => {
+      const y = dy + DROPDOWN_H * (i + 1);
+      const hover = within(input.mouse, dx, dx + DROPDOWN_W - 1, y, y + DROPDOWN_H - 1);
+      screen.rect(dx, y, DROPDOWN_W, DROPDOWN_H, hover ? 'rgb(60, 60, 60)' : BLACK);
+      screen.blit(img('box_one'), dx, y);
+      text(m.label, dx + 8, y + 4, m.mode === settings.mode ? BLUE : WHITE);
+    });
   }
 
   function frame(events: InputEvent[]): void {
@@ -470,7 +519,7 @@ export default (async ({ screen, input, store, ticks }) => {
       if (playing.length) {
         // Wait for the move to finish playing before calling the puzzle cleared.
       } else if (settings.mode === 'puzzle' && game.crateCount() === 0) finishPuzzle();
-      else if (settings.mode === 'ci' && timePassed >= CI_DURATION) finishCi();
+      else if (TIMED.has(settings.mode) && timePassed >= CI_DURATION) finishCi();
     } else if (!ended) {
       screen.text('Paused', 105, 245, fontLarge);
     }
