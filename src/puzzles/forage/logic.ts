@@ -13,6 +13,7 @@
 //   a b c / d e f  chest (3x2, top-left a)
 //   m machete, n shovel, o earthquake, p monkey, q ant (never spawns)
 import type { PyRandom } from '../../core/pyrandom';
+import { fallDuration, type Sprite, type StepRecorder } from './steps';
 
 export type Board = string[][];
 
@@ -82,7 +83,7 @@ function dropPool(settings: Settings, specials: boolean): [string[], number[]] {
 }
 
 /** Marks every run of three or more matching colours as empty. Returns whether any matched. */
-export function boardMatches(board: Board): boolean {
+export function boardMatches(board: Board, rec?: StepRecorder): boolean {
   let matched = false;
   const marks = Array.from({ length: ROWS }, () => Array<number>(COLS).fill(0));
   for (let r = 0; r < ROWS; r++) {
@@ -123,13 +124,22 @@ export function boardMatches(board: Board): boolean {
       }
     }
   }
-  for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) if (marks[r][c]) board[r][c] = 'z';
+  const sprites: Sprite[] = [];
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      if (!marks[r][c]) continue;
+      sprites.push({ piece: board[r][c], from: [r, c], to: [r, c], fade: 'out' });
+      board[r][c] = 'z';
+    }
+  }
+  rec?.add(board, sprites, 180);
   return matched;
 }
 
 /** One step of gravity. Chests that reach the bottom row are cleared and counted. Returns whether anything moved. */
-export function boardMovement(board: Board, cleared: Cleared): boolean {
+export function boardMovement(board: Board, cleared: Cleared, rec?: StepRecorder): boolean {
   let moved = false;
+  const sprites: Sprite[] = [];
   const pieceMove = Array.from({ length: ROWS }, () => Array<number>(COLS).fill(0));
   const chestMove = Array.from({ length: ROWS }, () => Array<number>(COLS).fill(0));
 
@@ -156,6 +166,7 @@ export function boardMovement(board: Board, cleared: Cleared): boolean {
       if (pieceMove[r][c] > 0 && board[r][c] !== 'z') {
         moved = true;
         const target = pieceMove[r][c] + r;
+        sprites.push({ piece: board[r][c], from: [r, c], to: [target, c], ...(board[r][c] === 'k' && target === 9 && { fade: 'out' as const }) });
         if (board[r][c] === 'k' && target === 9) {
           board[r][c] = 'z';
           cleared[0]++;
@@ -174,6 +185,11 @@ export function boardMovement(board: Board, cleared: Cleared): boolean {
       const fall = Math.min(...Array.from({ length: width }, (_, i) => chestMove[r][c + i]));
       if (fall <= 0) continue;
       moved = true;
+      for (let i = 0; i < width; i++) {
+        for (const row of [r - 1, r]) {
+          sprites.push({ piece: board[row][c + i], from: [row, c + i], to: [row + fall, c + i], ...(fall + r === 9 && { fade: 'out' as const }) });
+        }
+      }
       if (fall + r === 9) {
         cleared[width - 1]++;
         for (let i = 0; i < width; i++) board[r][c + i] = board[r - 1][c + i] = 'z';
@@ -187,11 +203,12 @@ export function boardMovement(board: Board, cleared: Cleared): boolean {
       }
     }
   }
+  rec?.add(board, sprites, sprites.length ? fallDuration(sprites) : 0);
   return moved;
 }
 
 /** Drops pieces from the reserve into empty cells at the top, and refills the reserve. Returns whether anything dropped. */
-export function reserveTopOff(board: Board, reserve: Board, settings: Settings, rng: PyRandom, specials = true): boolean {
+export function reserveTopOff(board: Board, reserve: Board, settings: Settings, rng: PyRandom, specials = true, rec?: StepRecorder): boolean {
   let moved = false;
   const reserveMove = Array<number>(COLS).fill(0);
   for (let c = 0; c < COLS; c++) {
@@ -208,6 +225,13 @@ export function reserveTopOff(board: Board, reserve: Board, settings: Settings, 
       else reserve[r + reserveMove[c]][c] = reserve[r][c];
     }
   }
+  if (rec) {
+    const sprites: Sprite[] = [];
+    for (let c = 0; c < COLS; c++) {
+      for (let r = 0; r < reserveMove[c]; r++) sprites.push({ piece: board[r][c], from: [r - reserveMove[c], c], to: [r, c] });
+    }
+    rec.add(board, sprites, sprites.length ? fallDuration(sprites) : 0);
+  }
   const [pieces, weights] = dropPool(settings, specials);
   for (let c = 0; c < COLS; c++) {
     for (let r = 0; r < ROWS; r++) {
@@ -218,18 +242,18 @@ export function reserveTopOff(board: Board, reserve: Board, settings: Settings, 
 }
 
 /** Cascades the board until nothing matches or moves. Returns the chests cleared. */
-export function boardCalc(board: Board, reserve: Board, settings: Settings, rng: PyRandom, specials = true): Cleared {
+export function boardCalc(board: Board, reserve: Board, settings: Settings, rng: PyRandom, specials = true, rec?: StepRecorder): Cleared {
   const cleared: Cleared = [0, 0, 0];
   let moved = true;
   let matched = false;
   while (moved || matched) {
-    matched = boardMatches(board);
+    matched = boardMatches(board, rec);
     if (matched) moved = true;
     while (moved) {
-      moved = boardMovement(board, cleared);
+      moved = boardMovement(board, cleared, rec);
       if (moved) matched = true;
     }
-    if (reserveTopOff(board, reserve, settings, rng, specials)) {
+    if (reserveTopOff(board, reserve, settings, rng, specials, rec)) {
       moved = true;
       matched = true;
     }
@@ -241,18 +265,31 @@ export function boardCalc(board: Board, reserve: Board, settings: Settings, rng:
  * Applies a click at (row, col): rotates the 2x2 below-right of the cell (left click
  * anticlockwise, right click clockwise), or uses a tool. Returns the moves used (0 or 1).
  */
-export function boardTurn(board: Board, row: number, col: number, button: 1 | 3, rng: PyRandom): number {
+export function boardTurn(board: Board, row: number, col: number, button: 1 | 3, rng: PyRandom, rec?: StepRecorder): number {
   const piece = board[row][col];
+  const before = rec ? copyBoard(board) : board;
+  /** Fades out whatever the tool removed or replaced. */
+  const recordToolUse = (duration: number) => {
+    const sprites: Sprite[] = [];
+    for (let r = 0; r < ROWS; r++) {
+      for (let c = 0; c < COLS; c++) {
+        if (before[r][c] !== board[r][c] && before[r][c] !== 'z') sprites.push({ piece: before[r][c], from: [r, c], to: [r, c], fade: 'out' });
+      }
+    }
+    rec?.add(board, sprites, duration, true);
+  };
   if (piece === 'm') {
     // Machete: clears the row to the left (left click) or right (right click), itself included.
     for (let c = 0; c < COLS; c++) {
       if ((button === 1 ? c <= col : c >= col) && DELETEABLE.has(board[row][c])) board[row][c] = 'z';
     }
+    recordToolUse(220);
     return 1;
   }
   if (piece === 'n') {
     // Shovel: clears its column from here down.
     for (let r = row; r < ROWS; r++) if (DELETEABLE.has(board[r][col])) board[r][col] = 'z';
+    recordToolUse(220);
     return 1;
   }
   if (piece === 'p') {
@@ -262,11 +299,13 @@ export function boardTurn(board: Board, row: number, col: number, button: 1 | 3,
         if (Math.abs(c - col) <= 2 && Math.abs(r - row) <= 2 && DELETEABLE.has(board[r][c])) board[r][c] = rng.choice(COLOURS);
       }
     }
+    recordToolUse(300);
     return 1;
   }
   if (piece === 'o') {
     board[row][col] = 'z';
-    earthquake(board, button, rng);
+    rec?.add(board, [{ piece: 'o', from: [row, col], to: [row, col], fade: 'out' }], 150);
+    earthquake(board, button, rng, rec);
     return 1;
   }
   const r = Math.min(row, ROWS - 2);
@@ -278,11 +317,22 @@ export function boardTurn(board: Board, row: number, col: number, button: 1 | 3,
   board[r][c + 1] = tr;
   board[r + 1][c] = bl;
   board[r + 1][c + 1] = br;
+  if (rec) {
+    // Each piece slides to the next corner: anticlockwise for a left click.
+    const corners: [number, number][] = [[r, c], [r, c + 1], [r + 1, c + 1], [r + 1, c]];
+    const shift = button === 1 ? 3 : 1;
+    rec.add(
+      board,
+      corners.map((from, i) => ({ piece: before[from[0]][from[1]], from, to: corners[(i + shift) % 4] })),
+      140,
+    );
+  }
   return 1;
 }
 
 /** Earthquake: every row slides one cell left (left click) or right, closing gaps, but not past chests. */
-function earthquake(board: Board, button: 1 | 3, rng: PyRandom): void {
+function earthquake(board: Board, button: 1 | 3, rng: PyRandom, rec?: StepRecorder): void {
+  const sprites: Sprite[] = [];
   const moves = Array.from({ length: ROWS }, () => Array<number>(COLS).fill(0));
   // Walk away from the edge the pieces slide towards.
   const edge = button === 1 ? 0 : COLS - 1;
@@ -306,11 +356,16 @@ function earthquake(board: Board, button: 1 | 3, rng: PyRandom): void {
       }
     }
   }
-  for (let r = 0; r < ROWS; r++) if (moves[r][edge] === 1) board[r][edge] = 'z';
+  for (let r = 0; r < ROWS; r++) {
+    if (moves[r][edge] !== 1) continue;
+    if (board[r][edge] !== 'z') sprites.push({ piece: board[r][edge], from: [r, edge], to: [r, edge - step], fade: 'out' });
+    board[r][edge] = 'z';
+  }
   for (const c of columns) {
     for (let r = 0; r < ROWS; r++) {
       const m = moves[r][c];
       if (m > 0 && board[r][c] !== 'z') {
+        sprites.push({ piece: board[r][c], from: [r, c], to: [r, c - step * m] });
         board[r][c - step * m] = board[r][c];
         board[r][c] = 'z';
       }
@@ -319,8 +374,12 @@ function earthquake(board: Board, button: 1 | 3, rng: PyRandom): void {
   // reserve_horizontal.py: new pieces slide in from the far edge.
   const far = COLS - 1 - edge;
   for (let r = 0; r < ROWS; r++) {
-    for (let i = 0; i < moves[r][far]; i++) board[r][far - step * i] = rng.choice(COLOURS);
+    for (let i = 0; i < moves[r][far]; i++) {
+      board[r][far - step * i] = rng.choice(COLOURS);
+      sprites.push({ piece: board[r][far - step * i], from: [r, far - step * i + step * moves[r][far]], to: [r, far - step * i] });
+    }
   }
+  rec?.add(board, sprites, sprites.length ? fallDuration(sprites) : 0);
 }
 
 /** A random starting board for CI and Infinite modes, plus a reserve that may hold tools. */

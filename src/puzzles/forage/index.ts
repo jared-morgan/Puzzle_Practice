@@ -1,6 +1,7 @@
 // The Forage simulator (app.pyw and gui_functions.py), rebuilt on the shared core.
 // Layout, rules and timings follow the desktop version. Options it showed but never
-// implemented (Normal mode, Animations, Ants, Skip, Custom ID) are left out.
+// implemented (Normal mode, Animations, Ants, Skip, Custom ID) are left out. Unlike the
+// desktop version, each move plays out step by step (see steps.ts) instead of instantly.
 import { Images } from '../../core/assets';
 import { pygameFont } from '../../core/fonts';
 import { within, type InputEvent, type Point } from '../../core/input';
@@ -27,6 +28,7 @@ import {
   TOOLS,
 } from './logic';
 import { PUZZLES } from './puzzles';
+import { type Sprite, type Step, StepRecorder } from './steps';
 
 const imageUrls = import.meta.glob<string>('./media/*.png', { eager: true, query: '?url', import: 'default' });
 
@@ -119,6 +121,9 @@ export default (async ({ screen, input, store, ticks }) => {
   let timePassed = 0;
   let bestScore: number | null = null;
   let record: PuzzleRecord | null = null;
+  /** The move being animated: its steps, and when the current one started. */
+  let playing: Step[] = [];
+  let stepStart = 0;
 
   // Text fields: the puzzle ID ("0" means random) and the forage level.
   let puzzleId = '0';
@@ -131,11 +136,13 @@ export default (async ({ screen, input, store, ticks }) => {
     settings.forageLevel;
 
   function newRandomBoard(): void {
+    playing = [];
     [board, reserve] = generateRandomBoard(settings, rng);
     spawner = createSpawner(settings, rng);
   }
 
   function start(): void {
+    playing = [];
     movesUsed = 0;
     ended = false;
     if (settings.mode === 'puzzle') {
@@ -181,12 +188,29 @@ export default (async ({ screen, input, store, ticks }) => {
   function clickBoard(pos: Point, button: 1 | 3): void {
     const col = Math.floor((pos[0] - 66) / 45);
     const row = Math.floor((pos[1] - 49) / 45);
-    movesUsed += boardTurn(board, row, col, button, rng);
-    const got = boardCalc(board, reserve, settings, rng);
-    if (settings.mode === 'puzzle') return;
-    cleared = cleared.map((n, i) => n + got[i]);
-    score = cleared[0] + cleared[1] * 2 + cleared[2] * 3;
-    if (spawner) afterMove(board, spawner, rng);
+    // A click during an animation skips the rest of it.
+    playing = [];
+    const rec = new StepRecorder();
+    movesUsed += boardTurn(board, row, col, button, rng, rec);
+    const got = boardCalc(board, reserve, settings, rng, true, rec);
+    if (settings.mode !== 'puzzle') {
+      cleared = cleared.map((n, i) => n + got[i]);
+      score = cleared[0] + cleared[1] * 2 + cleared[2] * 3;
+      if (spawner) {
+        const before = board.map((row) => [...row]);
+        afterMove(board, spawner, rng);
+        // A new chest fades in over the pieces it replaces.
+        const sprites: Sprite[] = [];
+        for (let r = 0; r < ROWS; r++) {
+          for (let c = 0; c < COLS; c++) if (board[r][c] !== before[r][c]) sprites.push({ piece: board[r][c], from: [r, c], to: [r, c], fade: 'in' });
+        }
+        rec.add(before, sprites, 200, true);
+      }
+    }
+    if (rec.steps.length) {
+      playing = rec.steps;
+      stepStart = ticks();
+    }
   }
 
   function click(pos: Point, button: 1 | 3): void {
@@ -239,13 +263,54 @@ export default (async ({ screen, input, store, ticks }) => {
     }
   }
 
-  function drawBoard(): void {
+  function drawPieces(cells: Board): void {
     for (let c = 0; c < COLS; c++) {
       for (let r = 0; r < ROWS; r++) {
-        const name = PIECE_IMAGES[board[r][c]];
+        const name = PIECE_IMAGES[cells[r][c]];
         if (name) screen.blit(img(name), X_COORDS[c], Y_COORDS[r]);
       }
     }
+  }
+
+  /** The step playing now, after moving past finished ones; null once the move has played out. */
+  function currentStep(): [Step, number] | null {
+    while (playing.length) {
+      const t = (ticks() - stepStart) / playing[0].duration;
+      if (t < 1) return [playing[0], t];
+      stepStart += playing[0].duration;
+      playing.shift();
+    }
+    return null;
+  }
+
+  function drawStep(step: Step, t: number): void {
+    drawPieces(step.board);
+    const ease = 1 - (1 - t) * (1 - t);
+    const ctx = screen.ctx;
+    ctx.save();
+    // Pieces coming in from the reserve or past the sides only show inside the board.
+    ctx.beginPath();
+    ctx.rect(X_COORDS[0], Y_COORDS[0], 45 * COLS, 45 * ROWS);
+    ctx.clip();
+    for (const s of step.sprites) {
+      const name = PIECE_IMAGES[s.piece];
+      if (!name) continue;
+      const moves = s.from[0] !== s.to[0] || s.from[1] !== s.to[1];
+      let alpha = 255;
+      if (s.fade === 'in') alpha = 255 * t;
+      // A piece that falls out of the board fades as it lands; one cleared in place fades throughout.
+      else if (s.fade === 'out') alpha = moves ? 255 * Math.min(1, (1 - t) / 0.4) : 255 * (1 - t);
+      const r = s.from[0] + (s.to[0] - s.from[0]) * ease;
+      const c = s.from[1] + (s.to[1] - s.from[1]) * ease;
+      screen.blit(img(name), X_COORDS[0] + 45 * c, Y_COORDS[0] + 45 * r, { alpha });
+    }
+    ctx.restore();
+  }
+
+  function drawBoard(): void {
+    const step = currentStep();
+    if (step) drawStep(...step);
+    else drawPieces(board);
     const [mx, my] = input.mouse;
     if (66 < mx && mx < 380 && 49 < my && my < 498) {
       const col = Math.floor((mx - 66) / 45);
@@ -308,7 +373,9 @@ export default (async ({ screen, input, store, ticks }) => {
     if (boardActive) {
       timePassed = ticks() - startTime;
       drawBoard();
-      if (settings.mode === 'puzzle' && !board.some((row) => row.some((p) => p === 'a' || p === 'g' || p === 'k'))) finishPuzzle();
+      if (playing.length) {
+        // Wait for the move to finish playing before calling the puzzle cleared.
+      } else if (settings.mode === 'puzzle' && !board.some((row) => row.some((p) => p === 'a' || p === 'g' || p === 'k'))) finishPuzzle();
       else if (settings.mode === 'ci' && timePassed >= CI_DURATION) finishCi();
     } else if (!ended) {
       screen.text('Paused', 105, 245, fontLarge);
