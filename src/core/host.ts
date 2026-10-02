@@ -1,6 +1,7 @@
 // Runs one puzzle on a canvas: builds its context, then calls frame() at up to 60 fps.
 import { loadPygameFont } from './fonts';
 import { Input } from './input';
+import { Panel } from './panel';
 import type { PuzzleFactory, PuzzleInstance, PuzzleMeta } from './puzzle';
 import { Screen } from './screen';
 import { Store } from './storage';
@@ -13,6 +14,7 @@ export interface RunningPuzzle {
 
 export async function runPuzzle(
   canvas: HTMLCanvasElement,
+  panelRoot: HTMLElement,
   id: string,
   meta: PuzzleMeta,
   factory: PuzzleFactory,
@@ -20,13 +22,15 @@ export async function runPuzzle(
   const screen = new Screen(canvas, meta.width ?? 800, meta.height ?? 600);
   const input = new Input(screen);
   const store = new Store(id);
+  const panel = new Panel(panelRoot);
+  panel.onUsed = () => canvas.focus();
   await loadPygameFont();
   const start = performance.now();
   const ticks = () => Math.floor(performance.now() - start);
 
   let instance: PuzzleInstance;
   try {
-    instance = await factory({ screen, input, store, ticks });
+    instance = await factory({ screen, input, panel, store, ticks });
   } catch (error) {
     input.dispose();
     throw error;
@@ -42,6 +46,7 @@ export async function runPuzzle(
     if (now - last < FRAME_MS - 2) return;
     last = now;
     instance.frame(input.drain());
+    panel.sync();
   };
   handle = requestAnimationFrame(loop);
 

@@ -5,7 +5,7 @@
 // both versions. State that the original kept in parallel lists per hole lives on Hole objects.
 import { SoundBank } from '../../core/audio';
 import { Images } from '../../core/assets';
-import { copyText, pasteText } from '../../core/clipboard';
+import { copyText } from '../../core/clipboard';
 import { pygameFont } from '../../core/fonts';
 import { within, type InputEvent, type Point } from '../../core/input';
 import type { PuzzleFactory } from '../../core/puzzle';
@@ -36,10 +36,7 @@ const imageUrls = import.meta.glob<string>('./media/*.png', { eager: true, query
 const soundUrls = import.meta.glob<string>('./sounds/*.mp3', { eager: true, query: '?url', import: 'default' });
 
 const WHITE = '#ffffff';
-const BLUE = 'rgb(85, 162, 250)';
-const GREY = 'rgb(150, 150, 150)';
 const PURPLE = 'rgb(153, 51, 204)';
-const font = pygameFont(32);
 const fontLarge = pygameFont(48);
 const statsFont = pygameFont(26);
 const statsFontSmall = pygameFont(14);
@@ -73,21 +70,12 @@ const SOUNDS: Record<number, string> = {
   18: 'audio_options_change',
 };
 
-/** Cheat panel: the piece under each cell of cheats_ui.png. */
-const CHEAT_PIECES: { x: [number, number]; y: [number, number]; letter: string }[] = [
-  { x: [450, 499], y: [448, 498], letter: 'p' },
-  { x: [500, 549], y: [448, 498], letter: 'f' },
-  { x: [550, 599], y: [448, 498], letter: 'y' },
-  { x: [600, 649], y: [448, 498], letter: 't' },
-  { x: [650, 699], y: [448, 498], letter: 'b' },
-  { x: [450, 499], y: [499, 547], letter: 'w' },
-  { x: [500, 549], y: [499, 547], letter: 'u' },
-  { x: [550, 599], y: [499, 547], letter: 'n' },
-  { x: [600, 649], y: [499, 547], letter: 'v' },
-  { x: [450, 499], y: [548, 600], letter: 'l' },
-  { x: [500, 549], y: [548, 600], letter: 'z' },
-  { x: [550, 599], y: [548, 600], letter: 'x' },
-  { x: [600, 648], y: [548, 600], letter: 'i' },
+/** Cheat pieces in the layout of the original's cheats_ui.png, with the putty ('b') on a row of its own. */
+const CHEAT_ROWS = [
+  ['p', 'f', 'y', 't'],
+  ['w', 'u', 'n', 'v'],
+  ['l', 'z', 'x', 'i'],
+  ['b'],
 ];
 
 /**
@@ -198,7 +186,7 @@ interface SessionTable {
   average_pieces: number;
 }
 
-export default (async ({ screen, input, store, ticks }) => {
+export default (async ({ screen, input, panel, store, ticks }) => {
   const images = await Images.load(imageUrls);
   const img = (name: string) => images.get(name);
   const sounds = new SoundBank(soundUrls);
@@ -397,101 +385,6 @@ export default (async ({ screen, input, store, ticks }) => {
 
   const slotOf = (i: number) => ((i % 3) + 3) % 3;
 
-  // ---- Clicks on the side panel ----
-
-  function panelClick(pos: Point): void {
-    if (config.cheats) {
-      const cheat = CHEAT_PIECES.find((c) => within(pos, c.x[0], c.x[1], c.y[0], c.y[1]));
-      if (cheat) {
-        if (cheat.letter === 'b') puttyInToolbox = true;
-        else if (cursor.letter === 'b') puttyInToolbox = false;
-        cursor = { letter: cheat.letter, rotation: 0, flip: 0 };
-        cheatsUsed = true;
-      }
-    }
-    if (within(pos, 740, 800, 540, 600)) {
-      config.volume = config.volume === 3 ? 0 : config.volume + 1;
-      sounds.setVolume(config.volume / 6);
-    } else if (within(pos, 540, 554, 8, 22)) {
-      config.cheats = !config.cheats;
-      cheatsUsed = true;
-    } else if (within(pos, 565, 579, 98, 112)) {
-      config.unlimited = !config.unlimited;
-      cheatsUsed = true;
-    } else if (within(pos, 530, 544, 38, 52)) {
-      loadBestScore = true;
-      config.ghost = !config.ghost;
-      sightUsed = true;
-      if (config.ghost) config.speed = false;
-    } else if (within(pos, 530, 544, 68, 82)) {
-      loadBestScore = true;
-      boardActive = false;
-      config.speed = !config.speed;
-      if (config.speed) config.ghost = false;
-    } else if (within(pos, 625, 645, 65, 85)) {
-      loadBestScore = true;
-      boardActive = false;
-      config.speedHoles = config.speedHoles === 4 ? 1 : config.speedHoles + 1;
-    } else if (within(pos, 702, 722, 65, 85)) {
-      loadBestScore = true;
-      boardActive = false;
-      if (config.speedSize < 3) config.speedSize++;
-      else {
-        config.speedSize = 1;
-        config.speedLetter = 12;
-      }
-    } else if (within(pos, 730, 744, 68, 82)) {
-      if (config.speedSize > 1) {
-        loadBestScore = true;
-        boardActive = false;
-        config.speedLetter = config.speedLetter < 12 ? config.speedLetter + 1 : 0;
-      }
-    } else if (within(pos, 455, 522, 220, 240)) {
-      scoreCounting = !scoreCounting;
-      boardActive = false;
-    } else if (within(pos, 545, 559, 128, 142)) {
-      boardActive = false;
-      seeded = !seeded;
-    } else if (seeded) {
-      if (within(pos, 572, 586, 125, 142)) {
-        boardActive = false;
-        copyText(seedString(), 'Copy this seed:');
-        play(18);
-      } else if (within(pos, 595, 609, 125, 142)) {
-        boardActive = false;
-        play(18);
-        void pasteText('Paste a seed:').then((text) => {
-          if (text && /^\d{45}$/.test(text)) {
-            holesSeed = Number(text.slice(0, 15));
-            piecesSeed = Number(text.slice(15, 30));
-            rotationSeed = Number(text.slice(30));
-          }
-          seedsAtStart = [holesSeed, piecesSeed, rotationSeed];
-        });
-      } else if (within(pos, 618, 632, 125, 142)) {
-        boardActive = false;
-        holesSeed = rng.randintN(0, MAX_SEED);
-        piecesSeed = rng.randintN(0, MAX_SEED);
-        rotationSeed = rng.randintN(0, MAX_SEED);
-        seedsAtStart = [holesSeed, piecesSeed, rotationSeed];
-        copyText(seedString(), 'Copy this seed:');
-        play(18);
-      }
-    }
-    saveConfig();
-
-    if (within(pos, 460, 574, 250, 280)) {
-      if (!boardActive) startProcedure = true;
-      boardActive = !boardActive;
-    }
-    if (within(pos, 460, 574, 290, 320) && boardActive) boardReset = true;
-    if (within(pos, 460, 574, 330, 360)) {
-      if (boardActive) pauseTime = timePassed;
-      else if (pauseTime > 0) startTime = ticks();
-      if (timePassed > 0 && timePassed < sessionTime() && pauseTime > 0) boardActive = !boardActive;
-    }
-  }
-
   /**
    * The seed as three 15-digit numbers. The desktop version didn't zero-pad, so seeds with
    * a short part couldn't be pasted back; padded seeds paste into both versions.
@@ -618,10 +511,7 @@ export default (async ({ screen, input, store, ticks }) => {
   }
 
   function handleClick(button: number, pos: Point, kind: 'D' | 'R' | 'K' | 'U'): void {
-    if (button === 1) {
-      if (kind === 'D') panelClick(pos);
-      if (boardActive) boardClick(pos, kind as 'D' | 'U' | 'K');
-    }
+    if (button === 1 && boardActive) boardClick(pos, kind as 'D' | 'U' | 'K');
     if (boardActive && kind === 'R') {
       if (button === 3) actions[0] = 1;
       else if (button === 4) actions[1] = 1;
@@ -1468,50 +1358,230 @@ export default (async ({ screen, input, store, ticks }) => {
     }
   }
 
-  function drawPanel(): void {
-    const text = (value: string, x: number, y: number, colour = WHITE) => screen.text(value, x, y, font, colour);
-    text('Time', 460, 190);
-    text('Score', 460, 220, scoreCounting ? WHITE : GREY);
-    text('PB', 680, 220);
-    text(timePassed < sessionTime() ? String(Math.trunc(timePassed / 1000)) : '120', 535, 190);
-    text(String(scoreTotal), 535, 220);
-    text(`[${scoreFull[0]}, ${scoreFull[1]}, ${scoreFull[2]}]`, 575, 220);
-    text(String(bestScore), 720, 220);
-    for (const y of [250, 290, 330]) screen.blit(img('box_one'), 460, y);
-    if (boardActive) {
-      drawStars();
-      text('Stop', 495, 255);
-      text('Dismiss', 475, 295);
-      text('Pause', 485, 335);
-    } else {
-      text('Start', 490, 255);
-      if (timePassed > 0 && timePassed < sessionTime() && pauseTime > 0) text('Play', 495, 335);
+  // ---- Panel (the original's right-hand column) ----
+
+  /** Every option change saved, as the column saved the config after each click. */
+  const changed = (change: () => void) => () => {
+    change();
+    saveConfig();
+  };
+  /** Changing the kind of session stops the board and loads that kind's PB. */
+  const restartOption = (change: () => void) =>
+    changed(() => {
+      loadBestScore = true;
+      boardActive = false;
+      change();
+    });
+
+  type Mode = 'normal' | 'ghost' | 'speed';
+  const mode = (): Mode => (config.ghost ? 'ghost' : config.speed ? 'speed' : 'normal');
+  const setMode = (next: Mode) => {
+    if (next === mode()) return;
+    loadBestScore = true;
+    // Ghost hides placed pieces, so a session that used it can't set a PB.
+    if (config.ghost !== (next === 'ghost')) sightUsed = true;
+    if (config.speed !== (next === 'speed')) boardActive = false;
+    config.ghost = next === 'ghost';
+    config.speed = next === 'speed';
+    saveConfig();
+  };
+
+  const game = panel.group('Game');
+  game.select(
+    'Mode',
+    [
+      { value: 'normal', label: 'Normal' },
+      { value: 'ghost', label: 'Ghost' },
+      { value: 'speed', label: 'Speed' },
+    ],
+    mode,
+    setMode,
+    { title: 'Ghost hides placed pieces; Speed deals small holes with the pieces to fill them' },
+  );
+  const speedHidden = () => !config.speed;
+  game.select(
+    'Holes',
+    [1, 2, 3, 4].map((n) => ({ value: n, label: String(n) })),
+    () => config.speedHoles,
+    (n) => restartOption(() => (config.speedHoles = n))(),
+    { hidden: speedHidden, title: 'Speed: holes on the board at once' },
+  );
+  game.select(
+    'Size',
+    [1, 2, 3].map((n) => ({ value: n, label: `${n} piece${n > 1 ? 's' : ''}` })),
+    () => config.speedSize,
+    (n) =>
+      restartOption(() => {
+        config.speedSize = n;
+        if (n === 1) config.speedLetter = 12;
+      })(),
+    { hidden: speedHidden, title: 'Speed: pieces per hole' },
+  );
+  game.select(
+    'Piece',
+    [...PIECES_NO_PUTTY.map((letter, i) => ({ value: i, label: letter.toUpperCase() })), { value: 12, label: 'Any' }],
+    () => config.speedLetter,
+    (n) => restartOption(() => (config.speedLetter = n))(),
+    { hidden: speedHidden, disabled: () => config.speedSize === 1, title: 'Speed: a piece every hole needs' },
+  );
+  game.toggle(
+    'Unlimited',
+    () => config.unlimited,
+    (on) =>
+      changed(() => {
+        config.unlimited = on;
+        cheatsUsed = true;
+      })(),
+    { title: 'No time limit (no PB)' },
+  );
+  game.toggle(
+    'Seeded',
+    () => seeded,
+    (on) => {
+      boardActive = false;
+      seeded = on;
+    },
+    { title: 'Start sessions from the seed below' },
+  );
+  game.toggle(
+    'Score counts',
+    () => scoreCounting,
+    (on) => {
+      scoreCounting = on;
+      boardActive = false;
+    },
+    { title: 'Off: sessions can’t set a PB' },
+  );
+  game.toggle(
+    'Cheats',
+    () => config.cheats,
+    (on) =>
+      changed(() => {
+        config.cheats = on;
+        cheatsUsed = true;
+      })(),
+    { title: 'Pick any piece from the cheat pieces (no PB)' },
+  );
+
+  const pauseAvailable = () => timePassed > 0 && timePassed < sessionTime() && pauseTime > 0;
+  panel
+    .group()
+    .button(
+      'Start',
+      () => {
+        if (!boardActive) startProcedure = true;
+        boardActive = !boardActive;
+      },
+      { variant: 'primary', label: () => (boardActive ? 'Stop' : 'Start') },
+    )
+    .button(
+      'Pause',
+      () => {
+        if (boardActive) pauseTime = timePassed;
+        else if (pauseTime > 0) startTime = ticks();
+        if (pauseAvailable()) boardActive = !boardActive;
+      },
+      { label: () => (boardActive ? 'Pause' : 'Play'), disabled: () => !boardActive && !pauseAvailable() },
+    )
+    .button(
+      'Dismiss',
+      () => {
+        if (boardActive) boardReset = true;
+      },
+      { disabled: () => !boardActive, title: 'Deal a new board without restarting the clock' },
+    );
+
+  panel.group('Score').stats(['', 'Now', 'PB'], () => [
+    ['Time', timePassed < sessionTime() ? String(Math.trunc(timePassed / 1000)) : '120', ''],
+    ['Score', String(scoreTotal), String(bestScore)],
+    ['Vampire proof', String(scoreFull[2]), ''],
+    ['Creaky', String(scoreFull[1]), ''],
+    ['Slipshod', String(scoreFull[0]), ''],
+  ]);
+
+  // Seeded: the box takes a pasted seed with the same check as the original's paste.
+  const seed = panel.group('Seed', { hidden: () => !seeded });
+  seed.text(
+    'Seed',
+    seedString,
+    (text) => {
+      boardActive = false;
+      play(18);
+      text = text.trim();
+      if (/^\d{45}$/.test(text)) {
+        holesSeed = Number(text.slice(0, 15));
+        piecesSeed = Number(text.slice(15, 30));
+        rotationSeed = Number(text.slice(30));
+      }
+      seedsAtStart = [holesSeed, piecesSeed, rotationSeed];
+    },
+    { placeholder: '45 digits', inputMode: 'numeric' },
+  );
+  seed
+    .button(
+      'Copy',
+      () => {
+        boardActive = false;
+        copyText(seedString(), 'Copy this seed:');
+        play(18);
+      },
+      { title: 'Copy the seed' },
+    )
+    .button(
+      'New',
+      () => {
+        boardActive = false;
+        holesSeed = rng.randintN(0, MAX_SEED);
+        piecesSeed = rng.randintN(0, MAX_SEED);
+        rotationSeed = rng.randintN(0, MAX_SEED);
+        seedsAtStart = [holesSeed, piecesSeed, rotationSeed];
+        copyText(seedString(), 'Copy this seed:');
+        play(18);
+      },
+      { title: 'Make a new seed and copy it' },
+    );
+
+  // Cheats: click a piece to hold it.
+  const cheats = panel.group('Cheat pieces', { hidden: () => !config.cheats });
+  for (const row of CHEAT_ROWS) {
+    const line = document.createElement('div');
+    line.className = 'panel-buttons';
+    line.style.display = 'grid';
+    line.style.gridTemplateColumns = 'repeat(4, minmax(0, 1fr))';
+    for (const letter of row) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'panel-button';
+      button.style.padding = '6px 0';
+      if (letter === 'b') button.style.gridColumn = '1 / -1';
+      button.textContent = letter === 'b' ? 'Putty' : letter.toUpperCase();
+      button.addEventListener('click', () => {
+        if (letter === 'b') puttyInToolbox = true;
+        else if (cursor.letter === 'b') puttyInToolbox = false;
+        cursor = { letter, rotation: 0, flip: 0 };
+        cheatsUsed = true;
+        panel.used();
+      });
+      line.append(button);
     }
-    if (config.cheats) screen.blit(img('cheats_ui'), 450, 448);
-    text('Cheats', 460, 5);
-    text('Ghost', 460, 35);
-    text('Speed', 460, 65);
-    text('Unlimited', 460, 95);
-    text('Seeded', 460, 125);
-    if (seeded) {
-      text('C', 572, 125);
-      text('P', 595, 125);
-      text('G', 618, 125);
-    }
-    if (config.speed) {
-      text('Holes     Size', 560, 65);
-      text(String(config.speedHoles), 628, 65, BLUE);
-      text(String(config.speedSize), 705, 65, BLUE);
-      text(config.speedLetter < 12 ? PIECES_NO_PUTTY[config.speedLetter] : '-', 730, 65, BLUE);
-    }
-    const box = (on: boolean, x: number, y: number) => screen.blit(img(on ? 'checkbox_yes' : 'checkbox_no'), x, y);
-    box(config.cheats, 540, 8);
-    box(config.ghost, 530, 38);
-    box(config.speed, 530, 68);
-    box(config.unlimited, 565, 98);
-    box(seeded, 545, 128);
-    screen.blit(img(`volume_${config.volume}`), 740, 540);
+    cheats.append(line);
   }
+
+  panel.group('Sound').select(
+    'Volume',
+    [
+      { value: 0, label: 'Off' },
+      { value: 1, label: 'Low' },
+      { value: 2, label: 'Medium' },
+      { value: 3, label: 'High' },
+    ],
+    () => config.volume,
+    (v) =>
+      changed(() => {
+        config.volume = v;
+        sounds.setVolume(config.volume / 6);
+      })(),
+  );
 
   // ---- The frame, in the original's order ----
 
@@ -1544,7 +1614,6 @@ export default (async ({ screen, input, store, ticks }) => {
     }
 
     screen.blit(img('background_toolbox'), 0, 0);
-    screen.blit(img('background_grey'), 450, 0);
     if (boardActive) {
       for (let x = 0; x < 3; x++) drawPiece(toolbox[x], 126 + x * 91, 324, toolboxRotation[x], toolboxFlip[x], 3, [0, 0]);
       drawCursorPiece();
@@ -1600,7 +1669,7 @@ export default (async ({ screen, input, store, ticks }) => {
       if (f) drawPiece(f.piece.letter, Math.ceil(f.pos[0]), Math.ceil(f.pos[1]), f.piece.rotation, f.piece.flip, 1, [0, 0]);
     }
     if (boardActive) drawCompletionTexts();
-    drawPanel();
+    if (boardActive) drawStars();
   }
 
   return { frame, dispose: () => sounds.dispose() };

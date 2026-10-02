@@ -1,10 +1,11 @@
-// Port of gui.py: draws the game onto an 800x600 canvas, mirroring the pygame blits.
-import { FONT_FAMILY, image } from './assets';
-import type { Board, BurnColumn, ColumnsUp, MovingPiece, Point, Settings, SwapRules } from './game';
+// Port of gui.py: draws the game onto a 450x600 canvas, mirroring the pygame blits. The settings
+// column gui.py drew to the right of the board is HTML controls in the panel instead (index.ts).
+import { image } from './assets';
+import type { Board, BurnColumn, ColumnsUp, MovingPiece, Point, SwapRules } from './game';
 import { board_length } from './game';
-import { floatStr, mod, pyRound, range } from '../../core/py';
+import { mod, pyRound, range } from '../../core/py';
 
-export const display_width = 800;
+export const display_width = 450;
 export const display_height = 600;
 
 let ctx: CanvasRenderingContext2D;
@@ -47,22 +48,9 @@ function blit(name: string | HTMLImageElement | HTMLCanvasElement, x: number, y:
   }
 }
 
-/** Draws text with its top-left at (x, y) like pygame's font.render + blit. */
-function text(value: string, x: number, y: number, size: number, colour = '#ffffff'): void {
-  ctx.font = `${size}px "${FONT_FAMILY}"`;
-  ctx.fillStyle = colour;
-  ctx.textBaseline = 'alphabetic';
-  // Roboto's ascent is 1900/2048 of the font size; pygame rounds it up.
-  ctx.fillText(value, x, y + Math.ceil((size * 1900) / 2048));
-}
-
 export function fill(colour: string): void {
   ctx.fillStyle = colour;
   ctx.fillRect(0, 0, display_width, display_height);
-}
-
-export function volume_display(volume_level: number): void {
-  blit(`volume_${volume_level}`, 740, 540);
 }
 
 const colouredVials = new Map<number, HTMLCanvasElement>();
@@ -228,76 +216,6 @@ export function display_furnace(time_passed: number, time_of_last_burn: number, 
   blit('furnace_hot', 341, 534 + highest_pixel_reached, [0, highest_pixel_reached, furnace_dimensions[0], pixels_to_show]);
 }
 
-export function display_texts(
-  settings: Settings,
-  score: number,
-  cc_chain: number,
-  columns_up: ColumnsUp,
-  board_active: boolean,
-  session_paused: [boolean, number, number],
-  practice_names: string[][],
-  practice_group_names: Record<number, string>,
-): void {
-  const white = '#ffffff';
-  const grey = 'rgb(150, 150, 150)';
-
-  text('Standard', 460, 10, 24, white);
-  text('Seeded', 460, 35, 24, white);
-  text('Create', 460, 60, 24, white);
-  text('Practice', 460, 85, 24, grey);
-
-  text('Burn Timer', 460, 130, 24);
-  text('Difficulty', 460, 155, 24);
-  text('Spawn Rates', 460, 180, 24);
-
-  const rates = settings['Spawn Rates'];
-  const spawnColumns: [number, number, string][] = [
-    [0, 610, 'Bl'],
-    [1, 635, 'Br'],
-    [4, 660, 'Wh'],
-    [3, 685, 'Sp'],
-    [2, 710, 'Bu'],
-  ];
-  for (const [index, x, label] of spawnColumns) {
-    text(String(rates[index]), x, 180, 12);
-    text(label, x, 190, 12);
-  }
-
-  text(String(settings['Furnace Interval']), 605, 130, 24);
-  text(String(settings.Difficulty), 605, 155, 24);
-
-  blit('box_one', 455, 440);
-  text(board_active ? 'Stop' : 'Start', 475, 440, 24);
-  blit('box_one', 455, 470);
-  text(session_paused[0] ? 'Resume' : 'Pause', 475, 470, 24);
-
-  text('Score', 460, 525, 24);
-  text(floatStr(pyRound(score / Math.max(columns_up[0], 1), 2)), 550, 525, 24);
-  text('Chain', 460, 550, 24);
-  text(String(cc_chain), 550, 550, 24);
-
-  if (settings.Seeded || settings.Create) {
-    const shift = settings.Create ? 25 : 0;
-    text('C', 588, 43 + shift, 12);
-    blit('checkbox_no', 585, 43 + shift);
-    text('P', 608, 43 + shift, 12);
-    blit('checkbox_no', 605, 43 + shift);
-    text('G', 628, 43 + shift, 12);
-    blit('checkbox_no', 625, 43 + shift);
-  }
-
-  text('C', 588, 18, 12);
-  blit('checkbox_no', 585, 18);
-
-  if (settings.Practice) {
-    const practice_num = settings['Practice Num'];
-    text(String(practice_num[0]), 600, 90, 24);
-    text(String(practice_num[1]), 630, 90, 24);
-    text(practice_names[practice_num[0]][practice_num[1]], 600, 115, 12);
-    text(practice_group_names[practice_num[0]], 460, 115, 12);
-  }
-}
-
 export function display_create(create_piece: number): void {
   const useful_order = [0, 1, 4, 3, 2];
   for (const x of range(5)) {
@@ -305,16 +223,4 @@ export function display_create(create_piece: number): void {
     blit(pieces_img[useful_order[x]], 20 + x * 45, 90);
   }
   blit('selected_glow', create_piece * 45 + 20 - 1, 90 - 1);
-}
-
-export function display_checkboxes(settings: Settings): void {
-  const checkbox_locations: Record<string, [number, number]> = {
-    Standard: [565, 18],
-    Seeded: [565, 43],
-    Create: [565, 68],
-    Practice: [565, 93],
-  };
-  for (const x of ['Standard', 'Seeded', 'Create', 'Practice'] as const) {
-    blit(settings[x] ? 'checkbox_yes' : 'checkbox_no', ...checkbox_locations[x]);
-  }
 }

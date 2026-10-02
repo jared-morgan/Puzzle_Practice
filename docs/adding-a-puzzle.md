@@ -23,7 +23,7 @@ This copies `src/puzzles/_template` (a small working Lights Out game) to
 | `help` | Controls, shown under the game. |
 | `credits` | Original authors, shown under the game. |
 | `order` | Position on the landing page (lower first). |
-| `width`, `height` | Canvas size in game pixels. Defaults to 800×600. |
+| `width`, `height` | Canvas size in game pixels. Defaults to 800×600. Size it to the game alone; settings go in the panel. |
 | `thumbnail` | Card image: `import thumbnail from './thumbnail.jpg?url'`. |
 
 `index.ts` default-exports a function that receives a `PuzzleContext` and returns `{ frame, dispose? }`.
@@ -37,6 +37,12 @@ All in `src/core/`:
 
 - **`screen`** (`screen.ts`): `fill`, `rect`, `blit(image, x, y, { area, alpha, flipX, rotate })`
   and `text(value, x, y, font, colour, alpha)`. Coordinates are game pixels; the canvas scales to the window.
+- **`panel`** (`panel.ts`): HTML controls beside the canvas, for everything that isn't the game
+  itself (modes, options, Start/Stop, scores). `panel.group('Title')` returns a card with
+  `select`, `toggle`, `number`, `text`, `button`, `stats` and `note`, each bound to a getter and a
+  setter. The host calls `panel.sync()` after every frame, so controls follow the game's state;
+  `disabled` and `hidden` take getters too, e.g. `{ disabled: () => running }`. Keys typed into
+  the panel never reach the game.
 - **`input`** (`input.ts`): events use pygame's names and button numbers (1 left, 2 middle, 3 right,
   4/5 wheel). Keys are lower-case `KeyboardEvent.key` values, with `'space'` for the space bar.
   `input.mouse` is the cursor position. `within(pos, x1, x2, y1, y2)` tests a box.
@@ -57,6 +63,8 @@ The three existing puzzles were ported from pygame, and the same approach works 
 1. Copy `media/` into the folder and load it with `import.meta.glob('./media/*.png', { eager: true, query: '?url', import: 'default' })`.
    Convert `.ogg` sounds to `.mp3` (Safari can't play Ogg).
 2. Keep the game rules in a file with no drawing (`logic.ts`) so they can be tested.
+   Move the settings the pygame version drew beside the game into the `panel`, and shrink the
+   canvas to the game.
 3. Use `PyRandom` and reseed wherever the original called `random.seed`, then compare against
    the original: `scripts/parity/` has scripts that run the Python code and save its results
    as a JSON fixture that a `*.test.ts` file checks.
