@@ -47,8 +47,9 @@ const ANT_NUMBER_AT: Record<number, [number, number]> = { 0: [28, 13], 1: [15, 2
 /**
  * The duty meter beside the board (ForagePanel.java:22, 66-69; puzzle/client/d, the same meter as
  * carpentry's stars): forage level + 1 bananas stacked from the bottom, 19px apart, all empty at
- * the start. Each crate, whatever its size, fills one banana from the bottom up, taking 500ms.
- * bananas.png holds 21x21 tiles: empty, full, and a pop-in frame.
+ * the start. A board brings one crate per banana, and each crate collected, whatever its size,
+ * fills one banana from the bottom up, taking 500ms. bananas.png holds 21x21 tiles: empty, full,
+ * and a pop-in frame.
  */
 const MAX_BANANAS = 9;
 const BANANA_X = 20;
@@ -61,8 +62,10 @@ const RANDOM_POOL = Object.keys(PUZZLES)
   .filter((id) => id <= 14);
 
 /**
- * CI and Infinite are cursed isle (Gauntlet) foraging. Normal scores and spawns crates like
- * normal foraging, has no clock (the client has none), and ends when the banana meter is full.
+ * CI and Infinite are cursed isle (Gauntlet) foraging: when a board's crates are all collected,
+ * deal a new one (within the 2 minutes, for CI). Normal scores and spawns crates like normal
+ * foraging, has no clock (the client has none), and is one board: it ends when the banana meter
+ * is full, or when the player dismisses it.
  */
 const MODES: Option<Mode>[] = [
   { value: 'puzzle', label: 'Puzzle' },
@@ -120,7 +123,7 @@ export default (async ({ screen, input, panel, store, ticks }) => {
   let ended = false;
   let movesUsed = 0;
   let score = 0;
-  /** The banana meter: crates collected this run, and how full the meter is drawn (0-100%). */
+  /** The banana meter: crates collected on this board, and how full the meter is drawn (0-100%). */
   let crates = 0;
   let meterShown = 0;
   let meterAt = 0;
@@ -166,6 +169,9 @@ export default (async ({ screen, input, panel, store, ticks }) => {
   function newRandomBoard(): void {
     reset();
     game.fillRandom();
+    game.crateBudget = bananaCount();
+    crates = 0;
+    meterShown = 0;
   }
 
   function start(): void {
@@ -185,8 +191,6 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     } else {
       newRandomBoard();
       score = 0;
-      crates = 0;
-      meterShown = 0;
       bestScore = SCORED.has(settings.mode) ? (bests()[ciKey()] ?? 0) : null;
     }
     startTime = ticks();
@@ -249,7 +253,11 @@ export default (async ({ screen, input, panel, store, ticks }) => {
   }
 
   function toggleRunning(): void {
-    if (boardActive) boardActive = false;
+    // Dismissing a Normal session ends it early, with no best recorded (client/o.java:164-167).
+    if (boardActive && settings.mode === 'normal') {
+      boardActive = false;
+      ended = true;
+    } else if (boardActive) boardActive = false;
     else {
       boardActive = true;
       start();
@@ -306,8 +314,11 @@ export default (async ({ screen, input, panel, store, ticks }) => {
 
   panel
     .group()
-    .button('Start', toggleRunning, { variant: 'primary', label: () => (boardActive ? 'Stop' : 'Start') })
-    .button('New board', () => newRandomBoard(), { disabled: isPuzzle, title: 'Deal a fresh board without restarting the clock' });
+    .button('Start', toggleRunning, { variant: 'primary', label: () => (!boardActive ? 'Start' : settings.mode === 'normal' ? 'Dismiss' : 'Stop') })
+    .button('New board', () => newRandomBoard(), {
+      disabled: () => isPuzzle() || settings.mode === 'normal',
+      title: "Deal a fresh board and bananas without restarting the clock",
+    });
 
   const seconds = (ms: number) => (ms < 9999000 ? floatStr(ms / 1000).slice(0, 5) : 'Lots!');
   panel.group('Score').stats(['', 'Now', 'Best'], () => {
@@ -318,7 +329,7 @@ export default (async ({ screen, input, panel, store, ticks }) => {
       ...(settings.mode === 'normal' ? [['Points', String(score), '']] : []),
       [settings.mode === 'normal' ? 'Points / move' : 'Score', scoreText(shownScore()), SCORED.has(settings.mode) && bestScore !== null ? scoreText(bestScore) : ''],
     ];
-  });
+  }).note(() => (boardActive && (settings.mode === 'ci' || settings.mode === 'infinite') && boardDone() ? "This board's crates are all in. Deal a new board to keep going." : ''));
 
   // ---- Drawing ----
 
@@ -415,16 +426,10 @@ export default (async ({ screen, input, panel, store, ticks }) => {
 
   const bananaCount = () => Math.min(MAX_BANANAS, settings.forageLevel + 1);
 
-  /**
-   * How full the meter should be, 0-100%: each crate is one banana (puzzle/client/d). Normal ends
-   * when it's full; CI and Infinite go on, so the meter empties and starts again with the next
-   * crate, as carpentry's stars do.
-   */
-  function meterTarget(): number {
-    const n = bananaCount();
-    if (settings.mode === 'normal' || crates === 0) return Math.min(100, (crates * 100) / n);
-    return ((((crates - 1) % n) + 1) * 100) / n;
-  }
+  /** How full the meter should be, 0-100%: each crate is one banana (puzzle/client/d). */
+  const meterTarget = () => Math.min(100, (crates * 100) / bananaCount());
+  /** Every crate this board will bring has been collected. */
+  const boardDone = () => crates >= bananaCount() && meterShown >= 100;
 
   /** Moves the drawn meter toward its target at 5 × bananas ms per percent, so 500ms a banana. */
   function stepMeter(now: number): void {
@@ -495,7 +500,7 @@ export default (async ({ screen, input, panel, store, ticks }) => {
         // Wait for the move to finish playing before calling the puzzle cleared.
       } else if (settings.mode === 'puzzle' && game.crateCount() === 0) finishPuzzle();
       else if (settings.mode === 'ci' && timePassed >= CI_DURATION) finishCi();
-      else if (settings.mode === 'normal' && crates >= bananaCount() && meterShown >= 100) finishCi();
+      else if (settings.mode === 'normal' && boardDone()) finishCi();
     } else if (!ended) {
       screen.text('Paused', 105, 245, fontLarge);
     }
