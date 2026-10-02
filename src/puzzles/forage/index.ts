@@ -46,7 +46,7 @@ const COLOUR_IMAGES: Record<string, string> = {
 const ANT_NUMBER_AT: Record<number, [number, number]> = { 0: [28, 13], 1: [15, 28], 2: [1, 14], 3: [13, 0] };
 /**
  * The duty meter beside the board (ForagePanel.java:22, 66-69; puzzle/client/d, the same meter as
- * carpentry's stars): forage level + 1 bananas stacked from the bottom, 19px apart, all empty at
+ * carpentry's stars): bananas stacked from the bottom, 19px apart (see bananaCount), all empty at
  * the start. A board brings one crate per banana, and each crate collected, whatever its size,
  * fills one banana from the bottom up, taking 500ms. bananas.png holds 21x21 tiles: empty, full,
  * and a pop-in frame.
@@ -296,7 +296,7 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     max: 15,
     disabled: locked,
     hidden: isPuzzle,
-    title: 'Sets which crate sizes are likely, and how many bananas fill the meter',
+    title: 'Sets which crate sizes are likely; in Normal it also sets how many bananas (level + 1)',
   });
   bind(setup, 'Scramble', 'scramble', () => !isPuzzle());
 
@@ -424,7 +424,11 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     }
   }
 
-  const bananaCount = () => Math.min(MAX_BANANAS, settings.forageLevel + 1);
+  /**
+   * Normal shows forage level + 1 bananas. In the Gauntlet the level only sets the chest mix, so
+   * every board brings a full meter of 9.
+   */
+  const bananaCount = () => (settings.mode === 'normal' ? Math.min(MAX_BANANAS, settings.forageLevel + 1) : MAX_BANANAS);
 
   /** How full the meter should be, 0-100%: each crate is one banana (puzzle/client/d). */
   const meterTarget = () => Math.min(100, (crates * 100) / bananaCount());
