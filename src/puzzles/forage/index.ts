@@ -390,7 +390,7 @@ export default (async ({ screen, input, store, ticks }) => {
     else if (s.fade === 'in') alpha = t;
     let x = LEFT + CELL * (s.from[1] + (s.to[1] - s.from[1]) * t);
     let y = TOP + CELL * (s.from[0] + (s.to[0] - s.from[0]) * t);
-    if (s.motion === 'wobble' && t < 1) y += TIMING.wobblePx * Math.sin(TIMING.wobbleRate * local);
+    if (s.motion === 'wobble' && t < 1) y += TIMING.wobblePx * Math.sin(TIMING.wobbleRate * local + (s.phase ?? 0));
     if (s.motion === 'arc') y -= Math.sin(Math.PI * t) * (20 + 0.3 * CELL * Math.abs(s.to[1] - s.from[1]));
     if (s.motion === 'bob') {
       y -= Math.abs(Math.sin((local / 100) * Math.PI)) * 8;
