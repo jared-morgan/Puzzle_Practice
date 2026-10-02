@@ -4,6 +4,7 @@
 // Keys use KeyboardEvent.key, lower-cased, with ' ' renamed to 'space' (so 'a', '1',
 // 'escape', 'enter', 'backspace', 'arrowleft', ...).
 import { unlockAudio } from './audio';
+import { isTyping } from './panel';
 import { type Screen, toScreen } from './screen';
 
 export type Point = [number, number];
@@ -62,7 +63,8 @@ export class Input {
     );
     listen(canvas, 'contextmenu', (event) => event.preventDefault());
     listen(window, 'keydown', (event) => {
-      if (event.ctrlKey || event.metaKey || event.altKey) return;
+      // Typing in the settings panel isn't game input.
+      if (event.ctrlKey || event.metaKey || event.altKey || isTyping(event.target)) return;
       unlockAudio();
       if (event.repeat) return;
       const key = keyName(event);
@@ -71,6 +73,7 @@ export class Input {
       this.queue.push({ type: 'keydown', key });
     });
     listen(window, 'keyup', (event) => {
+      if (isTyping(event.target)) return;
       this.queue.push({ type: 'keyup', key: keyName(event) });
     });
   }

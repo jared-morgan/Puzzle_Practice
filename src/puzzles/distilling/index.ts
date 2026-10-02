@@ -7,7 +7,6 @@ import type { PuzzleFactory } from '../../core/puzzle';
 import { loadAssets } from './assets';
 import {
   activate_furnace,
-  adjust_settings,
   adjust_settings_mode,
   board_length,
   calc_swaps,
@@ -41,13 +40,14 @@ import {
   type BurnColumn,
   type ColumnsUp,
   type Location,
+  type Mode,
   type Seed,
   type Settings,
   type SwappingBoard,
   type SwapRules,
 } from './game';
 import { practiceAvailable, practiceGroupNames, practiceNames } from './practice';
-import { at, deepcopy, range } from '../../core/py';
+import { at, deepcopy, floatStr, pyRound, range } from '../../core/py';
 import * as gui from './render';
 
 type PasteEvent = { type: 'paste'; target: 'Create' | 'Seeded'; text: string };
@@ -222,37 +222,6 @@ function handlePaste(target: 'Create' | 'Seeded', text: string): void {
 
 function handleMouseDown(button: number, pos: [number, number]): void {
   mouse_pos = pos;
-  if (740 <= mouse_pos[0] && mouse_pos[0] <= 800 && 540 <= mouse_pos[1] && mouse_pos[1] <= 600) {
-    // Change volume level
-    settings.Volume = settings.Volume === 3 ? 0 : settings.Volume + 1;
-    sound_volumes(settings.Volume / 6);
-  }
-  if (585 <= mouse_pos[0] && mouse_pos[0] <= 605 && 18 <= mouse_pos[1] && mouse_pos[1] <= 38) {
-    // Copy board
-    play_sound('options_change');
-    copyToClipboard(get_create_seed(board));
-  }
-
-  if (settings.Practice) {
-    const practice_num = settings['Practice Num'];
-    if (600 < mouse_pos[0] && mouse_pos[0] < 628 && 90 < mouse_pos[1] && mouse_pos[1] < 114) {
-      // Change difficulty of Practice
-      if ((button === 1 || button === 4) && practice_num[0] < 9) {
-        practice_num[0] += 1;
-        practice_num[1] = 0;
-      } else if ((button === 3 || button === 5) && practice_num[0] > 0) {
-        practice_num[0] -= 1;
-        practice_num[1] = 0;
-      }
-    }
-    if (630 < mouse_pos[0] && mouse_pos[0] < 658 && 90 < mouse_pos[1] && mouse_pos[1] < 114) {
-      if ((button === 1 || button === 4) && practice_num[1] < Math.max(...practiceAvailable[practice_num[0]])) {
-        practice_num[1] += 1;
-      } else if ((button === 3 || button === 5) && practice_num[1] > 0) {
-        practice_num[1] -= 1;
-      }
-    }
-  }
 
   if (board_active && settings.Create) {
     if (20 < mouse_pos[0] && mouse_pos[0] < 245 && 90 < mouse_pos[1] && mouse_pos[1] < 130) {
@@ -270,27 +239,7 @@ function handleMouseDown(button: number, pos: [number, number]): void {
         swapping_board[0] = deepcopy(board);
         swap_rules = calc_swaps(board, board_length(board));
       }
-    } else if (585 < mouse_pos[0] && mouse_pos[0] < 600 && 68 < mouse_pos[1] && mouse_pos[1] < 83) {
-      // Copies a seed in Create mode
-      play_sound('options_change');
-      copyToClipboard(get_create_seed(board));
-    } else if (605 < mouse_pos[0] && mouse_pos[0] < 620 && 68 < mouse_pos[1] && mouse_pos[1] < 83) {
-      // Pastes a seed in Create mode
-      play_sound('options_change');
-      requestPaste('Create');
-    } else if (625 < mouse_pos[0] && mouse_pos[0] < 640 && 68 < mouse_pos[1] && mouse_pos[1] < 83) {
-      // Generates a seed in Create mode
-      play_sound('options_change');
-      is_create_seeded = false;
-      start_procedure();
-      copyToClipboard(get_create_seed(board));
     }
-  }
-
-  if (455 < mouse_pos[0] && mouse_pos[0] < 630 && 440 < mouse_pos[1] && mouse_pos[1] < 465) {
-    board_active = !board_active;
-    if (board_active) start_procedure();
-    else session_paused[0] = false;
   }
 
   if (board_active && !session_paused[0] && !burn_column[0]) {
@@ -313,79 +262,6 @@ function handleMouseDown(button: number, pos: [number, number]): void {
       }
     }
   }
-
-  if ((!board_active && !session_paused[0]) || settings.Create) {
-    const inside = (x1: number, x2: number, y1: number, y2: number) =>
-      x1 < mouse_pos[0] && mouse_pos[0] < x2 && y1 < mouse_pos[1] && mouse_pos[1] < y2;
-    const rates = settings['Spawn Rates'];
-    if (inside(610, 630, 180, 200)) {
-      rates[0] = adjust_settings(rates[0], button, spawn_rates_default[0], 0, 999, 1); // Change black spawn rate
-    } else if (inside(635, 655, 180, 200)) {
-      rates[1] = adjust_settings(rates[1], button, spawn_rates_default[1], 0, 999, 1); // Change brown spawn rate
-    } else if (inside(660, 680, 180, 200)) {
-      rates[4] = adjust_settings(rates[4], button, spawn_rates_default[4], 0, 999, 1); // Change white spawn rate
-    } else if (inside(685, 705, 180, 200)) {
-      rates[3] = adjust_settings(rates[3], button, spawn_rates_default[3], 0, 999, 1); // Change spice spawn rate
-    } else if (inside(710, 730, 180, 200)) {
-      rates[2] = adjust_settings(rates[2], button, spawn_rates_default[2], 0, 999, 1); // Change burnt spawn rate
-    } else if (inside(600, 660, 155, 175)) {
-      settings.Difficulty = adjust_settings(settings.Difficulty, button, 50, 0, 100, 1);
-    } else if (inside(600, 720, 130, 150)) {
-      settings['Furnace Interval'] = adjust_settings(settings['Furnace Interval'], button, 15000, 1000, 120000, 500);
-    } else if (inside(565, 580, 18, 35)) {
-      settings = adjust_settings_mode(settings, 'Standard');
-      settings['Furnace Interval'] = 15000;
-      board_active = false;
-      burn_duration = 1000;
-    } else if (inside(565, 580, 43, 60)) {
-      settings = adjust_settings_mode(settings, 'Seeded');
-      settings['Furnace Interval'] = 15000;
-      board_active = false;
-      burn_duration = 1000;
-    } else if (inside(565, 580, 68, 85)) {
-      settings = adjust_settings_mode(settings, 'Create');
-      is_create_seeded = false;
-      settings['Furnace Interval'] = 15000000;
-      burn_duration = 100;
-    } else if (inside(565, 580, 93, 110)) {
-      settings = adjust_settings_mode(settings, 'Practice');
-      board_active = false;
-      burn_duration = 1000;
-    } else if (settings.Seeded) {
-      if (inside(588, 603, 45, 60)) {
-        // Copy seed in Seeded mode
-        play_sound('options_change');
-        let copy_seed = original_seed[0];
-        if (original_seed[1] !== '') copy_seed += '7' + original_seed[1];
-        copyToClipboard(copy_seed);
-      }
-      if (inside(608, 623, 45, 60)) {
-        // Paste seed in Seeded mode
-        play_sound('options_change');
-        requestPaste('Seeded');
-      }
-      if (inside(628, 643, 45, 60)) {
-        // Generate and copy a seed in Seeded mode
-        play_sound('options_change');
-        const generated = generate_seed();
-        copyToClipboard(generated);
-        original_seed = convert_seed(generated);
-        using_random_seed = false;
-      }
-    }
-
-    if (inside(455, 800, 180, 200) && button === 2) {
-      // Middle click sets spawn to default
-      const isDefault = settings['Spawn Rates'].every((v, i) => v === spawn_rates_default[i]);
-      settings['Spawn Rates'] = isDefault ? [0, 0, 0, 0, 1] : [...spawn_rates_default];
-    } else if (inside(455, 800, 155, 175) && button === 2) {
-      // Middle click sets difficulty to default
-      settings.Difficulty = 50;
-    } else if (inside(455, 800, 130, 150) && button === 2) {
-      // Middle click switches furnace interval between defaults
-      settings['Furnace Interval'] = settings['Furnace Interval'] === 15000 ? 15000000 : 15000;
-    }
-  }
 }
 
 function handleKey(type: 'keydown' | 'keyup', key: number): void {
@@ -395,16 +271,209 @@ function handleKey(type: 'keydown' | 'keyup', key: number): void {
       else if (paint_with[1] === key - 49) paint_with = [false, -1];
     }
   }
-  if (board_active && type === 'keydown' && key === 27) {
-    if (session_paused[0]) {
-      session_paused[0] = false;
-      session_paused[2] += time_passed - session_paused[1];
-      time_passed = time_passed - session_paused[2];
-    } else {
-      session_paused = [true, time_passed, session_paused[2]];
-    }
+  if (board_active && type === 'keydown' && key === 27) toggle_pause();
+}
+
+function toggle_pause(): void {
+  if (session_paused[0]) {
+    session_paused[0] = false;
+    session_paused[2] += time_passed - session_paused[1];
+    time_passed = time_passed - session_paused[2];
+  } else {
+    session_paused = [true, time_passed, session_paused[2]];
   }
 }
+
+// ---- Panel ----
+// The settings column gui.py drew right of the board, with the same rules for when each part
+// could be changed.
+
+const modes: { value: Mode; label: string }[] = [
+  { value: 'Standard', label: 'Standard' },
+  { value: 'Seeded', label: 'Seeded' },
+  { value: 'Create', label: 'Create' },
+  { value: 'Practice', label: 'Practice' },
+];
+const current_mode = (): Mode => modes.find((m) => settings[m.value])!.value;
+// Spawn rates are listed in the order gui.py drew them, not their order in settings.
+const spawn_columns: [number, string][] = [
+  [0, 'Black'],
+  [1, 'Brown'],
+  [4, 'White'],
+  [3, 'Spice'],
+  [2, 'Burnt'],
+];
+const timerless = 15000000;
+/** The settings column only took clicks while stopped, or at any time in Create mode. */
+const settings_locked = () => !((!board_active && !session_paused[0]) || settings.Create);
+const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
+
+function set_mode(mode: Mode): void {
+  if (settings[mode]) return;
+  settings = adjust_settings_mode(settings, mode);
+  if (mode === 'Create') {
+    is_create_seeded = false;
+    settings['Furnace Interval'] = timerless;
+    burn_duration = 100;
+    return;
+  }
+  if (mode !== 'Practice') settings['Furnace Interval'] = 15000;
+  board_active = false;
+  burn_duration = 1000;
+}
+
+function toggle_running(): void {
+  board_active = !board_active;
+  if (board_active) start_procedure();
+  else session_paused[0] = false;
+}
+
+const game_group = ctx.panel.group('Game');
+game_group.select('Mode', modes, current_mode, set_mode, { disabled: settings_locked });
+game_group.number(
+  'Practice group',
+  () => settings['Practice Num'][0],
+  (n) => {
+    const practice_num = settings['Practice Num'];
+    if (n !== practice_num[0]) {
+      practice_num[0] = n;
+      practice_num[1] = 0;
+    }
+  },
+  { min: 0, max: 9, hidden: () => !settings.Practice },
+);
+game_group.number(
+  'Practice board',
+  () => settings['Practice Num'][1],
+  (n) => {
+    const practice_num = settings['Practice Num'];
+    practice_num[1] = clamp(n, 0, Math.max(...practiceAvailable[practice_num[0]]));
+  },
+  { min: 0, hidden: () => !settings.Practice },
+);
+game_group.note(() => {
+  if (!settings.Practice) return '';
+  const [group, num] = settings['Practice Num'];
+  return `${practiceGroupNames[group]} ${practiceNames[group][num]}`;
+});
+
+// Start and the score sit near the top, since the settings below run past the canvas.
+ctx.panel
+  .group()
+  .button('Start', toggle_running, { variant: 'primary', label: () => (board_active ? 'Stop' : 'Start') })
+  .button('Pause', toggle_pause, { disabled: () => !board_active, label: () => (session_paused[0] ? 'Resume' : 'Pause'), title: 'Esc' });
+
+ctx.panel.group('Score').stats([], () => [
+  ['Score', floatStr(pyRound(score / Math.max(columns_up[0], 1), 2))],
+  ['Chain', String(cc_chain)],
+]);
+
+const board_group = ctx.panel.group('Settings');
+board_group.toggle(
+  'Burn timer',
+  () => settings['Furnace Interval'] !== timerless,
+  (on) => (settings['Furnace Interval'] = on ? 15000 : timerless),
+  { disabled: settings_locked },
+);
+board_group.number(
+  'Burn timer (s)',
+  () => settings['Furnace Interval'] / 1000,
+  (seconds) => (settings['Furnace Interval'] = clamp(Math.round(seconds * 2) * 500, 1000, 120000)),
+  { min: 1, max: 120, step: 0.5, disabled: settings_locked, hidden: () => settings['Furnace Interval'] === timerless },
+);
+board_group.number('Difficulty', () => settings.Difficulty, (n) => (settings.Difficulty = Math.round(n)), {
+  min: 0,
+  max: 100,
+  disabled: settings_locked,
+});
+
+const spawn_group = ctx.panel.group('Spawn rates', { columns: 5 });
+for (const [index, label] of spawn_columns) {
+  spawn_group.number(label, () => settings['Spawn Rates'][index], (n) => (settings['Spawn Rates'][index] = Math.round(n)), {
+    min: 0,
+    max: 999,
+    disabled: settings_locked,
+  });
+}
+const default_spawn_rates = () => settings['Spawn Rates'].every((v, i) => v === spawn_rates_default[i]);
+spawn_group.button(
+  'Defaults',
+  () => (settings['Spawn Rates'] = default_spawn_rates() ? [0, 0, 0, 0, 1] : [...spawn_rates_default]),
+  {
+    label: () => (default_spawn_rates() ? 'Whites only' : 'Defaults'),
+    disabled: settings_locked,
+    title: 'Switch between the default spawn rates and a board of only whites',
+  },
+);
+
+// The board's seed can be copied in any mode, and pasted or dealt anew while playing in Create.
+const create_seed_group = ctx.panel.group('Board');
+create_seed_group.button('Copy', () => {
+  play_sound('options_change');
+  copyToClipboard(get_create_seed(board));
+}, { title: "Copy the board's seed" });
+create_seed_group.button(
+  'Paste',
+  () => {
+    play_sound('options_change');
+    requestPaste('Create');
+  },
+  { hidden: () => !settings.Create, disabled: () => !board_active, title: 'Play a board from a pasted seed' },
+);
+create_seed_group.button(
+  'Generate',
+  () => {
+    // Generates a seed in Create mode
+    play_sound('options_change');
+    is_create_seeded = false;
+    start_procedure();
+    copyToClipboard(get_create_seed(board));
+  },
+  { hidden: () => !settings.Create, disabled: () => !board_active, title: 'Deal a new board and copy its seed' },
+);
+
+const seed_group = ctx.panel.group('Seed', { hidden: () => !settings.Seeded });
+seed_group.button(
+  'Copy',
+  () => {
+    play_sound('options_change');
+    let copy_seed = original_seed[0];
+    if (original_seed[1] !== '') copy_seed += '7' + original_seed[1];
+    copyToClipboard(copy_seed);
+  },
+  { disabled: settings_locked, title: 'Copy the seed of the last start' },
+);
+seed_group.button(
+  'Paste',
+  () => {
+    play_sound('options_change');
+    requestPaste('Seeded');
+  },
+  { disabled: settings_locked, title: 'Use a pasted seed for the next start' },
+);
+seed_group.button(
+  'New',
+  () => {
+    // Generate and copy a seed in Seeded mode
+    play_sound('options_change');
+    const generated = generate_seed();
+    copyToClipboard(generated);
+    original_seed = convert_seed(generated);
+    using_random_seed = false;
+  },
+  { disabled: settings_locked, title: 'Make a new seed, copy it and use it for the next start' },
+);
+
+const volumes = [
+  { value: 0, label: 'Off' },
+  { value: 1, label: 'Low' },
+  { value: 2, label: 'Medium' },
+  { value: 3, label: 'High' },
+];
+ctx.panel.group('Sound').select('Volume', volumes, () => settings.Volume, (volume) => {
+  settings.Volume = volume;
+  sound_volumes(settings.Volume / 6);
+});
 
 function frame(events: InputEvent[]): void {
   current_mouse = ctx.input.mouse;
@@ -504,9 +573,6 @@ function frame(events: InputEvent[]): void {
     }
   }
   gui.display_vial(score, columns_up);
-  gui.display_texts(settings, score, cc_chain, columns_up, board_active, session_paused, practiceNames, practiceGroupNames);
-  gui.display_checkboxes(settings);
-  gui.volume_display(settings.Volume);
   if (settings.Create) gui.display_create(create_piece);
 }
 

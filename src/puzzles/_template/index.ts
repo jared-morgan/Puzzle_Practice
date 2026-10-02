@@ -1,5 +1,6 @@
 // A small, complete puzzle showing the pieces of the core a new puzzle usually needs:
-// drawing with `screen`, reacting to clicks and keys, seeded randomness and saved records.
+// drawing with `screen`, reacting to clicks and keys, controls in the `panel` beside the
+// canvas, seeded randomness and saved records.
 // Folders starting with "_" are hidden from the landing page, so this one never shows up.
 import { within } from '../../core/input';
 import type { PuzzleFactory } from '../../core/puzzle';
@@ -8,11 +9,11 @@ import { pygameFont } from '../../core/fonts';
 
 const SIZE = 5;
 const CELL = 90;
-const LEFT = 175;
+const LEFT = 25;
 const TOP = 70;
 const font = pygameFont(32);
 
-export default (async ({ screen, store }) => {
+export default (async ({ screen, panel, store }) => {
   // Images would load here, e.g. `await Images.load(import.meta.glob(...))`; see vampire-carp/index.ts.
   const rng = new PyRandom();
   let lights: boolean[][] = [];
@@ -35,6 +36,10 @@ export default (async ({ screen, store }) => {
   const solved = () => lights.every((row) => row.every((on) => !on));
   deal();
 
+  // Settings, buttons and scores go in the panel; the host keeps it in step after every frame.
+  panel.group().button('New board', deal, { variant: 'primary' });
+  panel.group('Score').stats(['', 'Now', 'Best'], () => [['Moves', String(moves), best === null ? '-' : String(best)]]);
+
   return {
     frame(events) {
       for (const event of events) {
@@ -55,8 +60,6 @@ export default (async ({ screen, store }) => {
           screen.rect(LEFT + c * CELL + 4, TOP + r * CELL + 4, CELL - 8, CELL - 8, lights[r][c] ? '#f5c542' : '#39415a');
         }
       }
-      screen.text(`Moves ${moves}`, LEFT, 530, font, '#ffffff');
-      screen.text(`Best ${best ?? '-'}`, LEFT + 300, 530, font, '#ffffff');
       if (solved()) screen.text('Solved! Press R for another.', LEFT, 20, font, '#7ee08a');
     },
   };

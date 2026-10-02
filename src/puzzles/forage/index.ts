@@ -1,11 +1,12 @@
 // The Forage simulator (app.pyw and gui_functions.py), rebuilt on the shared core, playing by
-// the real game's rules and timings (engine.ts). The panel follows the desktop version's
-// layout. Options it showed but never implemented (Animations, Skip, Custom ID)
-// are left out; its unused Ants checkbox now turns ants on and off.
+// the real game's rules and timings (engine.ts). The canvas is the board; the desktop version's
+// settings column is the HTML panel beside it. Options it showed but never implemented
+// (Animations, Skip, Custom ID) are left out; its unused Ants checkbox now turns ants on and off.
 import { Images } from '../../core/assets';
 import { SoundBank } from '../../core/audio';
 import { pygameFont } from '../../core/fonts';
 import { within, type InputEvent, type Point } from '../../core/input';
+import type { Option } from '../../core/panel';
 import type { PuzzleFactory } from '../../core/puzzle';
 import { floatStr } from '../../core/py';
 import { PyRandom } from '../../core/pyrandom';
@@ -28,11 +29,7 @@ const imageUrls = import.meta.glob<string>('./media/*.png', { eager: true, query
 
 const BLACK = 'rgb(31, 31, 31)';
 const WHITE = '#ffffff';
-const BLUE = 'rgb(85, 162, 250)';
-const GREY = 'rgb(150, 150, 150)';
-const font = pygameFont(32);
 const fontLarge = pygameFont(96);
-const fontSmall = pygameFont(16);
 
 const CI_DURATION = 120000;
 const CELL = 45;
@@ -47,6 +44,14 @@ const COLOUR_IMAGES: Record<string, string> = {
 };
 /** Where the ant's count sits in its cell, by facing: left, up, right, down. */
 const ANT_NUMBER_AT: Record<number, [number, number]> = { 0: [28, 13], 1: [15, 28], 2: [1, 14], 3: [13, 0] };
+/**
+ * The duty meter beside the board (ForagePanel.java:22, 66-69; puzzle/client/d): 9 slots stacked
+ * from the bottom, 19px apart. It shows forage level + 1 bananas; collecting that many crates
+ * earns the next one. bananas.png holds full, partly filled and empty tiles of 21x21.
+ */
+const MAX_BANANAS = 9;
+const BANANA_X = 20;
+const BANANA_BOTTOM = 335 + 173 - 21;
 const TOOL_IMAGES: Record<string, string> = { m: 'machete', p: 'monkey', o: 'earthquake', n: 'shovel' };
 const CRATE_IMAGES = ['', 'bb', 'fj', 'cc'];
 /** Puzzles the random pick chooses between (the desktop version drew from 1–14). */
@@ -54,36 +59,18 @@ const RANDOM_POOL = Object.keys(PUZZLES)
   .map(Number)
   .filter((id) => id <= 14);
 
-type Toggle = 'scramble' | 'bb' | 'fj' | 'cc' | 'eq' | 'machete' | 'shovel' | 'monkey' | 'ants';
-
 /**
- * The modes are exclusive, so they share one dropdown where the desktop version had a column of
- * checkboxes. CI and Infinite are cursed isle (Gauntlet) foraging; Normal is timed like CI but
- * scores and spawns crates like normal foraging.
+ * CI and Infinite are cursed isle (Gauntlet) foraging; Normal is timed like CI but scores and
+ * spawns crates like normal foraging.
  */
-const MODES: { mode: Mode; label: string }[] = [
-  { mode: 'puzzle', label: 'Puzzle' },
-  { mode: 'ci', label: 'CI' },
-  { mode: 'infinite', label: 'Infinite' },
-  { mode: 'normal', label: 'Normal' },
+const MODES: Option<Mode>[] = [
+  { value: 'puzzle', label: 'Puzzle' },
+  { value: 'ci', label: 'CI (Gauntlet, 2 min)' },
+  { value: 'infinite', label: 'Infinite (Gauntlet)' },
+  { value: 'normal', label: 'Normal (2 min)' },
 ];
-const DROPDOWN: Point = [460, 35];
-const DROPDOWN_W = 115;
-const DROPDOWN_H = 30;
 /** Timed modes, which keep a best score. */
 const TIMED = new Set<Mode>(['ci', 'normal']);
-
-const TOGGLES: { key: Toggle; label: string; text: Point; box: Point }[] = [
-  { key: 'scramble', label: 'Scramble', text: [615, 115], box: [723, 118] },
-  { key: 'bb', label: 'BB', text: [460, 140], box: [497, 143] },
-  { key: 'fj', label: 'FJ', text: [522, 140], box: [554, 143] },
-  { key: 'cc', label: 'CC', text: [577, 140], box: [616, 143] },
-  { key: 'eq', label: 'EQ', text: [460, 165], box: [497, 168] },
-  { key: 'machete', label: 'Machete', text: [522, 165], box: [617, 168] },
-  { key: 'shovel', label: 'Shovel', text: [642, 165], box: [721, 168] },
-  { key: 'monkey', label: 'Monkey', text: [460, 190], box: [548, 193] },
-  { key: 'ants', label: 'Ants', text: [575, 190], box: [632, 193] },
-];
 
 /** Every special is on by default, as in the real game past the first difficulty levels. */
 const DEFAULT_SETTINGS: Settings = {
@@ -111,7 +98,7 @@ interface Pop {
   start: number;
 }
 
-export default (async ({ screen, input, store, ticks }) => {
+export default (async ({ screen, input, panel, store, ticks }) => {
   const images = await Images.load(imageUrls);
   const img = (name: string) => images.get(name);
   const rng = new PyRandom();
@@ -123,7 +110,8 @@ export default (async ({ screen, input, store, ticks }) => {
   const saveSettings = () => store.set('settings', settings);
   const puzzleRecords = store.get<Record<string, PuzzleRecord>>('puzzleRecords', {});
   const ciBest = store.get<Record<string, number>>('ciBest', {});
-  const normalBest = store.get<Record<string, number>>('normalBest', {});
+  // Normal's score is points per move.
+  const normalBest = store.get<Record<string, number>>('normalBestPerMove', {});
   const bests = () => (settings.mode === 'normal' ? normalBest : ciBest);
 
   let game = new Forage(rng, rules());
@@ -131,6 +119,9 @@ export default (async ({ screen, input, store, ticks }) => {
   let ended = false;
   let movesUsed = 0;
   let score = 0;
+  /** The banana meter: bananas earned this run, and crates toward the next one. */
+  let bananas = 0;
+  let cratesTowardNext = 0;
   let startTime = 0;
   let timePassed = 0;
   let bestScore: number | null = null;
@@ -143,12 +134,9 @@ export default (async ({ screen, input, store, ticks }) => {
   let banner: { text: string; until: number } | null = null;
   let pendingBanner = '';
 
-  // Text fields: the puzzle ID ("0" means random) and the forage level.
+  /** The puzzle to play; 0 picks one at random each time. */
   let puzzleId = '0';
   let pickedRandomly = false;
-  let forageText = String(settings.forageLevel);
-  let editing: 'puzzle' | 'forage' | null = null;
-  let dropdownOpen = false;
 
   const ciKey = () =>
     (['bb', 'fj', 'cc', 'eq', 'machete', 'shovel', 'monkey'] as const).map((k) => (settings[k] ? 'b' : 'a')).join('') +
@@ -195,6 +183,8 @@ export default (async ({ screen, input, store, ticks }) => {
     } else {
       newRandomBoard();
       score = 0;
+      bananas = Math.min(MAX_BANANAS, settings.forageLevel + 1);
+      cratesTowardNext = 0;
       bestScore = TIMED.has(settings.mode) ? (bests()[ciKey()] ?? 0) : null;
     }
     startTime = ticks();
@@ -211,16 +201,23 @@ export default (async ({ screen, input, store, ticks }) => {
     store.set('puzzleRecords', puzzleRecords);
   }
 
+  /** Normal foraging rates a run by points per move; the other modes show total points. */
+  function shownScore(): number {
+    return settings.mode === 'normal' ? (movesUsed ? score / movesUsed : 0) : score;
+  }
+  const scoreText = (n: number) => (settings.mode === 'normal' ? n.toFixed(2) : String(n));
+
   function finishCi(): void {
     ended = true;
     boardActive = false;
     const key = ciKey();
     const best = bests();
-    if (score > (best[key] ?? 0)) {
-      best[key] = score;
-      store.set(settings.mode === 'normal' ? 'normalBest' : 'ciBest', best);
+    const final = shownScore();
+    if (final > (best[key] ?? 0)) {
+      best[key] = final;
+      store.set(settings.mode === 'normal' ? 'normalBestPerMove' : 'ciBest', best);
     }
-    bestScore = Math.max(bestScore ?? 0, score);
+    bestScore = Math.max(bestScore ?? 0, final);
   }
 
   /** A rotation or tool at the cell under `pos`. Ignored while a move is still playing out, as in the game. */
@@ -238,7 +235,15 @@ export default (async ({ screen, input, store, ticks }) => {
     if (counts) {
       movesUsed++;
       const result = game.settle();
-      if (settings.mode !== 'puzzle') score += result.points;
+      if (settings.mode !== 'puzzle') {
+        score += result.points;
+        // Each crate, whatever its size, fills 1/(level + 1) of the next banana (client/o.java:586-591).
+        cratesTowardNext += result.collected[0] + result.collected[1] + result.collected[2];
+        while (bananas < MAX_BANANAS && cratesTowardNext >= bananas) {
+          cratesTowardNext -= bananas;
+          bananas++;
+        }
+      }
       pendingBanner = result.crateSteps >= 3 ? 'Triple!' : result.crateSteps === 2 ? 'Double!' : '';
     }
     playing = game.steps;
@@ -246,72 +251,76 @@ export default (async ({ screen, input, store, ticks }) => {
     stepStart = ticks();
   }
 
-  function click(pos: Point, button: 1 | 3): void {
-    const [dx, dy] = DROPDOWN;
-    if (dropdownOpen) {
-      // An open list takes the click: pick a mode or close it.
-      dropdownOpen = false;
-      const i = Math.floor((pos[1] - dy - DROPDOWN_H) / DROPDOWN_H);
-      if (within(pos, dx, dx + DROPDOWN_W - 1, dy + DROPDOWN_H, dy + DROPDOWN_H * (MODES.length + 1) - 1) && MODES[i]) {
-        settings.mode = MODES[i].mode;
-        saveSettings();
-      }
-      return;
+  function toggleRunning(): void {
+    if (boardActive) boardActive = false;
+    else {
+      boardActive = true;
+      start();
     }
-    if (!boardActive) {
-      const mode = within(pos, dx, dx + DROPDOWN_W - 1, dy, dy + DROPDOWN_H - 1);
-      if (mode) dropdownOpen = true;
-      const toggle = TOGGLES.find((t) => within(pos, t.box[0], t.box[0] + 15, t.box[1], t.box[1] + 15));
-      if (mode) {
-        // Opening the list; the pick comes with the next click.
-      } else if (toggle) settings[toggle.key] = !settings[toggle.key];
-      else if (within(pos, 576, 789, 36, 64)) {
-        editing = 'puzzle';
-        puzzleId = '';
-      } else if (within(pos, 733, 787, 135, 163)) {
-        editing = 'forage';
-        forageText = '';
-      }
-      if (toggle) saveSettings();
-    }
-    if (within(pos, 460, 573, 225, 253)) {
-      if (boardActive) boardActive = false;
-      else if (!editing) {
-        boardActive = true;
-        start();
-      }
-    } else if (within(pos, 460, 573, 260, 288) && settings.mode !== 'puzzle') {
-      newRandomBoard();
-    }
-    if (boardActive) act(pos, button === 1);
   }
 
   function key(name: string): void {
     // X and C turn anticlockwise and clockwise under the cursor, as in the game.
-    if (!editing) {
-      if (boardActive && (name === 'x' || name === 'c')) act(input.mouse, name === 'x');
-      return;
-    }
-    if (name === 'enter') {
-      if (editing === 'puzzle') {
-        if (!(Number(puzzleId) in PUZZLES)) puzzleId = '0';
-        puzzleId = String(Number(puzzleId));
-      } else {
-        settings.forageLevel = forageText === '' ? 6 : Math.min(15, Number(forageText));
-        forageText = String(settings.forageLevel);
-        saveSettings();
-      }
-      editing = null;
-    } else if (name === 'backspace') {
-      if (editing === 'puzzle') puzzleId = puzzleId.slice(0, -1);
-      else forageText = forageText.slice(0, -1);
-    } else if (editing === 'puzzle') {
-      if (/^[0-9]$/.test(name)) puzzleId += name;
-      pickedRandomly = false;
-    } else if (/^[0-9]$/.test(name)) {
-      forageText += name;
-    }
+    if (boardActive && (name === 'x' || name === 'c')) act(input.mouse, name === 'x');
   }
+
+  // ---- Panel ----
+
+  const isPuzzle = () => settings.mode === 'puzzle';
+  const locked = () => boardActive;
+  const setting = <K extends keyof Settings>(key: K) => ({
+    get: () => settings[key],
+    set: (value: Settings[K]) => {
+      settings[key] = value;
+      saveSettings();
+    },
+  });
+  const bind = <K extends 'scramble' | 'bb' | 'fj' | 'cc' | 'eq' | 'machete' | 'shovel' | 'monkey' | 'ants'>(group: ReturnType<typeof panel.group>, label: string, key: K, hidden?: () => boolean) => {
+    const { get, set } = setting(key);
+    group.toggle(label, get, set, { disabled: locked, hidden });
+  };
+
+  const setup = panel.group('Game');
+  setup.select('Mode', MODES, setting('mode').get, setting('mode').set, { disabled: locked });
+  setup.number('Puzzle', () => Number(puzzleId), (n) => {
+    puzzleId = n in PUZZLES ? String(n) : '0';
+    pickedRandomly = false;
+  }, { min: 0, disabled: locked, hidden: () => !isPuzzle(), title: '0 picks a puzzle at random' });
+  setup.number('Forage level', setting('forageLevel').get, setting('forageLevel').set, {
+    min: 0,
+    max: 15,
+    disabled: locked,
+    hidden: isPuzzle,
+    title: 'Sets which crate sizes are likely, and how many bananas you start with',
+  });
+  bind(setup, 'Scramble', 'scramble', () => !isPuzzle());
+
+  const crates = panel.group('Crates');
+  bind(crates, 'Bone box', 'bb');
+  bind(crates, 'Fetish jar', 'fj');
+  bind(crates, 'Cursed chest', 'cc');
+
+  const specials = panel.group('Specials');
+  bind(specials, 'Earthquake', 'eq');
+  bind(specials, 'Machete', 'machete');
+  bind(specials, 'Shovel', 'shovel');
+  bind(specials, 'Monkey', 'monkey');
+  bind(specials, 'Ants', 'ants');
+
+  panel
+    .group()
+    .button('Start', toggleRunning, { variant: 'primary', label: () => (boardActive ? 'Stop' : 'Start') })
+    .button('New board', () => newRandomBoard(), { disabled: isPuzzle, title: 'Deal a fresh board without restarting the clock' });
+
+  const seconds = (ms: number) => (ms < 9999000 ? floatStr(ms / 1000).slice(0, 5) : 'Lots!');
+  panel.group('Score').stats(['', 'Now', 'Best'], () => {
+    const puzzleBest = isPuzzle() && !settings.scramble && record;
+    return [
+      ['Time', seconds(timePassed), puzzleBest ? seconds(record!.time) : ''],
+      ['Moves', movesUsed > 9999 ? 'Lots!' : String(movesUsed), puzzleBest ? String(record!.moves) : ''],
+      [settings.mode === 'normal' ? 'Points / move' : 'Score', scoreText(shownScore()), TIMED.has(settings.mode) && bestScore !== null ? scoreText(bestScore) : ''],
+    ];
+  });
 
   // ---- Drawing ----
 
@@ -406,6 +415,21 @@ export default (async ({ screen, input, store, ticks }) => {
     }
   }
 
+  function drawBananas(): void {
+    const sheet = img('bananas');
+    const progress = bananas < MAX_BANANAS ? cratesTowardNext / bananas : 0;
+    for (let i = 0; i < MAX_BANANAS; i++) {
+      const y = BANANA_BOTTOM - 19 * i;
+      const tile = i < bananas ? 0 : i === bananas && progress > 0 ? 1 : 2;
+      screen.blit(sheet, BANANA_X, y, { area: [tile * 21, 0, 21, 21] });
+      if (tile === 1) {
+        // The next banana fills from the bottom as crates come in.
+        const h = Math.round(21 * progress);
+        screen.blit(sheet, BANANA_X, y + 21 - h, { area: [0, 21 - h, 21, h] });
+      }
+    }
+  }
+
   function drawBoard(): void {
     const step = currentStep();
     const ctx = screen.ctx;
@@ -434,66 +458,6 @@ export default (async ({ screen, input, store, ticks }) => {
     }
   }
 
-  const seconds = (ms: number) => (ms < 9999000 ? floatStr(ms / 1000).slice(0, 5) : 'Lots!');
-  const text = (value: string, x: number, y: number, colour = WHITE) => screen.text(value, x, y, font, colour);
-
-  function drawPanel(): void {
-    text('Mode:', 460, 10);
-    for (const t of TOGGLES) {
-      screen.blit(img(settings[t.key] ? 'checkbox_yes' : 'checkbox_no'), t.box[0], t.box[1]);
-      text(t.label, t.text[0], t.text[1]);
-    }
-    screen.blit(img('box_one'), 460, 225);
-    screen.blit(img('box_one'), 460, 260);
-    screen.blit(img('box_two'), 575, 35);
-    screen.blit(img('box4'), 733, 135);
-    screen.blit(img('table'), 452, 408);
-    text('Puzzle ID:', 575, 15);
-    text(puzzleId, 580, 40, editing === 'puzzle' ? BLUE : WHITE);
-    text('Forage:', 650, 140);
-    text(editing === 'forage' ? forageText : String(settings.forageLevel), 738, 140, editing === 'forage' ? BLUE : WHITE);
-    text(boardActive ? 'Stop' : 'Start', boardActive ? 493 : 490, 229);
-    text('Dismiss', 473, 265, settings.mode === 'puzzle' ? GREY : WHITE);
-    text('Now', 540, 425);
-    text('Best', 605, 425);
-    text('Time', 460, 450);
-    text('Moves', 460, 475);
-    text('Score', 460, 500);
-    text(seconds(timePassed), 537, 450);
-    text(movesUsed > 9999 ? 'Lots!' : String(movesUsed), 537, 475);
-    text(String(score), 537, 500);
-    if (settings.mode === 'puzzle' && !settings.scramble && record) {
-      text(seconds(record.time), 602, 450);
-      text(String(record.moves), 602, 475);
-    }
-    if (TIMED.has(settings.mode) && bestScore !== null) text(String(bestScore), 605, 500);
-    screen.text('Created by: IGN: Jice, Discord: Jc#4182', 588, 585, fontSmall, GREY);
-    drawDropdown();
-  }
-
-  /** The mode dropdown, with its list drawn over the panel while open. */
-  function drawDropdown(): void {
-    const [dx, dy] = DROPDOWN;
-    const ctx = screen.ctx;
-    const label = MODES.find((m) => m.mode === settings.mode)?.label ?? '';
-    screen.blit(img('box_one'), dx, dy);
-    text(label, dx + 8, dy + 4, boardActive ? GREY : WHITE);
-    ctx.fillStyle = boardActive ? GREY : WHITE;
-    ctx.beginPath();
-    ctx.moveTo(dx + DROPDOWN_W - 24, dy + 12);
-    ctx.lineTo(dx + DROPDOWN_W - 12, dy + 12);
-    ctx.lineTo(dx + DROPDOWN_W - 18, dy + 20);
-    ctx.fill();
-    if (!dropdownOpen) return;
-    MODES.forEach((m, i) => {
-      const y = dy + DROPDOWN_H * (i + 1);
-      const hover = within(input.mouse, dx, dx + DROPDOWN_W - 1, y, y + DROPDOWN_H - 1);
-      screen.rect(dx, y, DROPDOWN_W, DROPDOWN_H, hover ? 'rgb(60, 60, 60)' : BLACK);
-      screen.blit(img('box_one'), dx, y);
-      text(m.label, dx + 8, y + 4, m.mode === settings.mode ? BLUE : WHITE);
-    });
-  }
-
   function frame(events: InputEvent[]): void {
     screen.fill(BLACK);
     screen.blit(img('background'), 0, 0);
@@ -501,7 +465,7 @@ export default (async ({ screen, input, store, ticks }) => {
 
     for (const event of events) {
       // The desktop version acts on button release.
-      if (event.type === 'mouseup' && (event.button === 1 || event.button === 3)) click(event.pos, event.button);
+      if (event.type === 'mouseup' && (event.button === 1 || event.button === 3) && boardActive) act(event.pos, event.button === 1);
       else if (event.type === 'keydown') key(event.key);
     }
 
@@ -519,7 +483,7 @@ export default (async ({ screen, input, store, ticks }) => {
       screen.text('Puzzle', 105, 210, fontLarge);
       screen.text('Cleared', 105, 265, fontLarge);
     }
-    drawPanel();
+    if (settings.mode !== 'puzzle' && bananas > 0) drawBananas();
   }
 
   return { frame, dispose: () => sounds.dispose() };

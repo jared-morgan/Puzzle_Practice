@@ -43,20 +43,29 @@ async function showPuzzle(id: string): Promise<void> {
   const canvas = el('canvas', { className: 'game', tabIndex: 0 });
   canvas.style.aspectRatio = `${meta.width ?? 800} / ${meta.height ?? 600}`;
   const status = el('p', { className: 'status' }, 'Loading…');
+  const panel = el('aside', { className: 'panel' });
   app.replaceChildren(
-    el('header', { className: 'bar' }, el('a', { href: '#/' }, '← All puzzles'), el('h1', {}, meta.title)),
+    el('header', { className: 'bar' }, el('a', { href: '#/', className: 'back' }, '← All puzzles'), el('h1', {}, meta.title)),
     el(
       'main',
       { className: 'play' },
-      canvas,
-      status,
-      ...(meta.help ? [el('p', { className: 'help' }, meta.help)] : []),
-      ...(meta.credits ? [el('p', { className: 'credits' }, meta.credits)] : []),
+      el('div', { className: 'stage' }, canvas, status),
+      panel,
     ),
+    ...(meta.help || meta.credits
+      ? [
+          el(
+            'footer',
+            { className: 'about' },
+            ...(meta.help ? [el('p', { className: 'help' }, meta.help)] : []),
+            ...(meta.credits ? [el('p', { className: 'credits' }, meta.credits)] : []),
+          ),
+        ]
+      : []),
   );
   try {
     const factory = await entry.load();
-    const started = await runPuzzle(canvas, id, meta, factory);
+    const started = await runPuzzle(canvas, panel, id, meta, factory);
     if (ticket !== navigation) {
       started.stop();
       return;
