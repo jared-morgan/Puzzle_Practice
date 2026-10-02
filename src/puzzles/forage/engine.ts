@@ -81,7 +81,11 @@ const SPECIALS: { kind: Tool | 'ants'; weight: number }[] = [
   { kind: 'o', weight: 1 },
   { kind: 'ants', weight: 1 },
 ];
-/** Crate points: width² × step bonus × bonus for each extra crate in the same step (a/g.java:24-31). */
+/**
+ * Normal forage crate points: width² × step bonus × bonus for each extra crate in the same step
+ * (a/g.java:24-31). The Gauntlet (cursed isle) scores a flat 1, 2 or 3 per crate instead; that is
+ * worked out on the server, so it isn't in the client.
+ */
 const STEP_BONUS = [1, 1.5, 2];
 const CRATE_BONUS = [1, 2, 4];
 const MAX_CRATES = 3;
@@ -95,6 +99,12 @@ export interface Rules {
   specials: { n: boolean; m: boolean; p: boolean; o: boolean; ants: boolean };
   /** Crate spawning, or null for none (puzzles). Weights for widths 1, 2 and 3. */
   crates: readonly [number, number, number] | null;
+  /**
+   * 'gauntlet' (cursed isle): 1, 2 or 3 points per crate by width, and the desktop simulator's
+   * chest spawning (the server's job in the real game). 'forage': the client's normal crate
+   * points and spawn chance.
+   */
+  mode: 'gauntlet' | 'forage';
 }
 
 export interface MoveResult {
@@ -115,6 +125,8 @@ export class Forage {
   private nextId = 1;
   /** Most separate runs cleared in one step of this move (capped at 8); sets the special chance. */
   private combo = 0;
+  /** Gauntlet mode: the next chest's width and column, and moves since the last one. */
+  private spawner: { width: 1 | 2 | 3; column: number; movesSinceLast: number } | null = null;
 
   constructor(
     private readonly rng: PyRandom,
@@ -404,7 +416,10 @@ export class Forage {
       .sort(([, a], [, b]) => a[1] - b[1])
       .forEach(([cell, [r, c]], k) => {
         if (cell.kind !== 'crate') return;
-        result.points += Math.trunc(cell.width ** 2 * STEP_BONUS[Math.min(result.crateSteps, 2)] * CRATE_BONUS[Math.min(k, 2)]);
+        result.points +=
+          this.rules.mode === 'gauntlet'
+            ? cell.width
+            : Math.trunc(cell.width ** 2 * STEP_BONUS[Math.min(result.crateSteps, 2)] * CRATE_BONUS[Math.min(k, 2)]);
         result.collected[cell.width - 1]++;
         for (let y = 0; y < cell.height; y++) for (let x = 0; x < cell.width; x++) this.grid[r + y][c + x] = null;
         sprites.push({ cell, from: [r, c], to: [r, c], delay: 0, duration: TIMING.crateCollect, fade: 'out' });
@@ -457,7 +472,7 @@ export class Forage {
    */
   private trySpawnCrate(): boolean {
     const weights = this.rules.crates;
-    if (!weights) return false;
+    if (!weights || this.rules.mode === 'gauntlet') return false;
     const crates = this.cells().filter(([cell]) => cell.kind === 'crate');
     const area = crates.reduce((sum, [cell]) => sum + (cell.kind === 'crate' ? cell.width * cell.height : 0), 0);
     if (crates.length >= MAX_CRATES || area >= MAX_CRATE_AREA) return false;
@@ -483,6 +498,60 @@ export class Forage {
     for (let r = 0; r < height; r++) for (let x = 0; x < width; x++) this.grid[r][c + x] = crate;
     this.record([{ cell: crate, from: [0, c], to: [0, c], delay: 0, duration: TIMING.crateSpawn, fade: 'in' }], before);
     return true;
+  }
+
+  /**
+   * Gauntlet chest spawning, from the desktop simulator (board_calc.try_spawn_chest and the CI
+   * loop in app.pyw). The next chest and its column are picked ahead of time. At most one chest
+   * every two moves and 3 on the board; a cursed chest waits until no jar or chest is left, and a
+   * jar until there's no cursed chest and fewer than 2 jars. The chest overwrites colours at the
+   * top; if any are missing it waits, and after three such moves it tries every column.
+   */
+  private gauntletSpawn(): boolean {
+    const weights = this.rules.crates;
+    if (!weights) return false;
+    const widths = ([1, 2, 3] as const).filter((w) => weights[w - 1] > 0);
+    if (!widths.length) return false;
+    const pick = () => {
+      const width = this.rng.choiceWeighted(
+        widths,
+        widths.map((w) => weights[w - 1]),
+      );
+      return { width, column: this.rng.choice(Array.from({ length: COLS + 1 - width }, (_, i) => i)) };
+    };
+    const s = (this.spawner ??= { ...pick(), movesSinceLast: -1 });
+    const onBoard = [0, 0, 0];
+    for (const [cell] of this.cells()) if (cell.kind === 'crate') onBoard[cell.width - 1]++;
+    const total = onBoard[0] + onBoard[1] + onBoard[2];
+    s.movesSinceLast++;
+    let placed = false;
+    const fits =
+      s.width === 1 || (s.width === 2 && onBoard[2] === 0 && onBoard[1] < 2) || (s.width === 3 && onBoard[1] === 0 && onBoard[2] < 1);
+    if (s.movesSinceLast >= 2 && total < 3 && fits) {
+      const height = s.width === 1 ? 1 : 2;
+      const blocked = (c: number) => {
+        for (let r = 0; r < height; r++) for (let x = 0; x < s.width; x++) if (this.grid[r][c + x]?.kind !== 'colour') return true;
+        return false;
+      };
+      let isBlocked = blocked(s.column);
+      if (isBlocked && s.movesSinceLast >= 3) {
+        // The desktop version tries every column in a random order, keeping the last one tried.
+        for (const c of this.rng.shuffle(Array.from({ length: COLS + 1 - s.width }, (_, i) => i))) {
+          s.column = c;
+          isBlocked = blocked(c);
+        }
+      }
+      if (!isBlocked) {
+        const before = this.snapshot();
+        const crate: Cell = { id: this.nextId++, kind: 'crate', width: s.width, height };
+        for (let r = 0; r < height; r++) for (let x = 0; x < s.width; x++) this.grid[r][s.column + x] = crate;
+        this.record([{ cell: crate, from: [0, s.column], to: [0, s.column], delay: 0, duration: TIMING.crateSpawn, fade: 'in' }], before);
+        Object.assign(s, pick(), { movesSinceLast: 0 });
+        placed = true;
+      }
+    }
+    if (total + (placed ? 1 : 0) === 3) s.movesSinceLast = -1;
+    return placed;
   }
 
   /**
@@ -519,11 +588,17 @@ export class Forage {
   settle(): MoveResult {
     const result: MoveResult = { points: 0, collected: [0, 0, 0], crateSteps: 0, combo: 0 };
     let antsMoved = false;
+    let gauntletDone = false;
     for (;;) {
       if (this.slide('down') || this.collectCrates(result) || this.clearMatches() || this.trySpawnCrate()) continue;
       if (!antsMoved) {
         antsMoved = true;
         if (this.stepAnts()) continue;
+      }
+      // Gauntlet chests come in once the move has played out, as in the desktop version.
+      if (!gauntletDone && this.rules.mode === 'gauntlet') {
+        gauntletDone = true;
+        if (this.gauntletSpawn()) continue;
       }
       break;
     }

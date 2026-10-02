@@ -104,8 +104,7 @@ export default (async ({ screen, input, store, ticks }) => {
   const settings: Settings = { ...DEFAULT_SETTINGS, ...store.get<Partial<Settings>>('settings', {}) };
   const saveSettings = () => store.set('settings', settings);
   const puzzleRecords = store.get<Record<string, PuzzleRecord>>('puzzleRecords', {});
-  // Scores follow the real game's crate points now, so they're kept apart from older bests.
-  const ciBest = store.get<Record<string, number>>('ciBestCratePoints', {});
+  const ciBest = store.get<Record<string, number>>('ciBest', {});
 
   let game = new Forage(rng, rules());
   let boardActive = false;
@@ -131,14 +130,18 @@ export default (async ({ screen, input, store, ticks }) => {
   let editing: 'puzzle' | 'forage' | null = null;
 
   const ciKey = () =>
-    (['bb', 'fj', 'cc', 'eq', 'machete', 'shovel', 'monkey', 'ants'] as const).map((k) => (settings[k] ? 'b' : 'a')).join('') +
-    settings.forageLevel;
+    (['bb', 'fj', 'cc', 'eq', 'machete', 'shovel', 'monkey'] as const).map((k) => (settings[k] ? 'b' : 'a')).join('') +
+    settings.forageLevel +
+    // Older bests were all without ants, so those keep their keys.
+    (settings.ants ? 'ants' : '');
 
   function rules(): Rules {
     const weights = CHEST_WEIGHTINGS[settings.forageLevel];
     return {
       specials: { n: settings.shovel, m: settings.machete, p: settings.monkey, o: settings.eq, ants: settings.ants },
       crates: settings.mode === 'puzzle' ? null : [settings.bb ? weights[0] : 0, settings.fj ? weights[1] : 0, settings.cc ? weights[2] : 0],
+      // CI and Infinite are cursed isle (Gauntlet) foraging: bone boxes, fetish jars and cursed chests.
+      mode: 'gauntlet',
     };
   }
 
@@ -193,7 +196,7 @@ export default (async ({ screen, input, store, ticks }) => {
     const key = ciKey();
     if (score > (ciBest[key] ?? 0)) {
       ciBest[key] = score;
-      store.set('ciBestCratePoints', ciBest);
+      store.set('ciBest', ciBest);
     }
     bestScore = Math.max(bestScore ?? 0, score);
   }

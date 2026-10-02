@@ -4,8 +4,8 @@ import { PyRandom } from '../../core/pyrandom';
 import { type Cell, Forage, type Rules } from './engine';
 import { COLS, parseBoard, ROWS } from './logic';
 
-const ALL: Rules = { specials: { n: true, m: true, p: true, o: true, ants: true }, crates: [0.5, 0.35, 0.15] };
-const NO_SPECIALS: Rules = { specials: { n: false, m: false, p: false, o: false, ants: false }, crates: null };
+const ALL: Rules = { specials: { n: true, m: true, p: true, o: true, ants: true }, crates: [0.5, 0.35, 0.15], mode: 'forage' };
+const NO_SPECIALS: Rules = { specials: { n: false, m: false, p: false, o: false, ants: false }, crates: null, mode: 'forage' };
 
 /** A board with no runs: rows cycle the colours so nothing lines up three in a row. */
 const QUIET = ['uvwxyuv', 'wxyuvwx', 'yuvwxyu', 'vwxyuvw', 'xyuvwxy', 'uvwxyuv', 'wxyuvwx', 'yuvwxyu', 'vwxyuvw', 'xyuvwxy'];
@@ -64,6 +64,15 @@ describe('Forage rules from the client', () => {
     expect(result.points).toBe(4 + 2);
   });
 
+  it('scores Gauntlet crates a flat 1, 2 or 3 by width', () => {
+    const rows = [...QUIET];
+    rows[8] = 'vwghyuv';
+    rows[9] = 'zyijkwz';
+    const result = game(rows, { ...NO_SPECIALS, mode: 'gauntlet' }).settle();
+    expect(result.collected).toEqual([1, 1, 0]);
+    expect(result.points).toBe(2 + 1);
+  });
+
   it('only makes specials in refills after a match', () => {
     const g = new Forage(new PyRandom(5), { ...ALL, crates: null });
     g.fillRandom();
@@ -97,6 +106,33 @@ describe('Forage rules from the client', () => {
       expect(crates.length).toBeLessThanOrEqual(3);
       expect(crates.reduce((sum, [cell]) => sum + cell.width * cell.height, 0)).toBeLessThanOrEqual(9);
     }
+  });
+
+  it('spawns Gauntlet chests like the desktop simulator: never two moves running, never a chest beside a jar', () => {
+    const g = new Forage(new PyRandom(3), { ...ALL, crates: [0.3, 0.4, 0.3], mode: 'gauntlet' });
+    g.fillRandom();
+    const count = () => g.cells().filter(([cell]) => cell.kind === 'crate').length;
+    let spawned = 0;
+    let lastSpawn = -10;
+    let moves = 0;
+    for (let i = 0; i < 400; i++) {
+      const before = g.cells().filter(([cell]) => cell.kind === 'crate').map(([cell]) => cell.id);
+      if (g.turn((i * 7) % (ROWS - 1), (i * 5) % (COLS - 1), i % 2 === 0) !== 'moved') continue;
+      moves++;
+      g.settle();
+      g.steps = [];
+      const crates = g.cells().filter(([cell]) => cell.kind === 'crate');
+      if (crates.some(([cell]) => !before.includes(cell.id))) {
+        expect(moves - lastSpawn).toBeGreaterThanOrEqual(2);
+        lastSpawn = moves;
+        spawned++;
+      }
+      expect(count()).toBeLessThanOrEqual(3);
+      const widths = crates.map(([cell]) => (cell.kind === 'crate' ? cell.width : 0));
+      expect(widths.filter((w) => w === 3).length).toBeLessThanOrEqual(1);
+      expect(widths.filter((w) => w === 2).length).toBeLessThanOrEqual(2);
+    }
+    expect(spawned).toBeGreaterThan(1);
   });
 
   it('moves ants once per move, eating the piece ahead', () => {
