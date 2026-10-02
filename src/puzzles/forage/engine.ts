@@ -34,6 +34,8 @@ export interface Sprite {
   delay: number;
   duration: number;
   motion?: 'wobble' | 'arc' | 'bob';
+  /** Wobble: where in its sine the bob starts, so pieces bob out of step. */
+  phase?: number;
   /** clear: dims for the duration, then pops. out/in: fades out or in. */
   fade?: 'clear' | 'out' | 'in';
 }
@@ -43,12 +45,15 @@ export interface Step {
   grid: Grid;
   sprites: Sprite[];
   duration: number;
+  /** A sound to play as the step starts. */
+  sound?: 'ants';
 }
 
 /** Animation timings in milliseconds. */
 export const TIMING = {
-  /** Rotation, with a 9px vertical sine wobble at 0.03 rad/ms (client/o.java:302-313). */
+  /** Rotation: each piece moves straight to its new cell (client/o.java:302-313). */
   turn: 250,
+  /** Earthquake slides bob 9px up and down at 0.03 rad/ms, from a random phase per piece. */
   wobblePx: 9,
   wobbleRate: 0.03,
   /** Falls at a constant 0.525 px/ms: 45px rows (client/w.java:10-11, client/o.java:427-429). */
@@ -66,8 +71,9 @@ export const TIMING = {
   monkeyDance: 1700,
   monkeyLeavePerPx: 1,
   monkeyThrowPerPx: 5,
+  /** A collected crate fades for 20ms and is gone (ForageBoardView.java:346-359). */
+  crateCollect: 20,
   /** Not in the client notes; short enough not to hold play up. */
-  crateCollect: 300,
   crateSpawn: 150,
 };
 
@@ -116,6 +122,12 @@ export interface MoveResult {
   /** Most runs cleared in one step: what the refills' special chance was based on. */
   combo: number;
 }
+
+/** The wobble's random phase is only for looks, so it doesn't draw on the game's seeded random. */
+const wobble = (): Pick<Sprite, 'motion' | 'phase'> => ({
+  motion: 'wobble',
+  phase: Math.random() * TIMING.turn * TIMING.wobbleRate,
+});
 
 const inBoard = (r: number, c: number) => r >= 0 && r < ROWS && c >= 0 && c < COLS;
 
@@ -271,7 +283,7 @@ export class Forage {
       if (moved.kind === 'ant') moved = this.ant(moved.count, (((moved.dir + (ccw ? 3 : 1)) % 4) as Dir), moved.id);
       const to = corners[(i + shift) % 4];
       this.grid[to[0]][to[1]] = moved;
-      sprites.push({ cell: moved, from: corners[i], to, delay: 0, duration: TIMING.turn, motion: 'wobble' });
+      sprites.push({ cell: moved, from: corners[i], to, delay: 0, duration: TIMING.turn });
     });
     this.record(sprites);
     const first = cells[0]!;
@@ -386,7 +398,7 @@ export class Forage {
     for (const [cell, to] of at) {
       const from = start.get(cell)!;
       const distance = Math.abs(to[0] - from[0]) + Math.abs(to[1] - from[1]);
-      if (distance) sprites.push({ cell, from, to, delay: 0, duration: distance * perCell });
+      if (distance) sprites.push({ cell, from, to, delay: 0, duration: distance * perCell, ...(direction !== 'down' && wobble()) });
     }
     // Refill the empty cells at the far end of each line, as if they'd been waiting just off the board.
     const lines = direction === 'down' ? COLS : ROWS;
@@ -581,6 +593,7 @@ export class Forage {
       }
     }
     this.record(sprites, still);
+    this.steps[this.steps.length - 1].sound = 'ants';
     return true;
   }
 
