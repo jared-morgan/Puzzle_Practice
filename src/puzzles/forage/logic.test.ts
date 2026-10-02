@@ -14,6 +14,7 @@ import {
   type Settings,
 } from './logic';
 import { PUZZLES } from './puzzles';
+import { StepRecorder } from './steps';
 
 // The fixture comes from running the original Python modules with the same seeds
 // (scripts/parity/forage_fixture.py), so these check the port draw for draw.
@@ -51,6 +52,31 @@ describe('Forage matches the Python version', () => {
     expect({ reserve: rows(reserve), cleared, moves, next: spawner.next, column: spawner.column, msl: spawner.movesSinceLast }).toEqual(
       fixture.ci_end,
     );
+  });
+
+  it('animates moves without changing them', () => {
+    const rng = new PyRandom(2024);
+    const [board, reserve] = generateRandomBoard(base, rng);
+    const spawner = createSpawner(base, rng)!;
+    const states: string[] = [];
+    let animated = 0;
+    for (const [r, c, b] of fixture.ci_clicks as [number, number, 1 | 3][]) {
+      const rec = new StepRecorder();
+      boardTurn(board, r, c, b, rng, rec);
+      boardCalc(board, reserve, base, rng, true, rec);
+      if (rec.steps.length) {
+        // The last step, played to its end, shows the board as it now is.
+        animated++;
+        const last = rec.steps.at(-1)!;
+        const shown = last.board.map((row) => [...row]);
+        for (const s of last.sprites) if (s.fade !== 'out') shown[s.to[0]][s.to[1]] = s.piece;
+        expect(rows(shown)).toEqual(rows(board));
+      }
+      afterMove(board, spawner, rng);
+      states.push(rows(board).join(''));
+    }
+    expect(animated).toBeGreaterThan(100);
+    expect([...states.filter((_, i) => i % 10 === 0), states.at(-1)]).toEqual(fixture.ci_states);
   });
 
   it('fills and scrambles puzzles', () => {
