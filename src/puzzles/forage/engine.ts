@@ -49,12 +49,9 @@ export interface Step {
 
 /** Animation timings in milliseconds. */
 export const TIMING = {
-  /**
-   * Rotation, with a 9px vertical sine wobble at 0.03 rad/ms from a random phase per piece
-   * (client/o.java:302-313, ForageBoardView.java:213-248). Earthquake slides and pieces falling
-   * under gravity wobble the same way; new pieces dropping in don't.
-   */
+  /** Rotation: each piece moves straight to its new cell (client/o.java:302-313). */
   turn: 250,
+  /** Earthquake slides bob 9px up and down at 0.03 rad/ms, from a random phase per piece. */
   wobblePx: 9,
   wobbleRate: 0.03,
   /** Falls at a constant 0.525 px/ms: 45px rows (client/w.java:10-11, client/o.java:427-429). */
@@ -284,7 +281,7 @@ export class Forage {
       if (moved.kind === 'ant') moved = this.ant(moved.count, (((moved.dir + (ccw ? 3 : 1)) % 4) as Dir), moved.id);
       const to = corners[(i + shift) % 4];
       this.grid[to[0]][to[1]] = moved;
-      sprites.push({ cell: moved, from: corners[i], to, delay: 0, duration: TIMING.turn, ...wobble() });
+      sprites.push({ cell: moved, from: corners[i], to, delay: 0, duration: TIMING.turn });
     });
     this.record(sprites);
     const first = cells[0]!;
@@ -399,7 +396,7 @@ export class Forage {
     for (const [cell, to] of at) {
       const from = start.get(cell)!;
       const distance = Math.abs(to[0] - from[0]) + Math.abs(to[1] - from[1]);
-      if (distance) sprites.push({ cell, from, to, delay: 0, duration: distance * perCell, ...wobble() });
+      if (distance) sprites.push({ cell, from, to, delay: 0, duration: distance * perCell, ...(direction !== 'down' && wobble()) });
     }
     // Refill the empty cells at the far end of each line, as if they'd been waiting just off the board.
     const lines = direction === 'down' ? COLS : ROWS;
