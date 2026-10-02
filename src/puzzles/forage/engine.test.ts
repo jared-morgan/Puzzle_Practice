@@ -64,6 +64,17 @@ describe('Forage rules from the client', () => {
     expect(result.points).toBe(4 + 2);
   });
 
+  it('keeps scoring crates in later steps of the same move, with the step bonus', () => {
+    const rows = [...QUIET];
+    rows[8] = 'vwghkuv';
+    rows[9] = 'zyijkwz';
+    const result = game(rows).settle();
+    expect(result.collected).toEqual([2, 1, 0]);
+    expect(result.crateSteps).toBe(2);
+    // First step: jar 4 x 1, box 1 x 2. Second step: the box above lands, int(1 x 1.5).
+    expect(result.points).toBe(4 + 2 + 1);
+  });
+
   it('scores Gauntlet crates a flat 1, 2 or 3 by width', () => {
     const rows = [...QUIET];
     rows[8] = 'vwghyuv';
