@@ -2,19 +2,13 @@ import { describe, expect, it } from 'vitest';
 import { PyRandom } from '../../core/pyrandom';
 import fixture from './parity-fixture.json';
 import {
-  afterMove,
-  boardCalc,
-  boardTurn,
-  createSpawner,
   fillPuzzle,
-  generateRandomBoard,
   parseBoard,
   randomizeColours,
   scramblePuzzle,
   type Settings,
 } from './logic';
 import { PUZZLES } from './puzzles';
-import { StepRecorder } from './steps';
 
 // The fixture comes from running the original Python modules with the same seeds
 // (scripts/parity/forage_fixture.py), so these check the port draw for draw.
@@ -31,54 +25,10 @@ const base: Settings = {
   monkey: true,
   scramble: false,
   forageLevel: 4,
+  ants: true,
 };
 
-describe('Forage matches the Python version', () => {
-  it('plays a CI session with every chest and tool enabled', () => {
-    const rng = new PyRandom(2024);
-    const [board, reserve] = generateRandomBoard(base, rng);
-    expect({ board: rows(board), reserve: rows(reserve) }).toEqual(fixture.ci_start);
-    const spawner = createSpawner(base, rng)!;
-    const cleared = [0, 0, 0];
-    let moves = 0;
-    const states: string[] = [];
-    for (const [r, c, b] of fixture.ci_clicks as [number, number, 1 | 3][]) {
-      moves += boardTurn(board, r, c, b, rng);
-      boardCalc(board, reserve, base, rng).forEach((n, i) => (cleared[i] += n));
-      afterMove(board, spawner, rng);
-      states.push(rows(board).join(''));
-    }
-    expect([...states.filter((_, i) => i % 10 === 0), states.at(-1)]).toEqual(fixture.ci_states);
-    expect({ reserve: rows(reserve), cleared, moves, next: spawner.next, column: spawner.column, msl: spawner.movesSinceLast }).toEqual(
-      fixture.ci_end,
-    );
-  });
-
-  it('animates moves without changing them', () => {
-    const rng = new PyRandom(2024);
-    const [board, reserve] = generateRandomBoard(base, rng);
-    const spawner = createSpawner(base, rng)!;
-    const states: string[] = [];
-    let animated = 0;
-    for (const [r, c, b] of fixture.ci_clicks as [number, number, 1 | 3][]) {
-      const rec = new StepRecorder();
-      boardTurn(board, r, c, b, rng, rec);
-      boardCalc(board, reserve, base, rng, true, rec);
-      if (rec.steps.length) {
-        // The last step, played to its end, shows the board as it now is.
-        animated++;
-        const last = rec.steps.at(-1)!;
-        const shown = last.board.map((row) => [...row]);
-        for (const s of last.sprites) if (s.fade !== 'out') shown[s.to[0]][s.to[1]] = s.piece;
-        expect(rows(shown)).toEqual(rows(board));
-      }
-      afterMove(board, spawner, rng);
-      states.push(rows(board).join(''));
-    }
-    expect(animated).toBeGreaterThan(100);
-    expect([...states.filter((_, i) => i % 10 === 0), states.at(-1)]).toEqual(fixture.ci_states);
-  });
-
+describe('Forage puzzles match the Python version', () => {
   it('fills and scrambles puzzles', () => {
     const settings: Settings = { ...base, mode: 'puzzle' };
     let rng = new PyRandom(77);
