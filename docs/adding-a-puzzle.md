@@ -1,0 +1,71 @@
+# Adding a puzzle
+
+Each puzzle is one folder in `src/puzzles/`. The landing page, the `#/<folder>` URL and the
+page around the game all come from the folder, so nothing outside it needs editing.
+
+## Start from the template
+
+```sh
+npm run new-puzzle -- lights-out "Lights Out"
+npm run dev
+```
+
+This copies `src/puzzles/_template` (a small working Lights Out game) to
+`src/puzzles/lights-out`. Open http://localhost:5173/#/lights-out and edit from there.
+
+## The two files
+
+`meta.ts` describes the puzzle for the landing page:
+
+| Field | |
+| --- | --- |
+| `title`, `description` | Card text. |
+| `help` | Controls, shown under the game. |
+| `credits` | Original authors, shown under the game. |
+| `order` | Position on the landing page (lower first). |
+| `width`, `height` | Canvas size in game pixels. Defaults to 800×600. |
+| `thumbnail` | Card image: `import thumbnail from './thumbnail.jpg?url'`. |
+
+`index.ts` default-exports a function that receives a `PuzzleContext` and returns `{ frame, dispose? }`.
+`frame(events)` runs up to 60 times a second, like a pygame main loop body with `clock.tick(60)`:
+handle the events, then redraw everything. Loading (images, sounds, fonts) goes before the
+`return`; the page shows "Loading…" until the promise resolves.
+
+## What the core gives you
+
+All in `src/core/`:
+
+- **`screen`** (`screen.ts`): `fill`, `rect`, `blit(image, x, y, { area, alpha, flipX, rotate })`
+  and `text(value, x, y, font, colour, alpha)`. Coordinates are game pixels; the canvas scales to the window.
+- **`input`** (`input.ts`): events use pygame's names and button numbers (1 left, 2 middle, 3 right,
+  4/5 wheel). Keys are lower-case `KeyboardEvent.key` values, with `'space'` for the space bar.
+  `input.mouse` is the cursor position. `within(pos, x1, x2, y1, y2)` tests a box.
+- **`store`** (`storage.ts`): `get(name, fallback)` and `set(name, value)` save to this browser,
+  separately for each puzzle.
+- **`ticks()`**: milliseconds since the puzzle opened, like `pygame.time.get_ticks()`.
+- **`Images.load(glob)`** (`assets.ts`): loads every image from an `import.meta.glob` by file name.
+- **`SoundBank`** (`audio.ts`): plays sounds by file name, with a volume.
+- **`pygameFont(size)`** / **`loadFont`** (`fonts.ts`): pygame's default font at pygame's sizes, or any font file.
+- **`PyRandom`** (`pyrandom.ts`): Python's `random` module, draw for draw. Use it when porting a
+  Python game so seeds give the same results in both versions.
+- **`copyText` / `pasteText`** (`clipboard.ts`) and the Python helpers in `py.ts` (`floordiv`, `pyRound`, ...).
+
+## Porting a pygame game
+
+The three existing puzzles were ported from pygame, and the same approach works for others:
+
+1. Copy `media/` into the folder and load it with `import.meta.glob('./media/*.png', { eager: true, query: '?url', import: 'default' })`.
+   Convert `.ogg` sounds to `.mp3` (Safari can't play Ogg).
+2. Keep the game rules in a file with no drawing (`logic.ts`) so they can be tested.
+3. Use `PyRandom` and reseed wherever the original called `random.seed`, then compare against
+   the original: `scripts/parity/` has scripts that run the Python code and save its results
+   as a JSON fixture that a `*.test.ts` file checks.
+
+## Before opening a pull request
+
+```sh
+npm test
+npm run build
+```
+
+Pushing to `main` builds and deploys the site with GitHub Actions (`.github/workflows/pages.yml`).
