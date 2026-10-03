@@ -139,8 +139,8 @@ const BURN_KEY = 'x';
  */
 type Mode = 'Client' | 'Standard' | 'Seeded' | 'Create' | 'Practice';
 const MODES: { value: Mode; label: string }[] = [
-  { value: 'Client', label: 'Client (the real odds)' },
-  { value: 'Standard', label: 'Standard (custom odds)' },
+  { value: 'Client', label: 'Client (game seeds)' },
+  { value: 'Standard', label: 'Standard (adjustable odds)' },
   { value: 'Seeded', label: 'Seeded' },
   { value: 'Create', label: 'Create' },
   { value: 'Practice', label: 'Practice drills' },
