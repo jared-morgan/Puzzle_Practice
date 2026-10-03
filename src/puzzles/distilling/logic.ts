@@ -133,12 +133,21 @@ export class BrewBoard {
   piecesGenerated = 0;
   consecCrystal = 0;
   readonly rando: BoardRandom;
-  /** Practice modes can replace how new pieces are picked. */
+  /** Practice modes can replace how new pieces are picked, one at a time... */
   pickPiece: (() => number) | null = null;
+  /** ...or a column at a time (top to bottom, the length asked for). Burnt whites owed still replace whites. */
+  makeColumn: ((tall: boolean) => number[]) | null = null;
 
   constructor(seed: number | bigint) {
     this.rando = new BoardRandom(seed);
     this.populate();
+  }
+
+  /** A board laid out by hand (practice boards, pasted seeds); new columns still come from the seed. */
+  static withColumns(columns: number[][], seed: number | bigint): BrewBoard {
+    const board = new BrewBoard(seed);
+    board.columns = columns.map((c) => [...c]);
+    return board;
   }
 
   getPiece(x: number, y: number): number {
@@ -273,6 +282,13 @@ export class BrewBoard {
 
   protected populateColumn(x: number, tall: boolean, allHeavy: boolean): void {
     const n = HEIGHT - (tall ? 0 : 1);
+    if (this.makeColumn && !allHeavy) {
+      this.columns[x] = this.makeColumn(tall)
+        .slice(0, n)
+        .map((piece) => this.owe(piece));
+      this.piecesGenerated += n;
+      return;
+    }
     const column: number[] = [];
     for (let y = 0; y < n; y++) column.push(allHeavy ? HEAVY : this.nextPiece());
     this.columns[x] = column;
@@ -292,7 +308,7 @@ export class BrewBoard {
     return this.owe(r % 3);
   }
 
-  private owe(piece: number): number {
+  owe(piece: number): number {
     if (piece === LIGHT && this.discardedLights >= 2) {
       this.discardedLights -= 2;
       return BURNT;
@@ -308,8 +324,22 @@ export type FurnaceEvent = { type: 'warning' } | { type: 'burn'; result: ColumnR
  * The furnace and the session (BrewController): the timer that burns a column every 50 ticks,
  * waiting for swaps in flight, burning early on request, and the totals in the jug.
  */
+export interface GameOptions {
+  /** Milliseconds per furnace tick; 50 ticks burn a column. The client's is 306 (15.3 s a column). */
+  tickMs?: number;
+  /** No furnace clock: columns burn only when asked (X or right-click). */
+  timerless?: boolean;
+  /** Never end the session (the simulator's Create mode). */
+  endless?: boolean;
+}
+
 export class BrewGame {
   board: BrewBoard;
+  readonly tickMs: number;
+  readonly timerless: boolean;
+  readonly endless: boolean;
+  /** When the furnace clock was paused, or null. */
+  pausedAt: number | null = null;
   /** Furnace ticks since the last burn (BrewController.u); the furnace art shows 49 - furnace. */
   furnace = 0;
   /** Highest the furnace got (BrewController.w; the client reports anything over 60 as a bug). */
@@ -330,19 +360,34 @@ export class BrewGame {
   /** The furnace's own clock, so a burn on request restarts the 306 ms rhythm. */
   private nextTick = 0;
 
-  constructor(seed: number | bigint, now = 0) {
-    this.board = new BrewBoard(seed);
-    this.nextTick = now + TICK_MS;
+  constructor(seed: number | bigint | BrewBoard, now = 0, options: GameOptions = {}) {
+    this.board = seed instanceof BrewBoard ? seed : new BrewBoard(seed);
+    this.tickMs = options.tickMs ?? TICK_MS;
+    this.timerless = !!options.timerless;
+    this.endless = !!options.endless;
+    this.nextTick = now + this.tickMs;
   }
 
   /** Runs the furnace up to time `now`; returns what happened. */
   update(now: number): FurnaceEvent[] {
     const events: FurnaceEvent[] = [];
+    if (this.timerless || this.pausedAt !== null) return events;
     while (!this.finished && now >= this.nextTick) {
-      this.nextTick += TICK_MS;
+      this.nextTick += this.tickMs;
       this.tick(events);
     }
     return events;
+  }
+
+  /** Stops the furnace clock (a practice extra: the real puzzle can't be paused). */
+  pause(now: number): void {
+    if (this.pausedAt === null) this.pausedAt = now;
+  }
+
+  resume(now: number): void {
+    if (this.pausedAt === null) return;
+    this.nextTick += now - this.pausedAt;
+    this.pausedAt = null;
   }
 
   /** One furnace tick (BrewController.q). */
@@ -367,7 +412,7 @@ export class BrewGame {
   burnNow(now: number): FurnaceEvent[] {
     const events: FurnaceEvent[] = [];
     if (this.finished) return events;
-    this.nextTick = now + TICK_MS;
+    this.nextTick = now + this.tickMs;
     this.furnace = Number.MAX_SAFE_INTEGER;
     this.tick(events);
     return events;
@@ -389,7 +434,7 @@ export class BrewGame {
     this.points += result.score + result.bonus;
     // The streak number the client checks is 1 + bonus / 4, or 0 with no bonus.
     const level = result.bonus === 0 ? 0 : 1 + result.bonus / 4;
-    const finished = this.distilled >= JUG_PIECES && level < ENDLESS_STREAK;
+    const finished = !this.endless && this.distilled >= JUG_PIECES && level < ENDLESS_STREAK;
     if (finished) this.finished = true;
     events.push({ type: 'burn', result, finished });
   }

@@ -212,3 +212,31 @@ describe('BrewGame', () => {
     expect(game.distilled).toBe(102);
   });
 });
+
+describe('practice extras', () => {
+  it('pauses the furnace clock', () => {
+    const game = new BrewGame(3, 0);
+    game.update(TICK_MS * 10);
+    expect(game.furnace).toBe(10);
+    game.pause(TICK_MS * 10);
+    game.update(TICK_MS * 100);
+    expect(game.furnace).toBe(10);
+    game.resume(TICK_MS * 100);
+    game.update(TICK_MS * 105);
+    expect(game.furnace).toBe(15);
+  });
+
+  it('runs a custom timer, no timer, or forever', () => {
+    const quick = new BrewGame(3, 0, { tickMs: 100 });
+    expect(quick.update(100 * 50).map((e) => e.type)).toContain('burn');
+    const none = new BrewGame(3, 0, { timerless: true });
+    expect(none.update(1e9)).toEqual([]);
+    expect(none.burnNow(5).map((e) => e.type)).toEqual(['burn']);
+    const endless = new BrewGame(3, 0, { endless: true });
+    endless.board.pickPiece = () => MEDIUM;
+    endless.board.columns = endless.board.columns.map((c) => c.map(() => MEDIUM));
+    for (let i = 0; i < 20; i++) endless.burnNow(i);
+    expect(endless.finished).toBe(false);
+    expect(endless.distilled).toBeGreaterThan(150);
+  });
+});
