@@ -184,6 +184,8 @@ interface Path {
   /** Called as each point after the first is reached, with its index. */
   onNode?: (i: number) => void;
   onEnd?: () => void;
+  /** Called if another path replaces this one before it ends (nenya's pathCancelled). */
+  onCancel?: () => void;
   reached: number;
 }
 
@@ -322,6 +324,13 @@ export default (async ({ screen, input, panel, store, ticks }) => {
       times.push(times[i - 1] + d / speed);
     }
     return { points, times, onNode, onEnd, reached: 0 };
+  }
+
+  /** Starts a piece on a new path, cancelling any it was still on. */
+  function setPath(p: Piece, path: Path): void {
+    const old = p.path;
+    p.path = path;
+    old?.onCancel?.();
   }
 
   function stepPiece(p: Piece, now: number): void {
@@ -574,11 +583,20 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     const pb = spot(b.col, b.row);
     sounds.play(pa[1] > pb[1] ? 'swap_down' : 'swap_up');
     const done = dragMode ? null : waitFor();
-    a.path = linePath([a.x, a.y], pb, SWAP_MS, () => {
+    // A piece dragged on before its last swap landed changes course: the old move is cancelled,
+    // which counts it off without settling the board (client/f's pathCancelled).
+    const swapPath = (p: Piece, to: Point, onEnd: () => void): Path => ({
+      ...linePath([p.x, p.y], to, SWAP_MS, onEnd),
+      onCancel: () => {
+        if (p === a) done?.();
+        swapCount--;
+      },
+    });
+    setPath(a, swapPath(a, pb, () => {
       done?.();
       swapEnded(a);
-    });
-    b.path = linePath([b.x, b.y], pa, SWAP_MS, () => swapEnded(b));
+    }));
+    setPath(b, swapPath(b, pa, () => swapEnded(b)));
     beginSwap(a);
     beginSwap(b);
     const [ac, ar] = [a.col, a.row];
