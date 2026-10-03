@@ -185,6 +185,17 @@ describe('gems', () => {
   });
 });
 
+describe('placeChest', () => {
+  it('puts a whole chest down that floats and hauls like a dealt one', () => {
+    const b = boardFrom(QUIET);
+    b.placeChest(3, 5, 1);
+    expect(isChestOrigin(b.get(3, 5))).toBe(true);
+    expect([chestPart(b.get(4, 5)), chestPart(b.get(3, 4)), chestPart(b.get(4, 4))]).toEqual([1, 2, 2]);
+    expect(b.findRuns()).toEqual([]);
+    expect(b.step()).toBeNull();
+  });
+});
+
 describe('settling', () => {
   it('floats pieces up, fills from below, then clears runs and pays out the move', () => {
     const rows = [...QUIET];

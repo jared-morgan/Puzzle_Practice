@@ -7,7 +7,8 @@
 //
 // The client works out each move's points (logic.ts) and the server turns them into the duty
 // performance, which isn't in the client, so the panel shows points but no rating yet. Chests
-// are sent by the server too; here the mode keeps 0, 1 or 2 chests on their way at all times.
+// are sent by the server too; here the mode keeps 0, 1 or 2 chests on their way at all times, or
+// sets up a practice drill: getting chests to spawn, or hauling one chest as fast as possible.
 import { Images } from '../../core/assets';
 import { SoundBank } from '../../core/audio';
 import { loadFont } from '../../core/fonts';
@@ -60,17 +61,22 @@ const FLOAT_PX = 30;
 /** A skin tone for the hauling hands, which the client tints to your pirate's (haul/client/o). */
 const SKIN = [236, 188, 140];
 
-/** How many chests are kept coming: as one is hauled, the next is sent. */
-const MODES: Option<number>[] = [
-  { value: 0, label: '0 chests' },
-  { value: 1, label: '1 chest' },
-  { value: 2, label: '2 chests' },
+/**
+ * 0-2: that many chests are kept coming; as one is hauled, the next is sent. spawn: a chest is
+ * always waiting to come in, and the board is dealt again each time one does. clear: one chest
+ * starts on the board away from the edges, and the clock runs until it's hauled.
+ */
+type Mode = '0' | '1' | '2' | 'spawn' | 'clear';
+const MODES: Option<Mode>[] = [
+  { value: '0', label: '0 chests' },
+  { value: '1', label: '1 chest' },
+  { value: '2', label: '2 chests' },
+  { value: 'spawn', label: 'Spawn chests (board resets)' },
+  { value: 'clear', label: 'Clear a chest (fastest time)' },
 ];
 const ROUNDS: Option<number>[] = [
-  { value: 0, label: 'Endless' },
+  { value: 0, label: 'No timer' },
   { value: 120, label: '2 minutes' },
-  { value: 300, label: '5 minutes' },
-  { value: 600, label: '10 minutes' },
 ];
 const COMBO_NAMES = ['Good', 'Shiny!', 'Arrr! 3x3!', 'Arrr! 3x4!', 'Yarrr! 3x5!', 'Har! 4x4!', 'Yarrr! 4x5!', 'Yarrr! 5x5!', 'Bingo!', 'Donkey!', 'Vegas!', 'Ching!', 'Cha-Ching!'];
 
@@ -139,10 +145,12 @@ interface Tally {
   coins: number;
   gems: number;
   chests: number;
+  /** Spawn mode: chests that came in. */
+  spawned: number;
   combos: Record<string, number>;
 }
 
-const emptyTally = (): Tally => ({ moves: 0, points: 0, bestMove: 0, coins: 0, gems: 0, chests: 0, combos: {} });
+const emptyTally = (): Tally => ({ moves: 0, points: 0, bestMove: 0, coins: 0, gems: 0, chests: 0, spawned: 0, combos: {} });
 
 /** A copy of the purple hands tinted to a skin tone, keeping their shading. */
 function tint(img: HTMLImageElement): HTMLCanvasElement {
@@ -176,8 +184,10 @@ export default (async ({ screen, input, panel, store, ticks }) => {
   const random = () => rng.random();
   const hands = tint(img('hands'));
 
-  let chestMode = store.get<number>('chests', 0);
+  let mode = store.get<Mode>('mode', '0');
+  if (!MODES.some((m) => m.value === mode)) mode = '0';
   let roundSecs = store.get<number>('round', 0);
+  if (!ROUNDS.some((r) => r.value === roundSecs)) roundSecs = 0;
   const bests = store.get<Record<string, number>>('bestPoints', {});
 
   let board: HaulBoard | null = null;
@@ -198,6 +208,13 @@ export default (async ({ screen, input, panel, store, ticks }) => {
   /** The start: every piece floats in from 360px below, the higher ones quicker (haul/client/h). */
   let intro: { start: number; durations: number[] } | null = null;
   let roundEnd = 0;
+  /** Spawn mode: a chest has come in, so the board is dealt again once it has finished moving. */
+  let redeal = false;
+  /** When the spawned chest has been on show long enough to redeal (0 until it stops moving). */
+  let redealAt = 0;
+  /** Clear mode: when the clock started, and how long the chest took (0 until it's hauled). */
+  let clockStart = 0;
+  let clearMs = 0;
   let cursor: Point = [4, 6];
   let lastMouse: Point = [-1, -1];
   let tally = emptyTally();
@@ -214,8 +231,9 @@ export default (async ({ screen, input, panel, store, ticks }) => {
   /** Top-left of square (x, y) in board pixels: y = 0 is the bottom row (HaulBoardView.a(int, int, Point)). */
   const cellXY = (x: number, y: number): Point => [x * CELL, (H - 1 - y) * CELL];
   const chestSheet = (mini: boolean) => (mini ? 'minichest2x2' : 'chest2x2');
-  /** Best points are kept per mode and round length. */
-  const bestKey = () => `${chestMode}:${roundSecs}`;
+  /** Bests are kept per mode and round length: points, chests spawned, or the fastest clear in ms. */
+  const timed = () => mode !== 'clear' && roundSecs > 0;
+  const bestKey = () => (mode === 'clear' ? 'clear' : `${mode}:${roundSecs}`);
   const actionCount = () => movers.length + fades.length;
   const inFlight = () => flyers.length + minis.length;
 
@@ -274,13 +292,35 @@ export default (async ({ screen, input, panel, store, ticks }) => {
 
   // ---- The game ----
 
-  function start(): void {
+  /** A fresh board floating in from below; at full speed it's the start (haul/client/h), quicker for a spawn-mode redeal. */
+  function deal(speed: number, onReady: () => void): void {
     board = new HaulBoard(random);
     board.populate();
+    if (mode === 'clear') board.placeChest(rng.randintN(2, W - 4), rng.randintN(3, H - 3), rng.randintN(0, 2));
     sendChests();
     shown = [...board.cells];
     movers = [];
     fades = [];
+    stable = true;
+    redeal = false;
+    // Each column's pieces get quicker going up: 1500ms less up to 150ms per piece, no quicker than 500ms.
+    const durations: number[] = [];
+    const left = new Array<number>(W).fill(0);
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        if (left[x] === 0) left[x] = 1500;
+        left[x] = Math.max(left[x] - rng.randintN(0, 149), 500);
+        durations[y * W + x] = left[x] / speed;
+      }
+    }
+    intro = { start: ticks(), durations };
+    later(Math.max(...durations), () => {
+      intro = null;
+      onReady();
+    });
+  }
+
+  function start(): void {
     sparks = [];
     flyers = [];
     minis = [];
@@ -295,26 +335,23 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     running = true;
     finished = false;
     active = false;
-    stable = true;
     cursor = [4, 6];
     roundEnd = 0;
-    // Each column's pieces get quicker going up: 1500ms less up to 150ms per piece, no quicker than 500ms.
-    const durations: number[] = [];
-    const left = new Array<number>(W).fill(0);
-    for (let y = 0; y < H; y++) {
-      for (let x = 0; x < W; x++) {
-        if (left[x] === 0) left[x] = 1500;
-        left[x] = Math.max(left[x] - rng.randintN(0, 149), 500);
-        durations[y * W + x] = left[x];
-      }
-    }
-    intro = { start: ticks(), durations };
-    later(Math.max(...durations), () => {
-      intro = null;
+    clockStart = 0;
+    clearMs = 0;
+    deal(1, () => {
       sounds.play('big_combo');
       active = true;
-      if (roundSecs) roundEnd = ticks() + roundSecs * 1000;
+      if (timed()) roundEnd = ticks() + roundSecs * 1000;
+      clockStart = ticks();
     });
+  }
+
+  /** The score a mode keeps a best of: higher is better, except clear mode's time. */
+  function score(): number {
+    if (mode === 'spawn') return tally.spawned;
+    if (mode === 'clear') return clearMs;
+    return tally.points;
   }
 
   function stop(): void {
@@ -323,8 +360,10 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     finished = true;
     intro = null;
     timers = [];
-    if (roundSecs && tally.points > (bests[bestKey()] ?? 0)) {
-      bests[bestKey()] = tally.points;
+    const best = bests[bestKey()];
+    const better = mode === 'clear' ? clearMs > 0 && (!best || clearMs < best) : timed() && score() > (best ?? 0);
+    if (better) {
+      bests[bestKey()] = score();
       store.set('bestPoints', bests);
     }
   }
@@ -375,7 +414,7 @@ export default (async ({ screen, input, panel, store, ticks }) => {
   }
 
   function swapAt(x: number, y: number): void {
-    if (!board || !active || !stable || actionCount() > 0) return;
+    if (!board || !active || !stable || intro || redeal || clearMs || actionCount() > 0) return;
     sendChests();
     const result = board.swap(x, y);
     if (result.kind === 'illegal') return;
@@ -403,9 +442,15 @@ export default (async ({ screen, input, panel, store, ticks }) => {
    */
   function sendChests(): void {
     if (!board) return;
+    // Spawn mode: one chest always waiting at the bottom, ready to come in at the next gap.
+    if (mode === 'spawn') {
+      if (!board.chestList.length) board.chestList.push({ value: rng.randintN(0, 2), size: 0 });
+      return;
+    }
+    const want = mode === 'clear' ? 0 : Number(mode);
     let count = board.chestList.length + board.pending.length;
     for (const p of board.cells) if (isChestOrigin(p)) count++;
-    for (; count < chestMode; count++) board.pending.push({ value: rng.randintN(0, 2), size: 0 });
+    for (; count < want; count++) board.pending.push({ value: rng.randintN(0, 2), size: 0 });
   }
 
   function animate(step: Step): void {
@@ -414,8 +459,18 @@ export default (async ({ screen, input, panel, store, ticks }) => {
         const duration = (CELL * Math.abs(m.ty - m.fy)) / RISE_PX_PER_MS;
         move(m.piece, m.fx, m.fy, m.tx, m.ty, duration);
       }
+      if (mode === 'spawn' && step.moves.some((m) => isChest(m.piece) && m.fy < 0)) {
+        tally.spawned++;
+        sounds.play('shiny');
+        redeal = true;
+        redealAt = 0;
+      }
     } else if (step.kind === 'haul') {
       tally.chests += step.chests.length;
+      if (mode === 'clear' && !clearMs) {
+        clearMs = ticks() - clockStart;
+        sounds.play('big_combo');
+      }
       // The chest's top-left square goes twice: once for the chest and once with its squares.
       for (const chest of step.chests) clearFx({ x: chest.x, y: H - 1, piece: chest.piece, delay: 0 });
       clearSounds(step.cleared);
@@ -433,7 +488,17 @@ export default (async ({ screen, input, panel, store, ticks }) => {
 
   /** The board settles one step at a time once nothing is moving (drop/client/c.a(long)). */
   function evolve(): void {
-    if (!board || stable || actionCount() > 0) return;
+    if (!board || intro || actionCount() > 0) return;
+    if (redeal) {
+      // The chest has come in: it shows for half a second, then the move's points are paid and a new board floats in.
+      if (!redealAt) redealAt = ticks() + 500;
+      if (ticks() < redealAt) return;
+      tally.points += board.settle();
+      if (roundEnd && ticks() >= roundEnd) stop();
+      else deal(3, () => {});
+      return;
+    }
+    if (stable) return;
     const step = board.step();
     if (step) {
       animate(step);
@@ -443,7 +508,7 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     const points = board.settle();
     tally.points += points;
     tally.bestMove = Math.max(tally.bestMove, points);
-    if (roundEnd && ticks() >= roundEnd) stop();
+    if ((roundEnd && ticks() >= roundEnd) || clearMs) stop();
   }
 
   function startHauling(): void {
@@ -611,6 +676,8 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     }
   }
 
+  const seconds = (ms: number) => `${(ms / 1000).toFixed(1)}s`;
+
   function banner(text: string, y: number): void {
     ctx.save();
     ctx.font = `30px "${FONT}"`;
@@ -672,34 +739,45 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     drawTop(now);
     drawBoard(now);
     if (!running && !board) banner('Press Start to haul treasure', BOARD_Y + 180);
-    else if (finished) banner(roundSecs && roundEnd ? "Time's up!" : 'Stopped', BOARD_Y + 180);
+    else if (finished) banner(clearMs ? `Hauled in ${seconds(clearMs)}` : roundEnd && now >= roundEnd ? "Time's up!" : 'Stopped', BOARD_Y + 180);
   }
 
   // ---- Panel ----
 
   const game = panel.group('Game');
-  game.select('Mode', MODES, () => chestMode, (m) => {
-    chestMode = m;
-    store.set('chests', m);
-  }, { disabled: () => running, title: 'How many chests are on their way at once; as one is hauled, the next one comes' });
+  game.select('Mode', MODES, () => mode, (m) => {
+    mode = m;
+    store.set('mode', m);
+  }, { disabled: () => running, title: '0-2 chests: as one is hauled the next comes. Spawn: score a point each time a chest comes in, then the board resets. Clear: haul one chest as fast as you can' });
   game.select('Round', ROUNDS, () => roundSecs, (s) => {
     roundSecs = s;
     store.set('round', s);
-  }, { disabled: () => running });
+  }, { disabled: () => running, hidden: () => mode === 'clear' });
   panel.group().button('Start', () => (running ? stop() : start()), { variant: 'primary', label: () => (running ? 'Stop' : finished ? 'Play again' : 'Start') });
 
   const secondsLeft = () => (roundEnd ? Math.max(0, Math.ceil((roundEnd - ticks()) / 1000)) : roundSecs);
   const clock = (s: number) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
-  panel.group('Haul').stats(['', 'Now', 'Best'], () => [
-    ['Time left', roundSecs ? clock(running || finished ? secondsLeft() : roundSecs) : '-', ''],
-    ['Points', String(tally.points), roundSecs && bests[bestKey()] ? String(bests[bestKey()]) : '-'],
+  const best = () => bests[bestKey()];
+  panel.group('Haul').stats(['', 'Now', 'Best'], () => {
+    const rows: string[][] = [];
+    if (mode === 'clear') {
+      const ms = clearMs || (running && clockStart ? ticks() - clockStart : 0);
+      rows.push(['Time', seconds(ms), best() ? seconds(best()) : '-']);
+    } else {
+      rows.push(['Time left', timed() ? clock(running || finished ? secondsLeft() : roundSecs) : '-', '']);
+      if (mode === 'spawn') rows.push(['Chests spawned', String(tally.spawned), timed() && best() ? String(best()) : '-']);
+    }
+    rows.push(['Points', String(tally.points), mode !== 'spawn' && mode !== 'clear' && timed() && best() ? String(best()) : '-']);
+    return [
+      ...rows,
     ['Moves', String(tally.moves), ''],
     ['Best move', String(tally.bestMove), ''],
     ['Coins', String(tally.coins), ''],
     ['Gems', String(tally.gems), ''],
     ['Chests', String(tally.chests), ''],
     ['Rating', 'not yet', ''],
-  ]).note(() => "Points are the client's own count for each move. The game's server turns them into your duty performance, which isn't worked out here yet.");
+    ];
+  }).note(() => "Points are the client's own count for each move. The game's server turns them into your duty performance, which isn't worked out here yet.");
 
   panel.group('Combos').stats(['', 'Count'], () => COMBO_NAMES.map((name) => [name, String(tally.combos[name] ?? 0)]));
 

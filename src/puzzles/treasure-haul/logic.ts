@@ -203,6 +203,14 @@ export class HaulBoard {
     }
   }
 
+  /** Puts a 2x2 chest straight onto the board with its top-left square at (x, y), over whatever was there (practice setups only). */
+  placeChest(x: number, y: number, value: number): void {
+    const { width, height } = CHEST_SIZES[0];
+    for (let dx = 0; dx < width; dx++) {
+      for (let dy = 0; dy < height; dy++) this.set(x + dx, y - dy, chestPiece(dx === 0 && dy === 0 ? 0 : dy === 0 ? 1 : 2, value, 0));
+    }
+  }
+
   /** A ruby or an emerald each come up 2 times in 308; otherwise one of the four coins (HaulBoard.getNextPiece). */
   nextPiece(): number {
     let r = this.nextInt(304 + COLOURS - (300 % COLOURS));
