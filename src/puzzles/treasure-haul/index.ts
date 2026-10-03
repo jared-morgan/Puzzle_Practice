@@ -1,0 +1,711 @@
+// Treasure Haul, rebuilt from the Puzzle Pirates client (duty/haul, build 20260909165753): the
+// rules are in logic.ts, and this file is HaulPanel and HaulBoardView with their helper classes
+// (haul/client/a-r) on top of the drop-puzzle engine's view (puzzle/drop/client): pieces floating
+// up, the swap, sparks and pieces flying off to the net, the hands hauling it in, the gold pile and
+// the floating messages, with the client's art, sounds and timings. The canvas is the 450x600
+// puzzle panel; settings and scores are in the side panel.
+//
+// The client works out each move's points (logic.ts) and the server turns them into the duty
+// performance, which isn't in the client, so the panel shows points but no rating yet. Chests
+// are sent by the server too, so how often they come is a setting here.
+import { Images } from '../../core/assets';
+import { SoundBank } from '../../core/audio';
+import { loadFont } from '../../core/fonts';
+import type { InputEvent } from '../../core/input';
+import type { Option } from '../../core/panel';
+import type { PuzzleFactory } from '../../core/puzzle';
+import type { Drawable } from '../../core/screen';
+import { PyRandom } from '../../core/pyrandom';
+import {
+  type Cleared,
+  chestValue,
+  EMERALD,
+  EMPTY,
+  H,
+  HaulBoard,
+  isChest,
+  isChestOrigin,
+  type Message,
+  RUBY,
+  type Step,
+  W,
+} from './logic';
+import delarobbUrl from './delarobb.ttf?url';
+
+const imageUrls = import.meta.glob<string>('./media/*.png', { eager: true, query: '?url', import: 'default' });
+const soundUrls = import.meta.glob<string>('./sounds/*.mp3', { eager: true, query: '?url', import: 'default' });
+type Sound = 'haul' | 'piece_swap' | 'piece_destroy' | 'big_combo' | 'shiny' | 'ruby' | 'emerald';
+
+const WIDTH = 450;
+/** Squares are 45px (HaulBoardView: 45, 45); the 360x360 board sits at (44, 205) in the panel, (44, 185) in a vampirate lair. */
+const CELL = 45;
+const BOARD = W * CELL;
+/** The net, gold pile and hands share a line 98px down (HaulPanel.c). */
+const NET_LINE = 98;
+/** Mini pieces are 23px (HaulBoardView.f, g). */
+const MINI = 23;
+/** Floating up: 0.35px/ms, half again as fast when settling (haul/client/i.b, drop/client/d). */
+const RISE_PX_PER_MS = 0.35 * 1.5;
+const SWAP_MS = 250;
+/** Message sizes: the client's game fonts (roister/client/a), picked by the step's points out of 100. */
+const FONT_SIZES = [24, 30, 36, 42, 52, 68];
+const FONT = 'Delarobb';
+/** Floating messages rise 30px over 1.5s, fading in the second half (nenya ScoreAnimation). */
+const FLOAT_MS = 1500;
+const FLOAT_PX = 30;
+/** A skin tone for the hauling hands, which the client tints to your pirate's (haul/client/o). */
+const SKIN = [236, 188, 140];
+
+type Look = 'standard' | 'haunted' | 'vampirate';
+const LOOKS: Option<Look>[] = [
+  { value: 'standard', label: 'Ship' },
+  { value: 'haunted', label: 'Haunted (haunted chests)' },
+  { value: 'vampirate', label: 'Vampirate lair' },
+];
+const CHEST_RATES: Option<number>[] = [
+  { value: 0, label: 'None' },
+  { value: 5, label: 'Every 5 moves' },
+  { value: 10, label: 'Every 10 moves' },
+  { value: 20, label: 'Every 20 moves' },
+];
+const ROUNDS: Option<number>[] = [
+  { value: 0, label: 'Endless' },
+  { value: 120, label: '2 minutes' },
+  { value: 300, label: '5 minutes' },
+  { value: 600, label: '10 minutes' },
+];
+const COMBO_NAMES = ['Good', 'Shiny!', 'Arrr! 3x3!', 'Arrr! 3x4!', 'Yarrr! 3x5!', 'Har! 4x4!', 'Yarrr! 4x5!', 'Yarrr! 5x5!', 'Bingo!', 'Donkey!', 'Vegas!', 'Ching!', 'Cha-Ching!'];
+
+type Point = [number, number];
+
+/** A piece moving between squares (DropBoardView.b with a LinePath); it lands in its square when done. */
+interface Mover {
+  piece: number;
+  from: Point;
+  to: Point;
+  start: number;
+  duration: number;
+  tx: number;
+  ty: number;
+}
+
+/** A cleared piece left in place until its blast reaches it (haul/client/f: a fade that finishes at once). */
+interface Fade {
+  piece: number;
+  x: number;
+  y: number;
+  until: number;
+}
+
+interface Spark {
+  sheet: string;
+  x: number;
+  y: number;
+  angle: number;
+  start: number;
+}
+
+/** A piece flying up off the board (haul/client/d on a bilge/s path), then a mini piece flying into the net (HaulPanel.a, haul/client/m). */
+interface Flyer {
+  piece: number;
+  x: number;
+  y: number;
+  start: number;
+  amp: number;
+  period: number;
+  fps: number;
+}
+
+interface Mini {
+  piece: number;
+  x: number;
+  start: number;
+  fps: number;
+}
+
+interface Text {
+  text: string;
+  colour: string;
+  px: number;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  start: number;
+}
+
+interface Tally {
+  moves: number;
+  points: number;
+  bestMove: number;
+  coins: number;
+  gems: number;
+  chests: number;
+  combos: Record<string, number>;
+}
+
+const emptyTally = (): Tally => ({ moves: 0, points: 0, bestMove: 0, coins: 0, gems: 0, chests: 0, combos: {} });
+
+/** A copy of the purple hands tinted to a skin tone, keeping their shading. */
+function tint(img: HTMLImageElement): HTMLCanvasElement {
+  const canvas = document.createElement('canvas');
+  canvas.width = img.width;
+  canvas.height = img.height;
+  const c = canvas.getContext('2d')!;
+  c.drawImage(img, 0, 0);
+  const data = c.getImageData(0, 0, img.width, img.height);
+  const d = data.data;
+  for (let i = 0; i < d.length; i += 4) {
+    const r = d[i];
+    const g = d[i + 1];
+    const b = d[i + 2];
+    // The parts to tint are purple: red and blue well above green.
+    if (Math.min(r, b) - g < 40) continue;
+    const v = Math.max(r, b) / 255;
+    for (let k = 0; k < 3; k++) d[i + k] = Math.min(255, Math.round(SKIN[k] * v * 1.1));
+  }
+  c.putImageData(data, 0, 0);
+  return canvas;
+}
+
+export default (async ({ screen, input, panel, store, ticks }) => {
+  const [images] = await Promise.all([Images.load(imageUrls), loadFont(FONT, delarobbUrl)]);
+  const img = (name: string) => images.get(name);
+  const sounds = new SoundBank<Sound>(soundUrls);
+  const ctx = screen.ctx;
+  const rng = new PyRandom();
+  rng.seedFromCrypto();
+  const random = () => rng.random();
+  const hands = tint(img('hands'));
+
+  let look = store.get<Look>('look', 'standard');
+  let chestRate = store.get<number>('chestRate', 0);
+  let roundSecs = store.get<number>('round', 0);
+  const bests = store.get<Record<string, number>>('bestPoints', {});
+
+  let board: HaulBoard | null = null;
+  /** The pieces as drawn in their squares (DropBoardView._pieces); moving and cleared pieces are drawn separately. */
+  let shown: number[] = new Array<number>(W * H).fill(EMPTY);
+  let movers: Mover[] = [];
+  let fades: Fade[] = [];
+  let sparks: Spark[] = [];
+  let flyers: Flyer[] = [];
+  let minis: Mini[] = [];
+  let texts: Text[] = [];
+  let timers: { at: number; run: () => void }[] = [];
+  let running = false;
+  let finished = false;
+  /** The cursor shows and moves once the pieces have floated in (HaulBoardView.c(boolean)). */
+  let active = false;
+  let stable = true;
+  /** The start: every piece floats in from 360px below, the higher ones quicker (haul/client/h). */
+  let intro: { start: number; durations: number[] } | null = null;
+  let roundEnd = 0;
+  let cursor: Point = [4, 6];
+  let lastMouse: Point = [-1, -1];
+  let tally = emptyTally();
+  /** Mini pieces landed in the net, which raise the gold pile (HaulPanel._goldScore). */
+  let gold = 0;
+  /** The net's animation start, 0 when still (haul/client/l). */
+  let netStart = 0;
+  /** The hands: hauling while pieces are on their way; each pull is 350ms down, 150ms up (haul/client/o, p, q). */
+  let hauling = false;
+  let pull: { start: number; down: boolean } | null = null;
+  let handsUp = true;
+
+  const layout = () => (look === 'vampirate' ? { boardY: 185, top: 178 } : { boardY: 205, top: 198 });
+  const later = (ms: number, run: () => void) => timers.push({ at: ticks() + ms, run });
+  /** Top-left of square (x, y) in board pixels: y = 0 is the bottom row (HaulBoardView.a(int, int, Point)). */
+  const cellXY = (x: number, y: number): Point => [x * CELL, (H - 1 - y) * CELL];
+  const suffix = () => (look === 'vampirate' ? '_vampirate' : '');
+  const chestSheet = (mini: boolean) => `${mini ? 'minichest' : 'chest'}${look === 'haunted' ? '_haunted' : suffix()}2x2`;
+  const actionCount = () => movers.length + fades.length;
+  const inFlight = () => flyers.length + minis.length;
+
+  function playLater(sound: Sound, ms: number): void {
+    if (ms <= 0) sounds.play(sound);
+    else later(ms, () => sounds.play(sound));
+  }
+
+  // ---- Drawing helpers ----
+
+  /** A piece's still picture: frame 0 of its strip, a chest's picture on its top-left square, nothing on the rest. */
+  function drawPiece(piece: number, x: number, y: number): void {
+    if (piece === EMPTY) return;
+    if (isChest(piece)) {
+      if (!isChestOrigin(piece)) return;
+      ctx.drawImage(img(chestSheet(false)), chestValue(piece) * 2 * CELL, 0, 2 * CELL, 2 * CELL, x, y, 2 * CELL, 2 * CELL);
+      return;
+    }
+    ctx.drawImage(img(`piece${piece}${suffix()}`), 0, 0, CELL, CELL, Math.trunc(x), Math.trunc(y), CELL, CELL);
+  }
+
+  /** One frame of an animated strip, looping at fps. */
+  function drawFrame(sheet: Drawable, size: number, fps: number, start: number, now: number, x: number, y: number): void {
+    const frames = Math.max(1, Math.floor(sheet.width / size));
+    const f = Math.floor(((now - start) * fps) / 1000) % frames;
+    ctx.drawImage(sheet, f * size, 0, size, size, Math.trunc(x), Math.trunc(y), size, size);
+  }
+
+  /** A floating message, moved clear of any already showing (PuzzleBoardView.f's arranger). */
+  function say(message: Message, points: number): void {
+    const px = FONT_SIZES[Math.min(FONT_SIZES.length - 1, Math.floor((points * (FONT_SIZES.length)) / 100))];
+    ctx.save();
+    ctx.font = `${px}px "${FONT}"`;
+    const w = Math.ceil(ctx.measureText(message.text).width * 1.1) + 4;
+    ctx.restore();
+    const h = Math.round(px * 1.2);
+    let x: number;
+    let y: number;
+    // HaulBoardView.a(int x, int y, int w, int h, ...): centred across w squares, and over the top of h.
+    const place = (cx: number, cy: number, cw: number, ch: number) => {
+      const [bx, by] = cellXY(cx, cy);
+      x = Math.max(Math.min(bx + (cw * CELL - w) / 2, BOARD - w), 0);
+      y = by + (ch * CELL - 2 * h) / 2;
+    };
+    if (message.kind === 'chain') place(0, H - 1, W, H);
+    else if (message.run) place(message.run.x, message.run.y, message.run.dir === 0 ? message.run.length : 1, message.run.dir === 1 ? message.run.length : 1);
+    else place(cursor[0], cursor[1], 2, 1);
+    const now = ticks();
+    for (const t of texts) {
+      const ty = t.y - (FLOAT_PX * (now - t.start)) / FLOAT_MS;
+      if (y! < ty + t.h && ty < y! + h && x! < t.x + t.w && t.x < x! + w) y = ty + t.h;
+    }
+    texts.push({ text: message.text, colour: message.kind === 'chain' ? '#ffff00' : '#ffffff', px, x: x!, y: Math.min(y!, BOARD - h), w, h, start: now });
+    tally.combos[message.text] = (tally.combos[message.text] ?? 0) + 1;
+  }
+
+  // ---- The game ----
+
+  function start(): void {
+    board = new HaulBoard(random);
+    board.populate();
+    shown = [...board.cells];
+    movers = [];
+    fades = [];
+    sparks = [];
+    flyers = [];
+    minis = [];
+    texts = [];
+    timers = [];
+    tally = emptyTally();
+    gold = 0;
+    netStart = 0;
+    hauling = false;
+    pull = null;
+    handsUp = true;
+    running = true;
+    finished = false;
+    active = false;
+    stable = true;
+    cursor = [4, 6];
+    roundEnd = 0;
+    // Each column's pieces get quicker going up: 1500ms less up to 150ms per piece, no quicker than 500ms.
+    const durations: number[] = [];
+    const left = new Array<number>(W).fill(0);
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        if (left[x] === 0) left[x] = 1500;
+        left[x] = Math.max(left[x] - rng.randintN(0, 149), 500);
+        durations[y * W + x] = left[x];
+      }
+    }
+    intro = { start: ticks(), durations };
+    later(Math.max(...durations), () => {
+      intro = null;
+      sounds.play('big_combo');
+      active = true;
+      if (roundSecs) roundEnd = ticks() + roundSecs * 1000;
+    });
+  }
+
+  function stop(): void {
+    running = false;
+    active = false;
+    finished = true;
+    intro = null;
+    timers = [];
+    if (roundSecs && tally.points > (bests[roundSecs] ?? 0)) {
+      bests[roundSecs] = tally.points;
+      store.set('bestPoints', bests);
+    }
+  }
+
+  /** Moves a square's piece to another square over the duration (DropBoardView.a_). */
+  function move(piece: number, fx: number, fy: number, tx: number, ty: number, duration: number): void {
+    if (fy >= 0 && fy < H) shown[fy * W + fx] = EMPTY;
+    movers.push({ piece, from: cellXY(fx, fy), to: cellXY(tx, ty), start: ticks(), duration, tx, ty });
+  }
+
+  /** Clears a piece: it stays until the blast reaches it, then sparks and flies up to the net (HaulBoardView.a(int, int, int, long), haul/client/e). */
+  function clearFx(c: Cleared, removeSprite = true): void {
+    if (removeSprite) shown[c.y * W + c.x] = EMPTY;
+    const now = ticks();
+    fades.push({ piece: c.piece, x: c.x, y: c.y, until: now + c.delay });
+    later(c.delay, () => {
+      let [px, py] = cellXY(c.x, c.y);
+      const chest = isChest(c.piece);
+      const sheet = c.piece === RUBY ? 'sparks_ruby' : c.piece === EMERALD ? 'sparks_emerald' : 'sparks';
+      const at = ticks();
+      for (let i = 0; i < 5; i++) {
+        sparks.push({ sheet: sheet + suffix(), x: chest ? px + 23 : px, y: chest ? py - 23 : py, angle: (Math.PI * 2 * i) / 5, start: at });
+      }
+      if (!chest || isChestOrigin(c.piece)) {
+        [px, py] = cellXY(c.x, c.y);
+        flyers.push({ piece: c.piece, x: px, y: py, start: at, amp: random() * 10, period: 100 + rng.randintN(0, 99), fps: 15 + rng.randintN(0, 14) });
+        startHauling();
+      }
+    });
+  }
+
+  /** Sounds for cleared pieces: each kind once per blast wave (haul/client/k). */
+  function clearSounds(cleared: Cleared[]): void {
+    const heard = new Set<string>();
+    for (const c of cleared) {
+      const key = `${c.delay}:${c.piece}`;
+      if (heard.has(key)) continue;
+      heard.add(key);
+      playLater(c.piece === RUBY ? 'ruby' : c.piece === EMERALD ? 'emerald' : 'piece_destroy', c.delay);
+    }
+  }
+
+  function countCleared(cleared: Cleared[]): void {
+    for (const c of cleared) {
+      if (c.piece === RUBY || c.piece === EMERALD) tally.gems++;
+      else if (!isChest(c.piece)) tally.coins++;
+    }
+  }
+
+  function swapAt(x: number, y: number): void {
+    if (!board || !active || !stable || actionCount() > 0) return;
+    const result = board.swap(x, y);
+    if (result.kind === 'illegal') return;
+    if (result.kind === 'gem') {
+      tally.moves++;
+      clearSounds(result.cleared);
+      countCleared(result.cleared);
+      for (const c of result.cleared) clearFx(c);
+      stable = false;
+    } else {
+      // The two pieces trade places over 250ms (haul/client/i.a(int, int, int, int)).
+      sounds.play('piece_swap');
+      move(result.upper, x, y, x, y - 1, SWAP_MS);
+      move(result.lower, x, y - 1, x, y, SWAP_MS);
+      if (result.kind === 'swap') {
+        tally.moves++;
+        stable = false;
+      }
+    }
+    // The server sends chests; here one is announced every so many moves.
+    if (result.kind !== 'same' && chestRate && tally.moves % chestRate === 0) {
+      board.pending.push({ value: rng.randintN(0, 2), size: 0 });
+    }
+  }
+
+  function animate(step: Step): void {
+    if (step.kind === 'rise') {
+      for (const m of step.moves) {
+        const duration = (CELL * Math.abs(m.ty - m.fy)) / RISE_PX_PER_MS;
+        move(m.piece, m.fx, m.fy, m.tx, m.ty, duration);
+      }
+    } else if (step.kind === 'haul') {
+      tally.chests += step.chests.length;
+      // The chest's top-left square goes twice: once for the chest and once with its squares.
+      for (const chest of step.chests) clearFx({ x: chest.x, y: H - 1, piece: chest.piece, delay: 0 });
+      clearSounds(step.cleared);
+      for (const c of step.cleared) clearFx(c);
+    } else {
+      clearSounds(step.cleared);
+      countCleared(step.cleared);
+      for (const c of step.cleared) clearFx(c);
+      if (step.message) {
+        if (step.message.sound) sounds.play(step.message.sound);
+        say(step.message, step.points);
+      }
+    }
+  }
+
+  /** The board settles one step at a time once nothing is moving (drop/client/c.a(long)). */
+  function evolve(): void {
+    if (!board || stable || actionCount() > 0) return;
+    const step = board.step();
+    if (step) {
+      animate(step);
+      return;
+    }
+    stable = true;
+    const points = board.settle();
+    tally.points += points;
+    tally.bestMove = Math.max(tally.bestMove, points);
+    if (roundEnd && ticks() >= roundEnd) stop();
+  }
+
+  function startHauling(): void {
+    if (look === 'vampirate') return;
+    if (!netStart) netStart = ticks();
+    if (!hauling) {
+      hauling = true;
+      if (!pull) {
+        sounds.play('haul');
+        pull = { start: ticks(), down: true };
+      }
+    }
+  }
+
+  // ---- Per-frame updates ----
+
+  function updateMovers(now: number): void {
+    movers = movers.filter((m) => {
+      if (now < m.start + m.duration) return true;
+      shown[m.ty * W + m.tx] = m.piece;
+      return false;
+    });
+    fades = fades.filter((f) => now < f.until + 20);
+  }
+
+  function updateFlyers(now: number): void {
+    flyers = flyers.filter((f) => {
+      const y = Math.round(f.y - (now - f.start) * 0.6);
+      const h = isChest(f.piece) ? 2 * CELL : CELL;
+      if (y >= -h) return true;
+      const x = Math.round(f.x + f.amp * Math.sin((Math.PI * 2 * (now - f.start)) / f.period));
+      minis.push({ piece: f.piece, x: x + 44, start: now, fps: 15 + rng.randintN(0, 14) });
+      return false;
+    });
+    minis = minis.filter((m) => {
+      if (now < m.start + 500) return true;
+      gold++;
+      return false;
+    });
+    sparks = sparks.filter((s) => now < s.start + 900);
+  }
+
+  /** The net plays at 10fps while anything is on its way, finishing its cycle (haul/client/l); the hands follow. */
+  function netFrame(now: number): number {
+    if (!netStart) return 0;
+    const f = Math.floor((now - netStart) / 100) % 3;
+    if (inFlight() === 0) {
+      hauling = false;
+      if (f === 2) netStart = 0;
+    }
+    return f;
+  }
+
+  /** The hands' height and picture: down 350ms with open hands, up 150ms closed (haul/client/o, q). */
+  function handsPose(now: number): { y: number; tile: number } {
+    const up = NET_LINE - 47;
+    const down = NET_LINE - 16;
+    if (!pull) return { y: handsUp ? up : down, tile: handsUp ? 1 : 0 };
+    const t = now - pull.start;
+    if (pull.down) {
+      if (t < 350) return { y: up + ((down - up) * t) / 350, tile: 1 };
+      pull = { start: pull.start + 350, down: false };
+      return handsPose(now);
+    }
+    if (t < 150) return { y: down + ((up - down) * t) / 150, tile: 0 };
+    handsUp = true;
+    if (hauling) {
+      sounds.play('haul');
+      pull = { start: pull.start + 150, down: true };
+      return handsPose(now);
+    }
+    pull = null;
+    return { y: up, tile: 1 };
+  }
+
+  function drawTop(now: number, top: number): void {
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, 0, WIDTH, top);
+    ctx.clip();
+    if (look !== 'vampirate') {
+      const pile = img('gold_pile');
+      ctx.drawImage(pile, 0, NET_LINE - Math.max(0, Math.min(pile.height, Math.round((gold / 10000) * pile.height))));
+      const pose = handsPose(now);
+      ctx.drawImage(hands, pose.tile * 58, 0, 58, 73, 225 - 29, Math.trunc(pose.y), 58, 73);
+      ctx.drawImage(img('net_haul'), netFrame(now) * 450, 0, 450, 109, 0, NET_LINE - 9, 450, 109);
+    }
+    // Mini pieces come up from the board to the net in 300ms, then drop into it in 200ms (HaulPanel.a, haul/client/m).
+    for (const m of minis) {
+      const chest = isChest(m.piece);
+      const size = chest ? 2 * MINI : MINI;
+      const t = now - m.start;
+      const mid = NET_LINE + size / 2;
+      const y = t < 300 ? top + ((mid - top) * t) / 300 : mid + ((NET_LINE - size - mid) * (t - 300)) / 200;
+      if (chest) ctx.drawImage(img(chestSheet(true)), chestValue(m.piece) * size, 0, size, size, m.x, Math.trunc(y), size, size);
+      else drawFrame(img(`minipiece${m.piece}${suffix()}`), MINI, m.fps, m.start, now, m.x, y);
+    }
+    ctx.restore();
+  }
+
+  function drawBoard(now: number, boardY: number): void {
+    ctx.save();
+    ctx.translate(44, boardY);
+    ctx.beginPath();
+    ctx.rect(0, 0, BOARD, BOARD);
+    ctx.clip();
+    if (intro) {
+      const t = now - intro.start;
+      for (let y = 0; y < H; y++) {
+        for (let x = 0; x < W; x++) {
+          const d = intro.durations[y * W + x];
+          const [px, py] = cellXY(x, y);
+          drawPiece(shown[y * W + x], px, py + 360 * Math.max(0, 1 - t / d));
+        }
+      }
+    } else {
+      for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) drawPiece(shown[y * W + x], ...cellXY(x, y));
+    }
+    for (const f of fades) if (now < f.until) drawPiece(f.piece, ...cellXY(f.x, f.y));
+    for (const m of movers) {
+      const t = Math.min(1, (now - m.start) / m.duration);
+      drawPiece(m.piece, Math.trunc(m.from[0] + (m.to[0] - m.from[0]) * t), Math.trunc(m.from[1] + (m.to[1] - m.from[1]) * t));
+    }
+    if (active && board) {
+      const vamp = look === 'vampirate';
+      const ex = vamp ? 7 : 4;
+      const ey = vamp ? 16 : 4;
+      ctx.drawImage(img(`cursor${suffix()}`), cursor[0] * CELL - ex, (H - 1 - cursor[1]) * CELL - ey);
+    }
+    // Sparks fly out for 900ms, fading after the first 200ms (duty/client/l, m).
+    for (const s of sparks) {
+      const t = now - s.start;
+      const late = Math.max(0, t - 200);
+      const x = s.x + Math.round(t * Math.cos(s.angle) * 0.12 + 3e-5 * late * late);
+      const y = s.y + Math.round(t * (Math.sin(s.angle) * 0.12 + 1e-4 * t));
+      ctx.globalAlpha = Math.max(0, Math.min(1, 1 - late / 700));
+      drawFrame(img(s.sheet), 39, 15, s.start, now, x, y);
+      ctx.globalAlpha = 1;
+    }
+    for (const f of flyers) {
+      const t = now - f.start;
+      const x = Math.round(f.x + f.amp * Math.sin((Math.PI * 2 * t) / f.period));
+      const y = Math.round(f.y - t * 0.6);
+      if (isChest(f.piece)) drawPiece(f.piece, x, y);
+      else drawFrame(img(`piece${f.piece}${suffix()}`), CELL, f.fps, f.start, now, x, y);
+    }
+    drawTexts(now);
+    ctx.restore();
+  }
+
+  function drawTexts(now: number): void {
+    texts = texts.filter((t) => now < t.start + FLOAT_MS);
+    for (const t of texts) {
+      const p = (now - t.start) / FLOAT_MS;
+      ctx.save();
+      ctx.globalAlpha = p < 0.5 ? 1 : Math.max(0, 1 - (p - 0.5) * 2);
+      // The client stretches its message font 10% wide and outlines it in black.
+      ctx.translate(t.x + t.w / 2, t.y - FLOAT_PX * p);
+      ctx.scale(1.1, 1);
+      ctx.font = `${t.px}px "${FONT}"`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'top';
+      ctx.lineJoin = 'round';
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = '#000';
+      ctx.strokeText(t.text, 0, 0);
+      ctx.fillStyle = t.colour;
+      ctx.fillText(t.text, 0, 0);
+      ctx.restore();
+    }
+  }
+
+  function banner(text: string, y: number): void {
+    ctx.save();
+    ctx.font = `30px "${FONT}"`;
+    ctx.textAlign = 'center';
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = '#000';
+    ctx.fillStyle = '#fff';
+    ctx.strokeText(text, WIDTH / 2, y);
+    ctx.fillText(text, WIDTH / 2, y);
+    ctx.restore();
+  }
+
+  function moveCursor(dx: number, dy: number): void {
+    if (!active) return;
+    // The cursor covers a square and the one below it, so its row is never the bottom one (haul/client/i.a(int)).
+    const x = Math.max(cursor[0] + dx, 0);
+    const y = Math.max(cursor[1] + dy, 1);
+    if (x < W && y < H) cursor = [x, y];
+  }
+
+  function frame(events: InputEvent[]): void {
+    const now = ticks();
+    const { boardY, top } = layout();
+    const onBoard = (p: Point) => p[0] >= 44 && p[0] < 44 + BOARD && p[1] >= boardY && p[1] < boardY + BOARD;
+    // The cursor follows the mouse over the board: the square under it and the one below (HaulBoardView.c(int, int)).
+    if (active && onBoard(input.mouse) && (input.mouse[0] !== lastMouse[0] || input.mouse[1] !== lastMouse[1])) {
+      const cx = Math.max(0, Math.min(Math.floor((input.mouse[0] - 44) / CELL), W - 1));
+      const cy = Math.min(H - 1, H - Math.floor((input.mouse[1] - boardY) / CELL));
+      cursor = [cx, cy];
+    }
+    lastMouse = input.mouse;
+    for (const event of events) {
+      if (event.type === 'mousedown' && event.button <= 3 && onBoard(event.pos)) swapAt(cursor[0], cursor[1]);
+      else if (event.type === 'keydown') {
+        if (event.key === 'arrowleft') moveCursor(-1, 0);
+        else if (event.key === 'arrowright') moveCursor(1, 0);
+        else if (event.key === 'arrowup') moveCursor(0, 1);
+        else if (event.key === 'arrowdown') moveCursor(0, -1);
+        else if (event.key === 'space' || event.key === 'enter') swapAt(cursor[0], cursor[1]);
+      }
+    }
+
+    for (const timer of timers.filter((t) => now >= t.at)) {
+      timers.splice(timers.indexOf(timer), 1);
+      timer.run();
+    }
+    updateMovers(now);
+    updateFlyers(now);
+    if (running) {
+      evolve();
+      // Time's up: no more swaps, and the round ends once the board settles.
+      if (roundEnd && now >= roundEnd) {
+        active = false;
+        if (stable && actionCount() === 0) stop();
+      }
+    }
+
+    screen.fill('#000');
+    screen.blit(img(`background${suffix()}`), 0, 0);
+    drawTop(now, top);
+    drawBoard(now, boardY);
+    if (!running && !board) banner('Press Start to haul treasure', boardY + 180);
+    else if (finished) banner(roundSecs && roundEnd ? "Time's up!" : 'Stopped', boardY + 180);
+  }
+
+  // ---- Panel ----
+
+  const game = panel.group('Game');
+  game.select('Where', LOOKS, () => look, (l) => {
+    look = l;
+    store.set('look', l);
+  }, { disabled: () => running, title: 'The art for a ship, the Haunted Seas or a vampirate lair' });
+  game.select('Chests', CHEST_RATES, () => chestRate, (r) => {
+    chestRate = r;
+    store.set('chestRate', r);
+  }, { title: 'The server sends chests in Atlantis, the Haunted Seas and vampirate lairs; how often is a guess' });
+  game.select('Round', ROUNDS, () => roundSecs, (s) => {
+    roundSecs = s;
+    store.set('round', s);
+  }, { disabled: () => running });
+  panel.group().button('Start', () => (running ? stop() : start()), { variant: 'primary', label: () => (running ? 'Stop' : finished ? 'Play again' : 'Start') });
+
+  const secondsLeft = () => (roundEnd ? Math.max(0, Math.ceil((roundEnd - ticks()) / 1000)) : roundSecs);
+  const clock = (s: number) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+  panel.group('Haul').stats(['', 'Now', 'Best'], () => [
+    ['Time left', roundSecs ? clock(running || finished ? secondsLeft() : roundSecs) : '-', ''],
+    ['Points', String(tally.points), roundSecs && bests[roundSecs] ? String(bests[roundSecs]) : '-'],
+    ['Moves', String(tally.moves), ''],
+    ['Best move', String(tally.bestMove), ''],
+    ['Coins', String(tally.coins), ''],
+    ['Gems', String(tally.gems), ''],
+    ['Chests', String(tally.chests), ''],
+    ['Rating', 'not yet', ''],
+  ]).note(() => "Points are the client's own count for each move. The game's server turns them into your duty performance, which isn't worked out here yet.");
+
+  panel.group('Combos').stats(['', 'Count'], () => COMBO_NAMES.map((name) => [name, String(tally.combos[name] ?? 0)]));
+
+  return { frame, dispose: () => sounds.dispose() };
+}) satisfies PuzzleFactory;
