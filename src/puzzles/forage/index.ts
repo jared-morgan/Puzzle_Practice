@@ -496,8 +496,8 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     .group()
     .button('Start', toggleRunning, { variant: 'primary', label: () => (!boardActive ? 'Start' : settings.mode === 'normal' ? 'Dismiss' : 'Stop') })
     .button('New board', () => newBoard(), {
-      disabled: () => isPuzzle() || settings.mode === 'normal' || !boardActive || playing.length > 0,
-      title: 'Deal a fresh board and bananas without restarting the clock',
+      disabled: () => isPuzzle() || settings.mode === 'normal' || !boardActive,
+      title: 'Deal a fresh board and bananas without restarting the clock; crates from a move still playing out still count',
     });
 
   const seconds = (ms: number) => (ms < 9999000 ? floatStr(ms / 1000).slice(0, 5) : 'Lots!');
@@ -511,10 +511,7 @@ export default (async ({ screen, input, panel, store, ticks }) => {
         ...(settings.mode === 'normal' ? [['Points', String(score), '']] : []),
         [settings.mode === 'normal' ? 'Points / move' : 'Score', scoreText(shownScore()), SCORED.has(settings.mode) && bestScore !== null ? scoreText(bestScore) : ''],
       ];
-    })
-    .note(() =>
-      boardActive && (settings.mode === 'ci' || settings.mode === 'infinite') && boardDone() ? "This board's crates are all in. Deal a new board to keep going." : '',
-    );
+    });
 
   // ---- Drawing ----
 
@@ -759,7 +756,9 @@ export default (async ({ screen, input, panel, store, ticks }) => {
       step = currentStep(now);
       if (step) {
         drawCells(step[0].board);
-        for (const s of step[0].sprites) drawSprite(s, step[1], now);
+        // Pieces waiting to be replaced go underneath, so the monkey's new pieces show over them as they fly.
+        for (const s of step[0].sprites) if (s.clear) drawSprite(s, step[1], now);
+        for (const s of step[0].sprites) if (!s.clear) drawSprite(s, step[1], now);
       } else drawCells(game.cells);
     }
     ctx.translate(-LEFT, -TOP);
@@ -815,6 +814,8 @@ export default (async ({ screen, input, panel, store, ticks }) => {
         outro();
       } else if (settings.mode === 'ci' && timePassed >= CI_DURATION) finishScored();
       else if (settings.mode === 'normal' && boardDone()) finishScored();
+      // A Gauntlet board whose crates are all in makes way for the next one.
+      else if ((settings.mode === 'ci' || settings.mode === 'infinite') && boardDone()) newBoard();
     }
     if (boardActive || ended || flight) drawBoard(now);
     else drawTimed(now, 'text');
