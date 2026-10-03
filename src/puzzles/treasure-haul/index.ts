@@ -7,7 +7,7 @@
 //
 // The client works out each move's points (logic.ts) and the server turns them into the duty
 // performance, which isn't in the client, so the panel shows points but no rating yet. Chests
-// are sent by the server too, so how often they come is a setting here.
+// are sent by the server too; here the mode keeps 0, 1 or 2 chests on their way at all times.
 import { Images } from '../../core/assets';
 import { SoundBank } from '../../core/audio';
 import { loadFont } from '../../core/fonts';
@@ -37,8 +37,12 @@ const soundUrls = import.meta.glob<string>('./sounds/*.mp3', { eager: true, quer
 type Sound = 'haul' | 'piece_swap' | 'piece_destroy' | 'big_combo' | 'shiny' | 'ruby' | 'emerald';
 
 const WIDTH = 450;
-/** Squares are 45px (HaulBoardView: 45, 45); the 360x360 board sits at (44, 205) in the panel, (44, 185) in a vampirate lair. */
+/** Squares are 45px (HaulBoardView: 45, 45); the 360x360 board sits at (44, 205) in the panel. */
 const CELL = 45;
+const BOARD_X = 44;
+const BOARD_Y = 205;
+/** The net and hands panel above the board (HaulPanel._topPanel). */
+const TOP = 198;
 const BOARD = W * CELL;
 /** The net, gold pile and hands share a line 98px down (HaulPanel.c). */
 const NET_LINE = 98;
@@ -56,17 +60,11 @@ const FLOAT_PX = 30;
 /** A skin tone for the hauling hands, which the client tints to your pirate's (haul/client/o). */
 const SKIN = [236, 188, 140];
 
-type Look = 'standard' | 'haunted' | 'vampirate';
-const LOOKS: Option<Look>[] = [
-  { value: 'standard', label: 'Ship' },
-  { value: 'haunted', label: 'Haunted (haunted chests)' },
-  { value: 'vampirate', label: 'Vampirate lair' },
-];
-const CHEST_RATES: Option<number>[] = [
-  { value: 0, label: 'None' },
-  { value: 5, label: 'Every 5 moves' },
-  { value: 10, label: 'Every 10 moves' },
-  { value: 20, label: 'Every 20 moves' },
+/** How many chests are kept coming: as one is hauled, the next is sent. */
+const MODES: Option<number>[] = [
+  { value: 0, label: '0 chests' },
+  { value: 1, label: '1 chest' },
+  { value: 2, label: '2 chests' },
 ];
 const ROUNDS: Option<number>[] = [
   { value: 0, label: 'Endless' },
@@ -178,8 +176,7 @@ export default (async ({ screen, input, panel, store, ticks }) => {
   const random = () => rng.random();
   const hands = tint(img('hands'));
 
-  let look = store.get<Look>('look', 'standard');
-  let chestRate = store.get<number>('chestRate', 0);
+  let chestMode = store.get<number>('chests', 0);
   let roundSecs = store.get<number>('round', 0);
   const bests = store.get<Record<string, number>>('bestPoints', {});
 
@@ -213,12 +210,12 @@ export default (async ({ screen, input, panel, store, ticks }) => {
   let pull: { start: number; down: boolean } | null = null;
   let handsUp = true;
 
-  const layout = () => (look === 'vampirate' ? { boardY: 185, top: 178 } : { boardY: 205, top: 198 });
   const later = (ms: number, run: () => void) => timers.push({ at: ticks() + ms, run });
   /** Top-left of square (x, y) in board pixels: y = 0 is the bottom row (HaulBoardView.a(int, int, Point)). */
   const cellXY = (x: number, y: number): Point => [x * CELL, (H - 1 - y) * CELL];
-  const suffix = () => (look === 'vampirate' ? '_vampirate' : '');
-  const chestSheet = (mini: boolean) => `${mini ? 'minichest' : 'chest'}${look === 'haunted' ? '_haunted' : suffix()}2x2`;
+  const chestSheet = (mini: boolean) => (mini ? 'minichest2x2' : 'chest2x2');
+  /** Best points are kept per mode and round length. */
+  const bestKey = () => `${chestMode}:${roundSecs}`;
   const actionCount = () => movers.length + fades.length;
   const inFlight = () => flyers.length + minis.length;
 
@@ -237,7 +234,7 @@ export default (async ({ screen, input, panel, store, ticks }) => {
       ctx.drawImage(img(chestSheet(false)), chestValue(piece) * 2 * CELL, 0, 2 * CELL, 2 * CELL, x, y, 2 * CELL, 2 * CELL);
       return;
     }
-    ctx.drawImage(img(`piece${piece}${suffix()}`), 0, 0, CELL, CELL, Math.trunc(x), Math.trunc(y), CELL, CELL);
+    ctx.drawImage(img(`piece${piece}`), 0, 0, CELL, CELL, Math.trunc(x), Math.trunc(y), CELL, CELL);
   }
 
   /** One frame of an animated strip, looping at fps. */
@@ -280,6 +277,7 @@ export default (async ({ screen, input, panel, store, ticks }) => {
   function start(): void {
     board = new HaulBoard(random);
     board.populate();
+    sendChests();
     shown = [...board.cells];
     movers = [];
     fades = [];
@@ -325,8 +323,8 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     finished = true;
     intro = null;
     timers = [];
-    if (roundSecs && tally.points > (bests[roundSecs] ?? 0)) {
-      bests[roundSecs] = tally.points;
+    if (roundSecs && tally.points > (bests[bestKey()] ?? 0)) {
+      bests[bestKey()] = tally.points;
       store.set('bestPoints', bests);
     }
   }
@@ -348,7 +346,7 @@ export default (async ({ screen, input, panel, store, ticks }) => {
       const sheet = c.piece === RUBY ? 'sparks_ruby' : c.piece === EMERALD ? 'sparks_emerald' : 'sparks';
       const at = ticks();
       for (let i = 0; i < 5; i++) {
-        sparks.push({ sheet: sheet + suffix(), x: chest ? px + 23 : px, y: chest ? py - 23 : py, angle: (Math.PI * 2 * i) / 5, start: at });
+        sparks.push({ sheet: sheet, x: chest ? px + 23 : px, y: chest ? py - 23 : py, angle: (Math.PI * 2 * i) / 5, start: at });
       }
       if (!chest || isChestOrigin(c.piece)) {
         [px, py] = cellXY(c.x, c.y);
@@ -378,6 +376,7 @@ export default (async ({ screen, input, panel, store, ticks }) => {
 
   function swapAt(x: number, y: number): void {
     if (!board || !active || !stable || actionCount() > 0) return;
+    sendChests();
     const result = board.swap(x, y);
     if (result.kind === 'illegal') return;
     if (result.kind === 'gem') {
@@ -396,10 +395,17 @@ export default (async ({ screen, input, panel, store, ticks }) => {
         stable = false;
       }
     }
-    // The server sends chests; here one is announced every so many moves.
-    if (result.kind !== 'same' && chestRate && tally.moves % chestRate === 0) {
-      board.pending.push({ value: rng.randintN(0, 2), size: 0 });
-    }
+  }
+
+  /**
+   * The server sends chests; here it keeps the mode's number of chests on their way: on the
+   * board, waiting to come in, or announced. Each move lets one announced chest through.
+   */
+  function sendChests(): void {
+    if (!board) return;
+    let count = board.chestList.length + board.pending.length;
+    for (const p of board.cells) if (isChestOrigin(p)) count++;
+    for (; count < chestMode; count++) board.pending.push({ value: rng.randintN(0, 2), size: 0 });
   }
 
   function animate(step: Step): void {
@@ -441,7 +447,6 @@ export default (async ({ screen, input, panel, store, ticks }) => {
   }
 
   function startHauling(): void {
-    if (look === 'vampirate') return;
     if (!netStart) netStart = ticks();
     if (!hauling) {
       hauling = true;
@@ -513,18 +518,17 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     return { y: up, tile: 1 };
   }
 
-  function drawTop(now: number, top: number): void {
+  function drawTop(now: number): void {
+    const top = TOP;
     ctx.save();
     ctx.beginPath();
     ctx.rect(0, 0, WIDTH, top);
     ctx.clip();
-    if (look !== 'vampirate') {
-      const pile = img('gold_pile');
-      ctx.drawImage(pile, 0, NET_LINE - Math.max(0, Math.min(pile.height, Math.round((gold / 10000) * pile.height))));
-      const pose = handsPose(now);
-      ctx.drawImage(hands, pose.tile * 58, 0, 58, 73, 225 - 29, Math.trunc(pose.y), 58, 73);
-      ctx.drawImage(img('net_haul'), netFrame(now) * 450, 0, 450, 109, 0, NET_LINE - 9, 450, 109);
-    }
+    const pile = img('gold_pile');
+    ctx.drawImage(pile, 0, NET_LINE - Math.max(0, Math.min(pile.height, Math.round((gold / 10000) * pile.height))));
+    const pose = handsPose(now);
+    ctx.drawImage(hands, pose.tile * 58, 0, 58, 73, 225 - 29, Math.trunc(pose.y), 58, 73);
+    ctx.drawImage(img('net_haul'), netFrame(now) * 450, 0, 450, 109, 0, NET_LINE - 9, 450, 109);
     // Mini pieces come up from the board to the net in 300ms, then drop into it in 200ms (HaulPanel.a, haul/client/m).
     for (const m of minis) {
       const chest = isChest(m.piece);
@@ -533,14 +537,14 @@ export default (async ({ screen, input, panel, store, ticks }) => {
       const mid = NET_LINE + size / 2;
       const y = t < 300 ? top + ((mid - top) * t) / 300 : mid + ((NET_LINE - size - mid) * (t - 300)) / 200;
       if (chest) ctx.drawImage(img(chestSheet(true)), chestValue(m.piece) * size, 0, size, size, m.x, Math.trunc(y), size, size);
-      else drawFrame(img(`minipiece${m.piece}${suffix()}`), MINI, m.fps, m.start, now, m.x, y);
+      else drawFrame(img(`minipiece${m.piece}`), MINI, m.fps, m.start, now, m.x, y);
     }
     ctx.restore();
   }
 
-  function drawBoard(now: number, boardY: number): void {
+  function drawBoard(now: number): void {
     ctx.save();
-    ctx.translate(44, boardY);
+    ctx.translate(BOARD_X, BOARD_Y);
     ctx.beginPath();
     ctx.rect(0, 0, BOARD, BOARD);
     ctx.clip();
@@ -562,10 +566,7 @@ export default (async ({ screen, input, panel, store, ticks }) => {
       drawPiece(m.piece, Math.trunc(m.from[0] + (m.to[0] - m.from[0]) * t), Math.trunc(m.from[1] + (m.to[1] - m.from[1]) * t));
     }
     if (active && board) {
-      const vamp = look === 'vampirate';
-      const ex = vamp ? 7 : 4;
-      const ey = vamp ? 16 : 4;
-      ctx.drawImage(img(`cursor${suffix()}`), cursor[0] * CELL - ex, (H - 1 - cursor[1]) * CELL - ey);
+      ctx.drawImage(img('cursor'), cursor[0] * CELL - 4, (H - 1 - cursor[1]) * CELL - 4);
     }
     // Sparks fly out for 900ms, fading after the first 200ms (duty/client/l, m).
     for (const s of sparks) {
@@ -582,7 +583,7 @@ export default (async ({ screen, input, panel, store, ticks }) => {
       const x = Math.round(f.x + f.amp * Math.sin((Math.PI * 2 * t) / f.period));
       const y = Math.round(f.y - t * 0.6);
       if (isChest(f.piece)) drawPiece(f.piece, x, y);
-      else drawFrame(img(`piece${f.piece}${suffix()}`), CELL, f.fps, f.start, now, x, y);
+      else drawFrame(img(`piece${f.piece}`), CELL, f.fps, f.start, now, x, y);
     }
     drawTexts(now);
     ctx.restore();
@@ -632,12 +633,11 @@ export default (async ({ screen, input, panel, store, ticks }) => {
 
   function frame(events: InputEvent[]): void {
     const now = ticks();
-    const { boardY, top } = layout();
-    const onBoard = (p: Point) => p[0] >= 44 && p[0] < 44 + BOARD && p[1] >= boardY && p[1] < boardY + BOARD;
+    const onBoard = (p: Point) => p[0] >= BOARD_X && p[0] < BOARD_X + BOARD && p[1] >= BOARD_Y && p[1] < BOARD_Y + BOARD;
     // The cursor follows the mouse over the board: the square under it and the one below (HaulBoardView.c(int, int)).
     if (active && onBoard(input.mouse) && (input.mouse[0] !== lastMouse[0] || input.mouse[1] !== lastMouse[1])) {
-      const cx = Math.max(0, Math.min(Math.floor((input.mouse[0] - 44) / CELL), W - 1));
-      const cy = Math.min(H - 1, H - Math.floor((input.mouse[1] - boardY) / CELL));
+      const cx = Math.max(0, Math.min(Math.floor((input.mouse[0] - BOARD_X) / CELL), W - 1));
+      const cy = Math.min(H - 1, H - Math.floor((input.mouse[1] - BOARD_Y) / CELL));
       cursor = [cx, cy];
     }
     lastMouse = input.mouse;
@@ -668,24 +668,20 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     }
 
     screen.fill('#000');
-    screen.blit(img(`background${suffix()}`), 0, 0);
-    drawTop(now, top);
-    drawBoard(now, boardY);
-    if (!running && !board) banner('Press Start to haul treasure', boardY + 180);
-    else if (finished) banner(roundSecs && roundEnd ? "Time's up!" : 'Stopped', boardY + 180);
+    screen.blit(img('background'), 0, 0);
+    drawTop(now);
+    drawBoard(now);
+    if (!running && !board) banner('Press Start to haul treasure', BOARD_Y + 180);
+    else if (finished) banner(roundSecs && roundEnd ? "Time's up!" : 'Stopped', BOARD_Y + 180);
   }
 
   // ---- Panel ----
 
   const game = panel.group('Game');
-  game.select('Where', LOOKS, () => look, (l) => {
-    look = l;
-    store.set('look', l);
-  }, { disabled: () => running, title: 'The art for a ship, the Haunted Seas or a vampirate lair' });
-  game.select('Chests', CHEST_RATES, () => chestRate, (r) => {
-    chestRate = r;
-    store.set('chestRate', r);
-  }, { title: 'The server sends chests in Atlantis, the Haunted Seas and vampirate lairs; how often is a guess' });
+  game.select('Mode', MODES, () => chestMode, (m) => {
+    chestMode = m;
+    store.set('chests', m);
+  }, { disabled: () => running, title: 'How many chests are on their way at once; as one is hauled, the next one comes' });
   game.select('Round', ROUNDS, () => roundSecs, (s) => {
     roundSecs = s;
     store.set('round', s);
@@ -696,7 +692,7 @@ export default (async ({ screen, input, panel, store, ticks }) => {
   const clock = (s: number) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
   panel.group('Haul').stats(['', 'Now', 'Best'], () => [
     ['Time left', roundSecs ? clock(running || finished ? secondsLeft() : roundSecs) : '-', ''],
-    ['Points', String(tally.points), roundSecs && bests[roundSecs] ? String(bests[roundSecs]) : '-'],
+    ['Points', String(tally.points), roundSecs && bests[bestKey()] ? String(bests[bestKey()]) : '-'],
     ['Moves', String(tally.moves), ''],
     ['Best move', String(tally.bestMove), ''],
     ['Coins', String(tally.coins), ''],
