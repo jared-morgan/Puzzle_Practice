@@ -6,6 +6,9 @@
 //
 // The game's points are worked out on the server, which isn't in the client, so there is no
 // score yet: the panel shows what the client shows (the blade's done level and the combos).
+//
+// Perfect board is a practice mode that isn't in the game: a 1x1 to 5x5 board, one strike per
+// square, dealt so that every square can be struck. 3 points for clearing it, 1 for one left.
 import { Images } from '../../core/assets';
 import { SoundBank } from '../../core/audio';
 import { loadFont } from '../../core/fonts';
@@ -22,10 +25,13 @@ import {
   FINISHED,
   IronBoard,
   LONG_CHAIN,
+  MAX_PERFECT_SIZE,
+  MIN_PERFECT_SIZE,
+  perfectBoard,
+  perfectPoints,
   SET_MESSAGES,
   SIZE,
   type Strike,
-  TOTAL_HITS,
   WILD,
   WILD_REVEALED,
 } from './logic';
@@ -64,6 +70,20 @@ const FLOAT_PX = 30;
 
 /** Short names for the done levels, for the panel (the messages are in logic.ts). */
 const BLADE_NAMES = ['Club', 'Hefty blade', 'Finely balanced', 'Keen edge', 'Masterpiece'];
+
+type Mode = 'classic' | 'perfect';
+const MODES: Option<Mode>[] = [
+  { value: 'classic', label: 'Classic (6x6, as in the game)' },
+  { value: 'perfect', label: 'Perfect board' },
+];
+
+/** A perfect-board record for one size and difficulty. */
+interface PerfectRecord {
+  boards: number;
+  points: number;
+  cleared: number;
+  oneOff: number;
+}
 
 const DIFFICULTIES: Option<number>[] = [
   { value: 1, label: '1: numbers 1-3' },
@@ -164,7 +184,13 @@ export default (async ({ screen, input, panel, store, ticks }) => {
   const glowSheets = TILE_SHEETS.map((name) => (name ? [silhouette(img(name), GLOW), silhouette(img(name), GLOW_HOT)] : []));
 
   let difficulty = store.get<number>('difficulty', 4);
+  let mode = store.get<Mode>('mode', 'classic');
+  let perfectSize = store.get<number>('perfectSize', 3);
   const bests = store.get<Record<string, number>>('bestStrikes', {});
+  const perfectRecords = store.get<Record<string, PerfectRecord>>('perfectRecords', {});
+  const perfectKey = () => `${perfectSize}-${difficulty}`;
+  /** Points from the perfect board just finished, or null. */
+  let lastPoints: number | null = null;
 
   let board: IronBoard | null = null;
   /** Each square as drawn: it changes when the hammer lands, a little after the strike. */
@@ -191,7 +217,11 @@ export default (async ({ screen, input, panel, store, ticks }) => {
   let fade = { start: 0, duration: 1, from: 0, to: 0 };
 
   const later = (ms: number, run: () => void) => timers.push({ at: ticks() + ms, run });
-  const pieceXY = (x: number, y: number): Point => [BOARD_X + x * CELL, BOARD_Y + y * CELL];
+  /** Boards smaller than 6x6 sit in the middle of the usual board area. */
+  const boardSize = () => board?.size ?? SIZE;
+  const inset = () => ((SIZE - boardSize()) * CELL) / 2;
+  const pieceXY = (x: number, y: number): Point => [BOARD_X + inset() + x * CELL, BOARD_Y + inset() + y * CELL];
+  const totalStrikes = () => (board ? board.size * board.size * board.strikesPerSquare : 0);
 
   function pathPos(path: Path, now: number): Point {
     const t = Math.max(0, Math.min(1, (now - path.start) / path.duration));
@@ -307,7 +337,9 @@ export default (async ({ screen, input, panel, store, ticks }) => {
   // ---- The game ----
 
   function newSword(): void {
-    board = new IronBoard(boardDifficulty(difficulty), random);
+    const level = boardDifficulty(difficulty);
+    board = mode === 'perfect' ? new IronBoard(level, random, perfectBoard(perfectSize, level, random)) : new IronBoard(level, random);
+    lastPoints = null;
     shown = board.pieces.map((col) => col.map((p) => ({ type: p.type, condition: p.condition })));
     running = true;
     finished = false;
@@ -342,21 +374,21 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     if (!hit) return;
     hammerable = false;
     announce(hit);
-    if (hit.finished) {
+    if (hit.finished && mode === 'classic') {
       const level = board.doneLevel();
       if (level === 0) sayDone();
       else if (level !== 4) say(FINISHED, 3);
     }
     swing(hit);
     glowStart = ticks();
-    glows = board.findHittable().map((p) => ({ x: p.x, y: p.y, hot: p.condition === 3 }));
+    glows = board.findHittable().map((p) => ({ x: p.x, y: p.y, hot: p.condition === board!.strikesPerSquare }));
     reblade();
   }
 
   /** Messages and sounds for the chain (IronBoardView.a(Chain)), and the tally for the panel. */
   function announce(hit: Strike): void {
     const chain = hit.chain;
-    if (board!.doneLevel() !== doneness) {
+    if (mode === 'classic' && board!.doneLevel() !== doneness) {
       doneness = board!.doneLevel();
       sayDone();
     }
@@ -440,7 +472,7 @@ export default (async ({ screen, input, panel, store, ticks }) => {
 
   /** Blends the blade toward smooth as strikes add up (IronBoardView.c(o)). */
   function reblade(): void {
-    const level = (board!.numHits * (BLADES.length - 1)) / TOTAL_HITS;
+    const level = (board!.numHits * (BLADES.length - 1)) / totalStrikes();
     const i = Math.floor(level);
     if (i >= BLADES.length - 1) {
       sword = img(BLADES[BLADES.length - 1]);
@@ -465,7 +497,12 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     const duration = 1000;
     fadeTo(0, delay, duration);
     const now = ticks();
-    if (board!.doneLevel() >= 2) {
+    if (mode === 'perfect') {
+      const left = board!.remaining();
+      lastPoints = perfectPoints(left);
+      say(left === 0 ? 'Perfect! +3' : left === 1 ? 'One off! +1' : `${left} left`, left === 0 ? 5 : 3, 2000);
+    }
+    if (mode === 'perfect' ? lastPoints === 3 : board!.doneLevel() >= 2) {
       const gleam = img('gleam');
       gleamPath = { from: [WIDTH, SWORD_Y], to: [-gleam.width, SWORD_Y], start: now + delay + duration, duration: delay };
       later((3 * delay) / 2 + duration, () => anims.push(frames('twinkle', 200, 48, [0, 1, 2, 3, 4, 5, 6, 7], WIDTH / 2, SWORD_Y, 0)));
@@ -483,6 +520,16 @@ export default (async ({ screen, input, panel, store, ticks }) => {
   function finish(): void {
     running = false;
     finished = true;
+    if (mode === 'perfect') {
+      const record = perfectRecords[perfectKey()] ?? { boards: 0, points: 0, cleared: 0, oneOff: 0 };
+      record.boards++;
+      record.points += lastPoints ?? 0;
+      if (lastPoints === 3) record.cleared++;
+      if (lastPoints === 1) record.oneOff++;
+      perfectRecords[perfectKey()] = record;
+      store.set('perfectRecords', perfectRecords);
+      return;
+    }
     const key = String(difficulty);
     if (board && board.numHits > (bests[key] ?? 0)) {
       bests[key] = board.numHits;
@@ -493,14 +540,15 @@ export default (async ({ screen, input, panel, store, ticks }) => {
   function moveCursor(dx: number, dy: number): void {
     if (!hammerable) return;
     const [x, y] = cursor ?? [0, 0];
-    cursor = [Math.max(0, Math.min(SIZE - 1, x + dx)), Math.max(0, Math.min(SIZE - 1, y + dy))];
+    cursor = [Math.max(0, Math.min(boardSize() - 1, x + dx)), Math.max(0, Math.min(boardSize() - 1, y + dy))];
   }
 
   function squareAt(pos: Point): Point | null {
-    if (pos[0] < BOARD_X || pos[1] < BOARD_Y) return null;
-    const x = Math.floor((pos[0] - BOARD_X) / CELL);
-    const y = Math.floor((pos[1] - BOARD_Y) / CELL);
-    return x < SIZE && y < SIZE && board ? [x, y] : null;
+    const [left, top] = pieceXY(0, 0);
+    if (pos[0] < left || pos[1] < top) return null;
+    const x = Math.floor((pos[0] - left) / CELL);
+    const y = Math.floor((pos[1] - top) / CELL);
+    return x < boardSize() && y < boardSize() && board ? [x, y] : null;
   }
 
   // ---- Drawing ----
@@ -532,17 +580,45 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     ctx.drawImage(img('tally'), mark * 50, 0, 50, 46, bx + 80, by + 50, 50, 46);
   }
 
+  /** One-strike squares are drawn red hot, as fresh squares are. */
+  const sheetFor = (condition: number) => condition + 3 - (board?.strikesPerSquare ?? 3);
+
+  /** The gold frame around the squares, its 7px border kept and its middle stretched for smaller boards. */
+  function drawFrame(alpha: number): void {
+    const frame = img('frame');
+    const b = 7;
+    const inner = frame.width - 2 * b;
+    const size = boardSize() * CELL;
+    const x = FRAME_X + inset();
+    const y = FRAME_Y + inset();
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    const parts = [
+      [0, b, 0],
+      [b, inner, b],
+      [frame.width - b, b, b + size],
+    ];
+    for (const [sx, sw, dx] of parts) {
+      for (const [sy, sh, dy] of parts) {
+        const dw = sw === inner ? size : b;
+        const dh = sh === inner ? size : b;
+        ctx.drawImage(frame, sx, sy, sw, sh, x + dx, y + dy, dw, dh);
+      }
+    }
+    ctx.restore();
+  }
+
   function drawSquares(now: number): void {
     const alpha = fadeAlpha(now);
     if (alpha <= 0) return;
     ctx.save();
     ctx.globalAlpha = alpha;
-    for (let x = 0; x < SIZE; x++) {
-      for (let y = 0; y < SIZE; y++) {
+    for (let x = 0; x < boardSize(); x++) {
+      for (let y = 0; y < boardSize(); y++) {
         const { type, condition } = shown[x][y];
         if (!condition) continue;
         const [px, py] = pieceXY(x, y);
-        ctx.drawImage(img(TILE_SHEETS[condition]), type * CELL, 0, CELL, CELL, px, py, CELL, CELL);
+        ctx.drawImage(img(TILE_SHEETS[sheetFor(condition)]), type * CELL, 0, CELL, CELL, px, py, CELL, CELL);
       }
     }
     ctx.restore();
@@ -555,7 +631,7 @@ export default (async ({ screen, input, panel, store, ticks }) => {
       const [px, py] = pieceXY(g.x, g.y);
       ctx.save();
       ctx.globalAlpha = glowAlpha * alpha;
-      ctx.drawImage(glowSheets[condition][g.hot ? 1 : 0], type * CELL, 0, CELL, CELL, px, py, CELL, CELL);
+      ctx.drawImage(glowSheets[sheetFor(condition)][g.hot ? 1 : 0], type * CELL, 0, CELL, CELL, px, py, CELL, CELL);
       ctx.restore();
     }
   }
@@ -620,7 +696,7 @@ export default (async ({ screen, input, panel, store, ticks }) => {
         layer: 0,
         draw: (t) => {
           const alpha = fadeAlpha(t);
-          if (board && alpha > 0) screen.blit(img('frame'), FRAME_X, FRAME_Y, { alpha: alpha * 255 });
+          if (board && alpha > 0) drawFrame(alpha);
           if (gleamPos) screen.blit(img('gleam'), gleamPos[0], gleamPos[1]);
           return true;
         },
@@ -666,6 +742,20 @@ export default (async ({ screen, input, panel, store, ticks }) => {
   // ---- Panel ----
 
   const game = panel.group('Game');
+  game.select('Mode', MODES, () => mode, (m) => {
+    mode = m;
+    store.set('mode', m);
+  }, { disabled: () => running });
+  game.number('Board size', () => perfectSize, (n) => {
+    perfectSize = Math.max(MIN_PERFECT_SIZE, Math.min(MAX_PERFECT_SIZE, Math.round(n) || 3));
+    store.set('perfectSize', perfectSize);
+  }, {
+    min: MIN_PERFECT_SIZE,
+    max: MAX_PERFECT_SIZE,
+    disabled: () => running,
+    hidden: () => mode !== 'perfect',
+    title: 'Squares along each side; every square can be struck once',
+  });
   game.select('Difficulty', DIFFICULTIES, () => difficulty, (d) => {
     difficulty = d;
     store.set('difficulty', d);
@@ -683,13 +773,30 @@ export default (async ({ screen, input, panel, store, ticks }) => {
       gleamPath = null;
       hammerable = false;
     } else newSword();
-  }, { variant: 'primary', label: () => (running ? 'Stop' : finished ? 'New sword' : 'Start') });
+  }, { variant: 'primary', label: () => (running ? 'Stop' : !finished ? 'Start' : mode === 'perfect' ? 'Next board' : 'New sword') });
 
   const best = () => bests[String(difficulty)];
-  panel.group('Sword').stats(['', 'Now', 'Best'], () => {
+  const perfectRecord = () => perfectRecords[perfectKey()];
+  panel.group('Perfect board', { hidden: () => mode !== 'perfect' }).stats(['', 'Now', 'Total'], () => {
+    const record = perfectRecord();
+    return [
+      ['Squares left', board?.strikesPerSquare === 1 ? `${board.remaining()} / ${board.size * board.size}` : '-', ''],
+      ['Points', lastPoints === null ? '-' : String(lastPoints), String(record?.points ?? 0)],
+      ['Boards', '', String(record?.boards ?? 0)],
+      ['Cleared (3)', '', String(record?.cleared ?? 0)],
+      ['One off (1)', '', String(record?.oneOff ?? 0)],
+      ['Points / board', '', record?.boards ? (record.points / record.boards).toFixed(2) : '-'],
+    ];
+  }).note(() => `Totals are for ${perfectSize}x${perfectSize} at difficulty ${difficulty}.`)
+    .button('Reset totals', () => {
+      delete perfectRecords[perfectKey()];
+      store.set('perfectRecords', perfectRecords);
+    }, { disabled: () => running || !perfectRecord() });
+
+  panel.group('Sword', { hidden: () => mode !== 'classic' }).stats(['', 'Now', 'Best'], () => {
     const hits = board?.numHits ?? 0;
     return [
-      ['Strikes', board ? `${hits} / ${TOTAL_HITS}` : '-', best() ? String(best()) : '-'],
+      ['Strikes', board ? `${hits} / ${totalStrikes()}` : '-', best() ? String(best()) : '-'],
       ['Blade', board && hits ? BLADE_NAMES[board.doneLevel()] : '-', best() ? BLADE_NAMES[doneLevelFor(best())] : '-'],
       ['Score', 'not yet', ''],
     ];

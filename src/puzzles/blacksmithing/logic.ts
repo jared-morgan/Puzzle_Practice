@@ -254,8 +254,21 @@ export interface Strike {
   finished: boolean;
 }
 
+/**
+ * The real game's board is 6x6 with three strikes a square and random restamps. A layout (from
+ * perfectBoard) instead gives a smaller board whose squares take one strike each.
+ */
+export interface Layout {
+  size: number;
+  /** The piece on each square, [x][y]. */
+  types: number[][];
+}
+
 export class IronBoard {
   readonly weights: number[][];
+  readonly size: number;
+  /** Strikes each square takes: 3 in the real game, 1 on a layout. */
+  readonly strikesPerSquare: number;
   pieces: Piece[][] = [];
   selected: Piece | null = null;
   chain: Chain;
@@ -264,8 +277,11 @@ export class IronBoard {
   constructor(
     readonly difficulty: number,
     private readonly random: () => number,
+    private readonly layout?: Layout,
   ) {
     this.weights = spawnWeights(difficulty);
+    this.size = layout?.size ?? SIZE;
+    this.strikesPerSquare = layout ? 1 : 3;
     this.chain = new Chain(difficulty);
     this.populate();
   }
@@ -274,11 +290,18 @@ export class IronBoard {
     this.selected = null;
     this.numHits = 0;
     this.pieces = [];
-    for (let x = 0; x < SIZE; x++) {
+    for (let x = 0; x < this.size; x++) {
       this.pieces.push([]);
-      for (let y = 0; y < SIZE; y++) this.pieces[x].push({ x, y, type: this.draw(x, y), condition: 3 });
+      for (let y = 0; y < this.size; y++) {
+        this.pieces[x].push({ x, y, type: this.layout ? this.layout.types[x][y] : this.draw(x, y), condition: this.strikesPerSquare });
+      }
     }
     this.chain = new Chain(this.difficulty);
+  }
+
+  /** Squares still standing. */
+  remaining(): number {
+    return this.pieces.flat().filter((p) => p.condition > 0).length;
   }
 
   private draw(x: number, y: number): number {
@@ -298,49 +321,121 @@ export class IronBoard {
     this.selected = piece;
     if (!this.chain.add(struck)) this.chain = Chain.after(this.chain, struck);
     const condition = --piece.condition;
-    // The last square of a layer to be struck comes back as a rum jug, at the top difficulty.
-    const lastOfLayer = this.pieces.every((col) => col.every((p) => p.condition <= condition));
-    piece.type = lastOfLayer && this.difficulty === 3 ? WILD : this.draw(x, y);
+    if (!this.layout) {
+      // The last square of a layer to be struck comes back as a rum jug, at the top difficulty.
+      const lastOfLayer = this.pieces.every((col) => col.every((p) => p.condition <= condition));
+      piece.type = lastOfLayer && this.difficulty === 3 ? WILD : this.draw(x, y);
+    }
     this.numHits++;
     return { piece, struck, chain: this.chain, doneLevelUp: this.doneLevel() !== level, finished: this.findHittable().length === 0 };
   }
 
   findHittable(): Piece[] {
     const out: Piece[] = [];
-    for (let x = 0; x < SIZE; x++) for (let y = 0; y < SIZE; y++) if (this.isHittable(x, y)) out.push(this.pieces[x][y]);
+    for (let x = 0; x < this.size; x++) for (let y = 0; y < this.size; y++) if (this.isHittable(x, y)) out.push(this.pieces[x][y]);
     return out;
   }
 
   isHittable(x: number, y: number): boolean {
-    if (x < 0 || y < 0 || x >= SIZE || y >= SIZE) return false;
+    if (x < 0 || y < 0 || x >= this.size || y >= this.size) return false;
     const from = this.selected;
     if (!from) return true;
     if (this.pieces[x][y].condition === 0) return false;
-    const dx = Math.abs(x - from.x);
-    const dy = Math.abs(y - from.y);
-    if (dx === 0 && dy === 0) return false;
-    const edgeColumn = x === 0 || x === SIZE - 1;
-    const edgeRow = y === 0 || y === SIZE - 1;
-    const bishop = dx === dy && (edgeColumn || edgeRow);
-    const rook = (dx > 0 && dy === 0 && edgeColumn) || (dy > 0 && dx === 0 && edgeRow);
-    const last = this.chain.last();
-    switch (last) {
-      case WILD:
-        return true;
-      case KNIGHT:
-        return (dx === 2 && dy === 1) || (dx === 1 && dy === 2);
-      case BISHOP:
-        return bishop;
-      case ROOK:
-        return rook;
-      case QUEEN:
-        return rook || bishop;
-      default: {
-        const n = asNumber(last);
-        return (dx === n && dy === n) || (dx === n && dy === 0) || (dx === 0 && dy === n);
-      }
+    return canMove(this.chain.last(), from.x, from.y, x, y, this.size);
+  }
+}
+
+/**
+ * Whether a piece of this type at (fx, fy) lets the next strike land on (tx, ty), on a board
+ * `size` squares wide (IronBoard.isHittable, where the board is always 6).
+ */
+export function canMove(type: number, fx: number, fy: number, tx: number, ty: number, size = SIZE): boolean {
+  const dx = Math.abs(tx - fx);
+  const dy = Math.abs(ty - fy);
+  if (dx === 0 && dy === 0) return false;
+  const edgeColumn = tx === 0 || tx === size - 1;
+  const edgeRow = ty === 0 || ty === size - 1;
+  const bishop = dx === dy && (edgeColumn || edgeRow);
+  const rook = (dx > 0 && dy === 0 && edgeColumn) || (dy > 0 && dx === 0 && edgeRow);
+  switch (type) {
+    case WILD:
+      return true;
+    case KNIGHT:
+      return (dx === 2 && dy === 1) || (dx === 1 && dy === 2);
+    case BISHOP:
+      return bishop;
+    case ROOK:
+      return rook;
+    case QUEEN:
+      return rook || bishop;
+    default: {
+      const n = asNumber(type);
+      return (dx === n && dy === n) || (dx === n && dy === 0) || (dx === 0 && dy === n);
     }
   }
+}
+
+// ---- Perfect boards (a practice mode; not in the game) ----
+
+export const MIN_PERFECT_SIZE = 1;
+export const MAX_PERFECT_SIZE = 5;
+
+/** The pieces a difficulty uses (never the rum jug, which only appears as a reward). */
+export function piecesFor(difficulty: number): number[] {
+  return TYPE_ON[difficulty].flatMap((on, type) => (on && type !== WILD ? [type] : []));
+}
+
+/**
+ * A board, `size` squares wide with one strike per square, that can be cleared completely.
+ * Picks a random order to strike every square in, each step reachable from the last by some
+ * piece the difficulty uses, then stamps each square with a random piece that makes its step.
+ * The last square gets any piece. Also returns the order, as one solution.
+ */
+export function perfectBoard(size: number, difficulty: number, random: () => number): Layout & { solution: [number, number][] } {
+  const pieces = piecesFor(difficulty);
+  const squares: [number, number][] = [];
+  for (let x = 0; x < size; x++) for (let y = 0; y < size; y++) squares.push([x, y]);
+  const pick = <T>(items: T[]) => items[Math.floor(random() * items.length)];
+  const shuffle = <T>(items: T[]) => {
+    const out = [...items];
+    for (let i = out.length - 1; i > 0; i--) {
+      const j = Math.floor(random() * (i + 1));
+      [out[i], out[j]] = [out[j], out[i]];
+    }
+    return out;
+  };
+  const movers = (from: [number, number], to: [number, number]) => pieces.filter((t) => canMove(t, from[0], from[1], to[0], to[1], size));
+
+  // Depth-first over orders, trying squares in random order. Boards up to 5x5 solve quickly;
+  // the step budget only guards against a slow start square, which is then retried.
+  for (;;) {
+    const path: [number, number][] = [pick(squares)];
+    const used = new Set([path[0].join()]);
+    let steps = 0;
+    const extend = (): boolean => {
+      if (path.length === squares.length) return true;
+      if (++steps > 20000) return false;
+      const here = path[path.length - 1];
+      for (const next of shuffle(squares)) {
+        if (used.has(next.join()) || !movers(here, next).length) continue;
+        path.push(next);
+        used.add(next.join());
+        if (extend()) return true;
+        path.pop();
+        used.delete(next.join());
+      }
+      return false;
+    };
+    if (!extend()) continue;
+    const types = Array.from({ length: size }, () => Array<number>(size).fill(0));
+    path.forEach((sq, i) => (types[sq[0]][sq[1]] = i + 1 < path.length ? pick(movers(sq, path[i + 1])) : pick(pieces)));
+    return { size, types, solution: path };
+  }
+}
+
+/** Points for a perfect board: 3 for clearing it, 1 for leaving one square, otherwise none. */
+export function perfectPoints(remaining: number): number {
+  return remaining === 0 ? 3 : remaining === 1 ? 1 : 0;
 }
 
 // ---- Messages (rsrc/en/i18n/puzzle/iron.properties) ----

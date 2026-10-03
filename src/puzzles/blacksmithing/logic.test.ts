@@ -8,7 +8,11 @@ import {
   FOUR,
   IronBoard,
   KNIGHT,
+  MAX_PERFECT_SIZE,
   ONE,
+  perfectBoard,
+  perfectPoints,
+  piecesFor,
   QUEEN,
   ROOK,
   SIZE,
@@ -202,5 +206,47 @@ describe('spawning (iron/a/a)', () => {
     expect(weightedIndex([0, 1, 0], () => 0.99)).toBe(1);
     expect(weightedIndex([1, 1], () => 0.49)).toBe(0);
     expect(weightedIndex([1, 1], () => 0.5)).toBe(1);
+  });
+});
+
+describe('perfect boards', () => {
+  it('can always be cleared, at every size and difficulty', () => {
+    const rng = new PyRandom(3);
+    const random = () => rng.random();
+    for (let size = 1; size <= MAX_PERFECT_SIZE; size++) {
+      for (let difficulty = 0; difficulty < 4; difficulty++) {
+        for (let n = 0; n < 20; n++) {
+          const layout = perfectBoard(size, difficulty, random);
+          expect(layout.solution).toHaveLength(size * size);
+          expect(new Set(layout.solution.map((p) => p.join())).size).toBe(size * size);
+          for (const col of layout.types) for (const t of col) expect(piecesFor(difficulty)).toContain(t);
+          const board = new IronBoard(difficulty, random, layout);
+          for (const [x, y] of layout.solution) expect(board.hit(x, y)).not.toBeNull();
+          expect(board.remaining()).toBe(0);
+          expect(board.findHittable()).toHaveLength(0);
+        }
+      }
+    }
+  });
+
+  it('takes one strike per square and never restamps', () => {
+    const rng = new PyRandom(4);
+    const layout = perfectBoard(3, 3, () => rng.random());
+    const board = new IronBoard(3, () => rng.random(), layout);
+    const [x, y] = layout.solution[0];
+    const type = board.pieces[x][y].type;
+    board.hit(x, y);
+    expect(board.pieces[x][y].condition).toBe(0);
+    expect(board.pieces[x][y].type).toBe(type);
+  });
+
+  it('measures moves on the smaller board, so its edges count for rooks and bishops', () => {
+    const board = new IronBoard(3, Math.random, { size: 3, types: [[ROOK, ROOK, ROOK], [ROOK, ROOK, ROOK], [ROOK, ROOK, ROOK]] });
+    board.hit(1, 1);
+    expect(board.findHittable().map((p) => `${p.x},${p.y}`).sort()).toEqual(['0,1', '1,0', '1,2', '2,1']);
+  });
+
+  it('scores 3 for a cleared board, 1 for one square left, otherwise 0', () => {
+    expect([0, 1, 2, 9].map(perfectPoints)).toEqual([3, 1, 0, 0]);
   });
 });
