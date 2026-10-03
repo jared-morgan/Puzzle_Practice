@@ -1,4 +1,5 @@
-// Piece shapes and hole arithmetic from hole_calculator.py and HoleCreator.py.
+// Speed carp's small holes, from hole_calculator.py and HoleCreator.py in the Vampire Carp
+// simulator. Normal holes are the client's now (board.ts).
 //
 // A hole is a 4×9 grid of numbers: 0 wood, 1 an empty cell, and +2 for every piece
 // covering a cell (so 3 is filled once, 5 overlapped). Edges mark the empty cells
@@ -66,11 +67,6 @@ export function holeOrigin(hole: number): [number, number] {
   return [hole === 0 || hole === 2 ? 53 : 251, hole === 0 || hole === 1 ? 105 : 447];
 }
 
-/** Snaps a mouse position to the 18px grid pieces are placed on. */
-export function snap(pos: readonly [number, number]): [number, number] {
-  return [Math.floor((pos[0] - 17) / 18) * 18 + 17, Math.floor((pos[1] - 15) / 18) * 18 + 15];
-}
-
 function coveredCells(piece: Piece, x: number, y: number, hole: number): [number, number][] {
   const [hx, hy] = holeOrigin(hole);
   // The -2s centre the 5×5 matrix on the piece's position.
@@ -122,115 +118,12 @@ export function checkPlacement(grid: Grid, edges: Grid, piece: Piece, x: number,
   return [empty > 0 && touches, empty];
 }
 
-export function holeComplete(grid: Grid): boolean {
-  return grid.every((row) => row.every((v) => v !== 1));
-}
-
-/** putty_calculator: the empty region under (x, y), if it is five cells or fewer. */
-export function puttyFill(grid: Grid, x: number, y: number, hole: number): [boolean, [number, number][]] {
-  const [hx, hy] = holeOrigin(hole);
-  const offsetX = Math.floor((x - hx) / 18);
-  const offsetY = Math.floor((y - hy) / 18);
-  const seen = emptyGrid();
-  const queue: [number, number][] = [];
-  if (offsetX >= 0 && offsetX <= 8 && offsetY >= 0 && offsetY <= 3) {
-    queue.push([offsetY, offsetX]);
-    seen[offsetY][offsetX] = 1;
-  }
-  const fills: [number, number][] = [];
-  while (queue.length) {
-    const [q, r] = queue.shift()!;
-    if (grid[q][r] !== 1) continue;
-    fills.push([q, r]);
-    for (const [dq, dr] of [
-      [-1, 0],
-      [1, 0],
-      [0, -1],
-      [0, 1],
-    ]) {
-      const nq = q + dq;
-      const nr = r + dr;
-      if (nq >= 0 && nq <= 3 && nr >= 0 && nr <= 8 && !seen[nq][nr]) {
-        queue.push([nq, nr]);
-        seen[nq][nr] = 1;
-      }
-    }
-  }
-  return [fills.length > 0 && fills.length <= 5, fills];
-}
-
-/** hole_putty_calculator. */
-export function applyPutty(grid: Grid, fills: [number, number][], add: boolean): void {
-  for (const [r, c] of fills) grid[r][c] = add ? 3 : grid[r][c] - 2;
-}
-
 // ---- Hole generation ----
-
-const CHANCE_HIGH = 6;
-const CHANCE_LOW = 1;
-const CHANCE_MEDIUM = 2;
 
 export const PIECES_NO_PUTTY = ['f', 'i', 'l', 'n', 'p', 't', 'u', 'v', 'w', 'x', 'y', 'z'];
 export const PIECE_WEIGHTS_NO_PUTTY = [14, 2, 8, 8, 22, 7, 4, 4, 4, 3, 14, 4];
 const ROTATIONS = [0, 90, 180, 270];
 const FLIPS = [0, 1];
-
-/** Picks a cell weighted by `prob` (random.choice(range(1, total - 1)) in the original) and digs it out. */
-function digCell(grid: Grid, prob: Grid, rng: PyRandom, careful: boolean): void {
-  const total = prob.flat().reduce((a, b) => a + b, 0);
-  if (total - 2 <= 0) return; // Nothing left to dig (the desktop version would crash here).
-  const next = 1 + Number(rng.randbelow(BigInt(total - 2)));
-  let met = 0;
-  for (let y = 0; y < HOLE_ROWS; y++) {
-    for (let x = 0; x < HOLE_COLS; x++) {
-      met += prob[y][x];
-      if (met < next) continue;
-      grid[y][x] = 1;
-      prob[y][x] = 0;
-      let works = true;
-      if (y > 0 && grid[y - 1][x] === 0 && (x === 1 || x === 7)) prob[y - 1][x] = CHANCE_HIGH;
-      if (y < 3 && grid[y + 1][x] === 0 && (x === 1 || x === 7)) prob[y + 1][x] = CHANCE_HIGH;
-      if (x === 7 || x === 1) {
-        const outer = x === 7 ? 8 : 0;
-        // New holes avoid two long indents side by side; tears don't check.
-        if (careful) {
-          if (y > 0 && grid[y - 1][outer] === 1) works = false;
-          if (y < 3 && grid[y + 1][outer] === 1) works = false;
-        }
-        if (works) prob[y][outer] = CHANCE_LOW;
-      }
-      if (careful && (x === 0 || x === 8)) {
-        if (y > 0) prob[y - 1][x] = 0;
-        if (y < 3) prob[y + 1][x] = 0;
-      }
-      return;
-    }
-  }
-}
-
-export interface NewHole {
-  grid: Grid;
-  prob: Grid;
-  edges: Grid;
-}
-
-/** hole_creation: a 5-wide block with five more cells dug from its sides. Seeds from `seed` and returns the next seed. */
-export function createHole(rng: PyRandom, seed: number): [NewHole, number] {
-  const grid = Array.from({ length: HOLE_ROWS }, () => [0, 0, 1, 1, 1, 1, 1, 0, 0]);
-  const prob = Array.from({ length: HOLE_ROWS }, () => [0, CHANCE_MEDIUM, 0, 0, 0, 0, 0, CHANCE_MEDIUM, 0]);
-  for (let i = 0; i < 5; i++) {
-    rng.seed(seed);
-    seed++;
-    digCell(grid, prob, rng, true);
-  }
-  return [{ grid, prob, edges: computeEdges(grid) }, seed];
-}
-
-/** tear_hole: the hole grows by one cell when it's been neglected. */
-export function tearHole(grid: Grid, prob: Grid, rng: PyRandom): Grid {
-  digCell(grid, prob, rng, false);
-  return computeEdges(grid);
-}
 
 /** Decodes a speed-carp shape string: rows of 0/1, each ended by a 2. */
 function decodeShape(code: string): string[][] {
@@ -238,6 +131,12 @@ function decodeShape(code: string): string[][] {
     .split('2')
     .slice(0, -1)
     .map((row) => row.split(''));
+}
+
+export interface NewHole {
+  grid: Grid;
+  prob: Grid;
+  edges: Grid;
 }
 
 export interface SmallHole extends NewHole {
