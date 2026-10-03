@@ -352,6 +352,12 @@ export default (async ({ screen, input, panel, store, ticks }) => {
 
   // ---- The game ----
 
+  /**
+   * Perfect boards change over faster than the client's sword: the squares fade quicker and the
+   * blade leaves and arrives sooner (about 1.8s between boards instead of 4.5s).
+   */
+  const quick = () => mode === 'perfect';
+
   function newSword(): void {
     const level = boardDifficulty(difficulty);
     board = mode === 'perfect' ? new IronBoard(level, random, perfectBoard(perfectSize, level, random)) : new IronBoard(level, random);
@@ -364,7 +370,8 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     tally = emptyTally();
     anims = [];
     timers = [];
-    messages = [];
+    // In a run the last board's result can still be showing as the next board arrives.
+    if (!run.active) messages = [];
     glows = [];
     cursor = null;
     gleamPath = null;
@@ -375,11 +382,11 @@ export default (async ({ screen, input, panel, store, ticks }) => {
       from: [-sword.width, SWORD_Y],
       to: [0, SWORD_Y],
       start: ticks(),
-      duration: 500,
+      duration: quick() ? 350 : 500,
       onBegin: () => sounds.play('sword_enter'),
       onEnd: () => {
-        fadeTo(1, 0, 1000);
-        later(1000, () => (hammerable = true));
+        fadeTo(1, 0, quick() ? 400 : 1000);
+        later(quick() ? 400 : 1000, () => (hammerable = true));
       },
     };
   }
@@ -509,8 +516,8 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     hammerable = false;
     glows = [];
     cursor = null;
-    const delay = 400;
-    const duration = 1000;
+    const delay = quick() ? 150 : 400;
+    const duration = quick() ? 400 : 1000;
     fadeTo(0, delay, duration);
     const now = ticks();
     if (mode === 'perfect') {
@@ -526,8 +533,8 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     swordPath = {
       from: [0, SWORD_Y],
       to: [0, -BLADE_H - 500],
-      start: now + delay * 3 + duration,
-      duration: 800,
+      start: now + (quick() ? delay : delay * 3) + duration,
+      duration: quick() ? 500 : 800,
       onBegin: () => sounds.play('sword_enter'),
       onEnd: finish,
     };
