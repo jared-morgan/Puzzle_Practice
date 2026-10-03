@@ -3,7 +3,8 @@
 Practice versions of Puzzle Pirates puzzles that run in the browser:
 
 - **Distilling Simulator**: swap pieces to build columns before the furnace burns them.
-- **Forage Simulator**: rotate 2×2 blocks to drop boxes, jars and chests.
+- **Forage Simulator**: rotate 2×2 blocks to drop crates off the bottom, rebuilt from the game client's rules, art and
+  sounds, with the Forage Simulator's puzzles, CI and Infinite (cursed isle) modes on top.
 - **Vampire Carp**: patch coffin holes with pentomino planks.
 
 Play at https://jared-morgan.github.io/Puzzle_Practice/.
