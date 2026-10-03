@@ -52,6 +52,8 @@ const MINI = 23;
 /** Floating up: 0.35px/ms, half again as fast when settling (haul/client/i.b, drop/client/d). */
 const RISE_PX_PER_MS = 0.35 * 1.5;
 const SWAP_MS = 250;
+/** Spawn mode: the most pieces that can be under a chest, in its two columns below the top two rows. */
+const MAX_UNDER = 2 * (H - 2);
 /** Message sizes: the client's game fonts (roister/client/a), picked by the step's points out of 100. */
 const FONT_SIZES = [24, 30, 36, 42, 52, 68];
 const FONT = 'Delarobb';
@@ -146,7 +148,7 @@ interface Tally {
   coins: number;
   gems: number;
   chests: number;
-  /** Spawn mode: chests that came in, those in the middle four columns, and the score (+1 middle, -3 elsewhere). */
+  /** Spawn mode: chests that came in, those in the middle four columns, and the score (pieces under the chest, or a penalty). */
   spawned: number;
   middle: number;
   spawnScore: number;
@@ -213,6 +215,8 @@ export default (async ({ screen, input, panel, store, ticks }) => {
   let roundEnd = 0;
   /** Spawn mode: a chest has come in, so the board is dealt again once it has finished moving. */
   let redeal = false;
+  /** Spawn mode: the chest that came in, floating up until the board settles. */
+  let landing: { x: number; middle: boolean; hauled: boolean } | null = null;
   /** When the spawned chest has been on show long enough to redeal (0 until it stops moving). */
   let redealAt = 0;
   /** Clear mode: when the clock started, and how long the chest took (0 until it's hauled). */
@@ -306,6 +310,7 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     fades = [];
     stable = true;
     redeal = false;
+    landing = null;
     // Each column's pieces get quicker going up: 1500ms less up to 150ms per piece, no quicker than 500ms.
     const durations: number[] = [];
     const left = new Array<number>(W).fill(0);
@@ -417,7 +422,7 @@ export default (async ({ screen, input, panel, store, ticks }) => {
   }
 
   function swapAt(x: number, y: number): void {
-    if (!board || !active || !stable || intro || redeal || clearMs || actionCount() > 0) return;
+    if (!board || !active || !stable || intro || redeal || landing || clearMs || actionCount() > 0) return;
     sendChests();
     const result = board.swap(x, y);
     if (result.kind === 'illegal') return;
@@ -464,19 +469,12 @@ export default (async ({ screen, input, panel, store, ticks }) => {
       }
       const spawned = mode === 'spawn' ? step.moves.find((m) => isChestOrigin(m.piece) && m.fy < 0) : undefined;
       if (spawned) {
-        // A chest in the middle four columns (2-5) scores 1; one touching the outer two on either side costs 3.
-        const middle = spawned.tx >= 2 && spawned.tx + 1 <= W - 3;
-        tally.spawned++;
-        if (middle) tally.middle++;
-        tally.spawnScore += middle ? 1 : -3;
-        sounds.play(middle ? 'shiny' : 'piece_destroy');
-        const [x, y] = cellXY(spawned.tx, spawned.ty);
-        texts.push({ text: middle ? '+1' : '-3', colour: middle ? '#ffff00' : '#ff6060', px: 42, x: x + 10, y: y - 60, w: 70, h: 50, start: ticks() });
-        redeal = true;
-        redealAt = 0;
+        // The middle four columns are 2-5; the chest is scored once it has floated up and the board has settled.
+        landing = { x: spawned.tx, middle: spawned.tx >= 2 && spawned.tx + 1 <= W - 3, hauled: false };
       }
     } else if (step.kind === 'haul') {
       tally.chests += step.chests.length;
+      if (landing && step.chests.some((c) => c.x === landing!.x)) landing.hauled = true;
       if (mode === 'clear' && !clearMs) {
         clearMs = ticks() - clockStart;
         sounds.play('big_combo');
@@ -500,10 +498,9 @@ export default (async ({ screen, input, panel, store, ticks }) => {
   function evolve(): void {
     if (!board || intro || actionCount() > 0) return;
     if (redeal) {
-      // The chest has come in: it shows for half a second, then the move's points are paid and a new board floats in.
+      // The chest has landed and been scored: it shows for half a second, then a new board floats in.
       if (!redealAt) redealAt = ticks() + 500;
       if (ticks() < redealAt) return;
-      tally.points += board.settle();
       if (roundEnd && ticks() >= roundEnd) stop();
       else deal(3, () => {});
       return;
@@ -518,7 +515,33 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     const points = board.settle();
     tally.points += points;
     tally.bestMove = Math.max(tally.bestMove, points);
-    if ((roundEnd && ticks() >= roundEnd) || clearMs) stop();
+    if (landing) scoreSpawn(landing);
+    else if ((roundEnd && ticks() >= roundEnd) || clearMs) stop();
+  }
+
+  /**
+   * Spawn mode, once the chest has landed: it scores the pieces under it in its two columns (12
+   * at most, which is also what a chest that floats all the way up and is hauled gets). A chest
+   * outside the middle four columns loses twice that maximum. Then the board is dealt again.
+   */
+  function scoreSpawn(chest: { x: number; middle: boolean; hauled: boolean }): void {
+    landing = null;
+    let under = MAX_UNDER;
+    let row = H - 1;
+    if (!chest.hauled && board) {
+      for (let y = 0; y < H; y++) if (isChestOrigin(board.get(chest.x, y))) row = y;
+      under = 0;
+      for (let y = 0; y < row - 1; y++) for (const x of [chest.x, chest.x + 1]) if (board.get(x, y) !== EMPTY) under++;
+    }
+    const gained = chest.middle ? under : -2 * MAX_UNDER;
+    tally.spawned++;
+    if (chest.middle) tally.middle++;
+    tally.spawnScore += gained;
+    sounds.play(chest.middle ? 'shiny' : 'piece_destroy');
+    const [x, y] = cellXY(chest.x, row);
+    texts.push({ text: gained > 0 ? `+${gained}` : String(gained), colour: chest.middle ? '#ffff00' : '#ff6060', px: 42, x: x + 10, y: Math.max(0, y - 10), w: 70, h: 50, start: ticks() });
+    redeal = true;
+    redealAt = 0;
   }
 
   function startHauling(): void {
@@ -758,7 +781,7 @@ export default (async ({ screen, input, panel, store, ticks }) => {
   game.select('Mode', MODES, () => mode, (m) => {
     mode = m;
     store.set('mode', m);
-  }, { disabled: () => running, title: '0-2 chests: as one is hauled the next comes. Spawn: +1 for a chest that comes in within the middle four columns, -3 elsewhere, then the board resets. Clear: haul one chest as fast as you can' });
+  }, { disabled: () => running, title: '0-2 chests: as one is hauled the next comes. Spawn: once a chest lands it scores the pieces under it if it came in within the middle four columns, or loses 24 elsewhere, then the board resets. Clear: haul one chest as fast as you can' });
   game.select('Round', ROUNDS, () => roundSecs, (s) => {
     roundSecs = s;
     store.set('round', s);
