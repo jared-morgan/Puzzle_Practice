@@ -9,6 +9,7 @@
 //
 // Perfect board is a practice mode that isn't in the game: a 1x1 to 5x5 board, one strike per
 // square, dealt so that every square can be struck. 3 points for clearing it, 1 for one left.
+// Boards follow one another until Stop, or until a 2-minute timer runs out.
 import { Images } from '../../core/assets';
 import { SoundBank } from '../../core/audio';
 import { loadFont } from '../../core/fonts';
@@ -75,6 +76,12 @@ type Mode = 'classic' | 'perfect';
 const MODES: Option<Mode>[] = [
   { value: 'classic', label: 'Classic (6x6, as in the game)' },
   { value: 'perfect', label: 'Perfect board' },
+];
+
+/** Perfect-board run lengths: no timer, or 2 minutes. */
+const TIMERS: Option<number>[] = [
+  { value: 0, label: 'No timer' },
+  { value: 120000, label: '2 minutes' },
 ];
 
 /** A perfect-board record for one size and difficulty. */
@@ -191,6 +198,15 @@ export default (async ({ screen, input, panel, store, ticks }) => {
   const perfectKey = () => `${perfectSize}-${difficulty}`;
   /** Points from the perfect board just finished, or null. */
   let lastPoints: number | null = null;
+  let timerMs = store.get<number>('perfectTimer', 0);
+  const timedBests = store.get<Record<string, number>>('perfectTimedBests', {});
+  /** A perfect-board run: boards dealt one after another, with the points they've scored. */
+  const run = { active: false, start: 0, end: 0, points: 0, boards: 0, timeUp: false };
+  const timeLeft = () => (timerMs ? Math.max(0, timerMs - ((run.active ? ticks() : run.end) - run.start)) : null);
+  const clock = (ms: number) => {
+    const secs = Math.ceil(ms / 1000);
+    return `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`;
+  };
 
   let board: IronBoard | null = null;
   /** Each square as drawn: it changes when the hammer lands, a little after the strike. */
@@ -528,12 +544,50 @@ export default (async ({ screen, input, panel, store, ticks }) => {
       if (lastPoints === 1) record.oneOff++;
       perfectRecords[perfectKey()] = record;
       store.set('perfectRecords', perfectRecords);
+      run.points += lastPoints ?? 0;
+      run.boards++;
+      // The next board comes straight in, for as long as the run lasts.
+      if (run.active) newSword();
       return;
     }
     const key = String(difficulty);
     if (board && board.numHits > (bests[key] ?? 0)) {
       bests[key] = board.numHits;
       store.set('bestStrikes', bests);
+    }
+  }
+
+  /** Clears the board and everything animating on it, with nothing scored. */
+  function abortBoard(): void {
+    running = false;
+    finished = true;
+    board = null;
+    anims = [];
+    timers = [];
+    messages = [];
+    glows = [];
+    swordPath = null;
+    gleamPath = null;
+    hammerable = false;
+  }
+
+  function startRun(): void {
+    Object.assign(run, { active: true, start: ticks(), end: ticks(), points: 0, boards: 0, timeUp: false });
+    newSword();
+  }
+
+  /** Ends a run. A board still being played when time runs out doesn't score. */
+  function endRun(timeUp: boolean): void {
+    run.active = false;
+    run.end = ticks();
+    run.timeUp = timeUp;
+    abortBoard();
+    if (!timeUp) return;
+    say("Time's up!", 4, 2500);
+    const key = perfectKey();
+    if (run.points > (timedBests[key] ?? -1)) {
+      timedBests[key] = run.points;
+      store.set('perfectTimedBests', timedBests);
     }
   }
 
@@ -670,6 +724,8 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     if (hammerable && (input.mouse[0] !== lastMouse[0] || input.mouse[1] !== lastMouse[1])) cursor = squareAt(input.mouse);
     lastMouse = input.mouse;
 
+    if (run.active && timeLeft() === 0) endRun(true);
+
     for (const timer of timers.filter((t) => now >= t.at)) {
       timers.splice(timers.indexOf(timer), 1);
       timer.run();
@@ -726,6 +782,19 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     if (ended.size) anims = anims.filter((a) => !ended.has(a));
     drawMessages(now);
 
+    const left = timeLeft();
+    if (mode === 'perfect' && left !== null && (run.active || run.timeUp)) {
+      ctx.save();
+      ctx.font = `36px "${FONT}"`;
+      ctx.textAlign = 'center';
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = '#000';
+      ctx.fillStyle = left < 10000 ? '#ff8060' : '#fff';
+      ctx.strokeText(clock(left), WIDTH / 2, 40);
+      ctx.fillText(clock(left), WIDTH / 2, 40);
+      ctx.restore();
+    }
+
     if (!running && !finished) {
       ctx.save();
       ctx.font = `30px "${FONT}"`;
@@ -741,42 +810,51 @@ export default (async ({ screen, input, panel, store, ticks }) => {
 
   // ---- Panel ----
 
+  /** Settings are locked while a sword or a run is going. */
+  const busy = () => running || run.active;
   const game = panel.group('Game');
   game.select('Mode', MODES, () => mode, (m) => {
     mode = m;
     store.set('mode', m);
-  }, { disabled: () => running });
+  }, { disabled: busy });
   game.number('Board size', () => perfectSize, (n) => {
     perfectSize = Math.max(MIN_PERFECT_SIZE, Math.min(MAX_PERFECT_SIZE, Math.round(n) || 3));
     store.set('perfectSize', perfectSize);
   }, {
     min: MIN_PERFECT_SIZE,
     max: MAX_PERFECT_SIZE,
-    disabled: () => running,
+    disabled: busy,
     hidden: () => mode !== 'perfect',
     title: 'Squares along each side; every square can be struck once',
   });
+  game.select('Timer', TIMERS, () => timerMs, (ms) => {
+    timerMs = ms;
+    store.set('perfectTimer', ms);
+  }, { disabled: busy, hidden: () => mode !== 'perfect', title: 'Boards keep coming until Stop, or until the time runs out' });
   game.select('Difficulty', DIFFICULTIES, () => difficulty, (d) => {
     difficulty = d;
     store.set('difficulty', d);
-  }, { disabled: () => running, title: 'Which pieces appear (YPPedia: Blacksmithing, Difficulty levels)' });
+  }, { disabled: busy, title: 'Which pieces appear (YPPedia: Blacksmithing, Difficulty levels)' });
   panel.group().button('Start', () => {
-    if (running) {
-      running = false;
-      finished = true;
-      board = null;
-      anims = [];
-      timers = [];
-      messages = [];
-      glows = [];
-      swordPath = null;
-      gleamPath = null;
-      hammerable = false;
-    } else newSword();
-  }, { variant: 'primary', label: () => (running ? 'Stop' : !finished ? 'Start' : mode === 'perfect' ? 'Next board' : 'New sword') });
+    if (mode === 'perfect') {
+      if (run.active) endRun(false);
+      else startRun();
+    } else if (running) abortBoard();
+    else newSword();
+  }, { variant: 'primary', label: () => (busy() ? 'Stop' : !finished || mode === 'perfect' ? 'Start' : 'New sword') });
 
   const best = () => bests[String(difficulty)];
   const perfectRecord = () => perfectRecords[perfectKey()];
+  panel.group('Run', { hidden: () => mode !== 'perfect' }).stats(['', 'This run', 'Best'], () => {
+    const left = timeLeft();
+    const best = timerMs ? timedBests[perfectKey()] : undefined;
+    return [
+      ...(left !== null ? [['Time left', clock(left), '']] : []),
+      ['Points', String(run.points), best !== undefined ? String(best) : ''],
+      ['Boards', String(run.boards), ''],
+    ];
+  }).note(() => (timerMs ? 'Best is the most points in 2 minutes.' : 'Boards keep coming until you press Stop.'));
+
   panel.group('Perfect board', { hidden: () => mode !== 'perfect' }).stats(['', 'Now', 'Total'], () => {
     const record = perfectRecord();
     return [
@@ -791,7 +869,7 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     .button('Reset totals', () => {
       delete perfectRecords[perfectKey()];
       store.set('perfectRecords', perfectRecords);
-    }, { disabled: () => running || !perfectRecord() });
+    }, { disabled: () => busy() || !perfectRecord() });
 
   panel.group('Sword', { hidden: () => mode !== 'classic' }).stats(['', 'Now', 'Best'], () => {
     const hits = board?.numHits ?? 0;
