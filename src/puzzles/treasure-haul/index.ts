@@ -76,6 +76,7 @@ const MODES: Option<Mode>[] = [
 ];
 const ROUNDS: Option<number>[] = [
   { value: 0, label: 'No timer' },
+  { value: 30, label: '30 seconds' },
   { value: 120, label: '2 minutes' },
 ];
 const COMBO_NAMES = ['Good', 'Shiny!', 'Arrr! 3x3!', 'Arrr! 3x4!', 'Yarrr! 3x5!', 'Har! 4x4!', 'Yarrr! 4x5!', 'Yarrr! 5x5!', 'Bingo!', 'Donkey!', 'Vegas!', 'Ching!', 'Cha-Ching!'];
@@ -145,12 +146,14 @@ interface Tally {
   coins: number;
   gems: number;
   chests: number;
-  /** Spawn mode: chests that came in. */
+  /** Spawn mode: chests that came in, those in the middle four columns, and the score (+1 middle, -3 elsewhere). */
   spawned: number;
+  middle: number;
+  spawnScore: number;
   combos: Record<string, number>;
 }
 
-const emptyTally = (): Tally => ({ moves: 0, points: 0, bestMove: 0, coins: 0, gems: 0, chests: 0, spawned: 0, combos: {} });
+const emptyTally = (): Tally => ({ moves: 0, points: 0, bestMove: 0, coins: 0, gems: 0, chests: 0, spawned: 0, middle: 0, spawnScore: 0, combos: {} });
 
 /** A copy of the purple hands tinted to a skin tone, keeping their shading. */
 function tint(img: HTMLImageElement): HTMLCanvasElement {
@@ -349,7 +352,7 @@ export default (async ({ screen, input, panel, store, ticks }) => {
 
   /** The score a mode keeps a best of: higher is better, except clear mode's time. */
   function score(): number {
-    if (mode === 'spawn') return tally.spawned;
+    if (mode === 'spawn') return tally.spawnScore;
     if (mode === 'clear') return clearMs;
     return tally.points;
   }
@@ -361,7 +364,7 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     intro = null;
     timers = [];
     const best = bests[bestKey()];
-    const better = mode === 'clear' ? clearMs > 0 && (!best || clearMs < best) : timed() && score() > (best ?? 0);
+    const better = mode === 'clear' ? clearMs > 0 && (!best || clearMs < best) : timed() && (best === undefined || score() > best);
     if (better) {
       bests[bestKey()] = score();
       store.set('bestPoints', bests);
@@ -459,9 +462,16 @@ export default (async ({ screen, input, panel, store, ticks }) => {
         const duration = (CELL * Math.abs(m.ty - m.fy)) / RISE_PX_PER_MS;
         move(m.piece, m.fx, m.fy, m.tx, m.ty, duration);
       }
-      if (mode === 'spawn' && step.moves.some((m) => isChest(m.piece) && m.fy < 0)) {
+      const spawned = mode === 'spawn' ? step.moves.find((m) => isChestOrigin(m.piece) && m.fy < 0) : undefined;
+      if (spawned) {
+        // A chest in the middle four columns (2-5) scores 1; one touching the outer two on either side costs 3.
+        const middle = spawned.tx >= 2 && spawned.tx + 1 <= W - 3;
         tally.spawned++;
-        sounds.play('shiny');
+        if (middle) tally.middle++;
+        tally.spawnScore += middle ? 1 : -3;
+        sounds.play(middle ? 'shiny' : 'piece_destroy');
+        const [x, y] = cellXY(spawned.tx, spawned.ty);
+        texts.push({ text: middle ? '+1' : '-3', colour: middle ? '#ffff00' : '#ff6060', px: 42, x: x + 10, y: y - 60, w: 70, h: 50, start: ticks() });
         redeal = true;
         redealAt = 0;
       }
@@ -748,7 +758,7 @@ export default (async ({ screen, input, panel, store, ticks }) => {
   game.select('Mode', MODES, () => mode, (m) => {
     mode = m;
     store.set('mode', m);
-  }, { disabled: () => running, title: '0-2 chests: as one is hauled the next comes. Spawn: score a point each time a chest comes in, then the board resets. Clear: haul one chest as fast as you can' });
+  }, { disabled: () => running, title: '0-2 chests: as one is hauled the next comes. Spawn: +1 for a chest that comes in within the middle four columns, -3 elsewhere, then the board resets. Clear: haul one chest as fast as you can' });
   game.select('Round', ROUNDS, () => roundSecs, (s) => {
     roundSecs = s;
     store.set('round', s);
@@ -765,7 +775,10 @@ export default (async ({ screen, input, panel, store, ticks }) => {
       rows.push(['Time', seconds(ms), best() ? seconds(best()) : '-']);
     } else {
       rows.push(['Time left', timed() ? clock(running || finished ? secondsLeft() : roundSecs) : '-', '']);
-      if (mode === 'spawn') rows.push(['Chests spawned', String(tally.spawned), timed() && best() ? String(best()) : '-']);
+      if (mode === 'spawn') {
+        rows.push(['Spawn score', String(tally.spawnScore), timed() && best() !== undefined ? String(best()) : '-']);
+        rows.push(['Chests in middle', `${tally.middle} / ${tally.spawned}`, '']);
+      }
     }
     rows.push(['Points', String(tally.points), mode !== 'spawn' && mode !== 'clear' && timed() && best() ? String(best()) : '-']);
     return [
