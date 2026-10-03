@@ -5,12 +5,14 @@ Practice versions of Puzzle Pirates puzzles that run in the browser:
 - **Distilling Simulator**: swap pieces to build columns before the furnace burns them.
 - **Forage Simulator**: rotate 2×2 blocks to drop boxes, jars and chests.
 - **Vampire Carp**: patch coffin holes with pentomino planks.
+- **Blacksmithing**: strike squares to forge a sword, each piece deciding where you strike next.
 
 Play at https://jared-morgan.github.io/Puzzle_Practice/.
 
 Each started as a separate desktop game in Python ([Distilling_Simulator](https://github.com/jared-morgan/Distilling_Simulator),
 [Foreage-Sim](https://github.com/jared-morgan/Foreage-Sim), [Vampire_Carp](https://github.com/jared-morgan/Vampire_Carp))
 and is rewritten here in TypeScript on a shared core. Seeds give the same games as the desktop versions.
+Blacksmithing has no desktop version: it is built from the Puzzle Pirates client's own rules, art and sounds.
 
 ## Development
 
