@@ -13,7 +13,7 @@
 // plus a burn timer you can change or turn off, and pause.
 import { Images } from '../../core/assets';
 import { SoundBank } from '../../core/audio';
-import { copyText } from '../../core/clipboard';
+import { copyText, pasteText } from '../../core/clipboard';
 import { loadFont } from '../../core/fonts';
 import type { InputEvent, Point } from '../../core/input';
 import type { PuzzleFactory } from '../../core/puzzle';
@@ -133,25 +133,16 @@ const SWAP_KEYS = new Set(['space', '5', 'clear']);
 const BURN_KEY = 'x';
 
 /**
- * Client: the real puzzle's rules and odds. The rest are the Distilling Simulator's practice modes:
- * Standard (your spawn rates and timer), Seeded (replay a seed or a recorded piece sequence),
- * Create (paint any board; never ends) and Practice (set drills from practice.ts).
+ * The Distilling Simulator's modes: Standard (your spawn rates and timer), Seeded (replay a seed or a
+ * recorded piece sequence), Create (paint any board; never ends) and Practice (set boards from practice.ts).
  */
-type Mode = 'Client' | 'Standard' | 'Seeded' | 'Create' | 'Practice';
+type Mode = 'Standard' | 'Seeded' | 'Create' | 'Practice';
 const MODES: { value: Mode; label: string }[] = [
-  { value: 'Client', label: 'Client (game seeds)' },
-  { value: 'Standard', label: 'Standard (adjustable odds)' },
+  { value: 'Standard', label: 'Standard' },
   { value: 'Seeded', label: 'Seeded' },
   { value: 'Create', label: 'Create' },
-  { value: 'Practice', label: 'Practice drills' },
+  { value: 'Practice', label: 'Practice' },
 ];
-const MODE_NOTES: Record<Mode, string> = {
-  Client: "The real puzzle: the client's own odds and furnace, and a board from a seed.",
-  Standard: 'Your spawn rates, difficulty and burn timer (the Distilling Simulator).',
-  Seeded: 'Replays a seed: a simulator seed, a recorded piece sequence, or a board seed. Blank picks one.',
-  Create: 'Paint any board and play it, with or without a timer. Paste a board seed to start from it.',
-  Practice: 'Set drills from the Distilling Simulator, each with its own board, odds and timer.',
-};
 /** The simulator's spawn weights, in its piece order: black, brown, burnt, spice, white. */
 const DEFAULT_SPAWN = [10, 10, 0, 1, 10];
 /** The simulator's spawn rate boxes, in the order it showed them. */
@@ -213,21 +204,6 @@ interface Message {
   down: boolean;
 }
 
-interface Tally {
-  clear: number;
-  bestStreak: number;
-  smooth: number;
-  blecch: number;
-  plain: number;
-  burnt: number;
-  spicy: number;
-  wastedSpice: number;
-  burntWhites: number;
-  swaps: number;
-}
-
-const emptyTally = (): Tally => ({ clear: 0, bestStreak: 0, smooth: 0, blecch: 0, plain: 0, burnt: 0, spicy: 0, wastedSpice: 0, burntWhites: 0, swaps: 0 });
-
 export default (async ({ screen, input, panel, store, ticks }) => {
   const [images] = await Promise.all([Images.load(imageUrls), loadFont(FONT, delarobbUrl)]);
   const img = (name: string) => images.get(name);
@@ -259,10 +235,10 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     return canvas;
   }
 
-  let rightClickBurns = store.get<boolean>('rightClickBurns', true);
   let volume = store.get<number>('volume', 3);
   sounds.setVolume(volume / 6);
-  let mode = store.get<Mode>('mode', 'Client');
+  let mode = store.get<Mode>('mode', 'Standard');
+  if (!MODES.some((m) => m.value === mode)) mode = 'Standard';
   let timerOn = store.get<boolean>('timerOn', true);
   /** Create mode starts without a timer, as in the simulator. */
   let createTimerOn = store.get<boolean>('createTimerOn', false);
@@ -270,7 +246,7 @@ export default (async ({ screen, input, panel, store, ticks }) => {
   let difficulty = store.get<number>('difficulty', 50);
   let spawnRates = store.get<number[]>('spawnRates', [...DEFAULT_SPAWN]);
   let practiceNum = store.get<number[]>('practiceNum', [0, 0]);
-  /** What's typed in the seed box: a client seed (Client), a simulator seed (Seeded) or a board seed (Create). */
+  /** The pasted seed: a simulator seed (Seeded) or a board seed (Create); blank for a random one. */
   let seedText = '';
   /** The seed to replay the last start, in the same form. */
   let lastSeed = '';
@@ -282,7 +258,6 @@ export default (async ({ screen, input, panel, store, ticks }) => {
   let startedMode: Mode = mode;
   /** A piece key (1-5) held down in Create mode paints the piece under the mouse. */
   let paintWith: number | null = null;
-  const bests = store.get<Record<string, { points?: number; streak?: number }>>('bestsByMode', {});
 
   let game: BrewGame | null = null;
   let active = false;
@@ -300,8 +275,6 @@ export default (async ({ screen, input, panel, store, ticks }) => {
   let swapCount = 0;
   let messages: Message[] = [];
   let timers: { at: number; run: () => void }[] = [];
-  let tally = emptyTally();
-  let lastResult: ColumnResult | null = null;
 
   const later = (ms: number, run: () => void) => timers.push({ at: ticks() + ms, run });
 
@@ -437,22 +410,16 @@ export default (async ({ screen, input, panel, store, ticks }) => {
       const [spawn, interval, diff] = get_practice_settings(practiceNum);
       return { spawn, difficulty: diff, interval: interval >= TIMERLESS ? null : interval };
     }
-    if (mode === 'Client') return { spawn: DEFAULT_SPAWN, difficulty: 50, interval: TICK_MS * 50 };
     const timed = mode === 'Create' ? createTimerOn : timerOn;
     return { spawn: [...spawnRates], difficulty, interval: timed ? Math.round(timerSeconds * 1000) : null };
   }
 
-  /** A new game: the client's board from a seed, or a simulator board for the practice modes. */
+  /** A new game on a simulator board, played on the client's rules. */
   function newGame(): BrewGame {
     const run = runSettings();
     const options: GameOptions = { tickMs: run.interval ? run.interval / 50 : TICK_MS, timerless: run.interval === null, endless: mode === 'Create' };
     const clientSeed = BigInt.asIntN(64, BigInt(Math.floor(Math.random() * 2 ** 48)));
     const text = seedText.trim();
-    if (mode === 'Client') {
-      const seed = /^-?[0-9]+$/.test(text) ? BigInt.asIntN(64, BigInt(text)) : clientSeed;
-      lastSeed = String(seed);
-      return new BrewGame(seed, ticks(), options);
-    }
     // The simulator's modes. A seed is [piece sequence, rng decider] (boards.ts convert_seed).
     let board;
     if (mode === 'Seeded' || mode === 'Create') {
@@ -501,8 +468,6 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     waitCount = swapCount = 0;
     messages = [];
     timers = [];
-    tally = emptyTally();
-    lastResult = null;
     active = true;
     running = true;
   }
@@ -571,7 +536,6 @@ export default (async ({ screen, input, panel, store, ticks }) => {
       if (!dragMode) setSelected(null);
     } else if (game!.board.swap(piece.col, piece.row, selected.col, selected.row)) {
       animateSwap(piece, selected);
-      tally.swaps++;
       if (dragMode) dragSwapped = true;
       else setSelected(null);
     } else if (!dragMode && piece.mask) setSelected(piece);
@@ -639,7 +603,6 @@ export default (async ({ screen, input, panel, store, ticks }) => {
 
   /** The right column leaves and the board slides right (BrewBoardView.d, e), then the messages (BrewController.a(boolean, int[])). */
   function burn(result: ColumnResult, finished: boolean): void {
-    lastResult = result;
     // The column leaves: up into the jug, or down into the furnace, where whites burn and roll back left.
     for (const p of pieces[COLUMNS - 1]) {
       p.mask = 0;
@@ -701,21 +664,7 @@ export default (async ({ screen, input, panel, store, ticks }) => {
       say(MESSAGES.spicy, { orange: true });
     } else if (result.spice === 'wasted_spice') say(MESSAGES.wasted_spice, { orange: true, down: true });
 
-    count(result);
     if (finished) finish();
-  }
-
-  function count(r: ColumnResult): void {
-    if (!r.distilled) tally.burnt++;
-    else if (r.verdict === 'clear') {
-      tally.clear++;
-      tally.bestStreak = Math.max(tally.bestStreak, r.streak || 1);
-    } else if (r.verdict === 'smooth') tally.smooth++;
-    else if (r.verdict === 'blecch') tally.blecch++;
-    else tally.plain++;
-    if (r.spice === 'spicy') tally.spicy++;
-    if (r.spice === 'wasted_spice') tally.wastedSpice++;
-    if (!r.distilled) tally.burntWhites += r.lights;
   }
 
   /** The jug is full (BrewController.s): "Finished!" holds the board, then it clears. */
@@ -723,16 +672,8 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     say(MESSAGES.jug_filled, { wait: true });
     sounds.play('finished');
     running = false;
-    const points = game!.points;
-    const best = (bests[bestKey()] ??= {});
-    if (best.points === undefined || points > best.points) best.points = points;
-    if (tally.bestStreak > (best.streak ?? 0)) best.streak = tally.bestStreak;
-    store.set('bestsByMode', bests);
     later(FLOAT_MS, () => (active = false));
   }
-
-  /** Bests are kept per mode, and per drill in Practice. */
-  const bestKey = () => (startedMode === 'Practice' ? `Practice ${practiceNum.join(',')}` : startedMode);
 
   function burnNow(): void {
     // BrewController "endCol": only while nothing is sliding.
@@ -793,7 +734,7 @@ export default (async ({ screen, input, panel, store, ticks }) => {
   }
 
   const inView = (pos: Point) => pos[0] >= VIEW_X && pos[0] < VIEW_X + VIEW_W && pos[1] >= VIEW_Y && pos[1] < VIEW_Y + VIEW_H;
-  const isBurnButton = (button: number) => button === 3 && rightClickBurns;
+  const isBurnButton = (button: number) => button === 3;
 
   // ---- Drawing ----
 
@@ -918,12 +859,21 @@ export default (async ({ screen, input, panel, store, ticks }) => {
   }
 
   // ---- Panel ----
+  // The simulator's settings column, as HTML controls: the same modes, settings, seed buttons and
+  // the same two stats, Score and Chain.
 
   const save = <T,>(name: string, value: T): T => {
     store.set(name, value);
     return value;
   };
-  const sim = () => mode !== 'Client';
+
+  /** pyperclip.paste in the simulator: a seed of digits only, else nothing changes (is_paste_legal). */
+  async function pasteSeed(): Promise<boolean> {
+    const text = await pasteText('Paste a seed:');
+    if (text === null || !/^[0-9]+$/.test(text)) return false;
+    seedText = text;
+    return true;
+  }
 
   const gameGroup = panel.group('Game');
   gameGroup.select('Mode', MODES, () => mode, (m) => {
@@ -932,71 +882,56 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     lastSeed = '';
   }, { disabled: () => running });
   gameGroup.select(
-    'Drill set',
+    'Practice group',
     practiceAvailable.map((_, i) => ({ value: i, label: practiceGroupNames[i].replace(/:$/, '') })),
     () => practiceNum[0],
     (group) => (practiceNum = save('practiceNum', [group, 0])),
     { hidden: () => mode !== 'Practice', disabled: () => running },
   );
-  // One drill list per set, since a select's options are fixed.
+  // One board list per group, since a select's options are fixed.
   practiceAvailable.forEach((levels, group) => {
     gameGroup.select(
-      'Drill',
-      levels.map((level) => ({ value: level, label: `${level + 1}. ${practiceNames[group][level]}` })),
+      'Practice board',
+      levels.map((level) => ({ value: level, label: `${level}. ${practiceNames[group][level]}` })),
       () => practiceNum[1],
       (level) => (practiceNum = save('practiceNum', [group, level])),
       { hidden: () => mode !== 'Practice' || practiceNum[0] !== group, disabled: () => running },
     );
   });
-  gameGroup.note(() => MODE_NOTES[mode]);
 
   panel
     .group()
     .button('Start', () => (running ? stop() : start()), { variant: 'primary', label: () => (running ? 'Stop' : 'Start') })
     .button('Pause', togglePause, { disabled: () => !running, label: () => (paused ? 'Resume' : 'Pause'), title: 'Esc' });
 
-  const seedGroup = panel.group('Seed', { hidden: () => mode === 'Standard' || mode === 'Practice' });
-  seedGroup.text('Seed', () => seedText, (v) => (seedText = v.replace(/[^0-9-]/g, '')), {
-    placeholder: 'random',
-    inputMode: 'numeric',
-    disabled: () => running,
-    title: 'Client: any whole number, the seed the server would send. Seeded: a simulator seed, a recorded piece sequence, or a board seed. Create: a board seed to paint from.',
+  panel.group('Score').stats([], () => {
+    const up = game ? game.columns.filter((c) => c.distilled).length : 0;
+    return [
+      ['Score', game ? (game.points / Math.max(up, 1)).toFixed(2) : '0.00'],
+      ['Chain', String(game?.board.consecCrystal ?? 0)],
+    ];
   });
-  seedGroup.button('New seed', () => {
-    const generated = generate_seed();
-    seedText = mode === 'Client' ? String(BigInt.asIntN(64, BigInt(generated.slice(1)))) : generated;
-  }, { disabled: () => running, title: 'Fill in a new random seed, so you can share it before playing' });
-  panel
-    .group()
-    .button('Copy seed', () => lastSeed && copyText(lastSeed, 'Copy this seed:'), {
-      disabled: () => !lastSeed,
-      title: 'The seed that replays the last start (Seeded mode takes the simulator ones)',
-    })
-    .button('Copy board', () => game && copyText(get_create_seed(fromColumns(game.board.columns)), 'Copy this board seed:'), {
-      disabled: () => !game,
-      title: 'The board as it is now, as a Create-mode board seed',
-    });
-  panel.group().note(() => (lastSeed ? `Last seed: ${lastSeed}` : ''));
 
-  const furnaceGroup = panel.group('Furnace', { hidden: () => !sim() || mode === 'Practice' });
+  const settingsGroup = panel.group('Settings', { hidden: () => mode === 'Practice' });
   const timerShown = () => (mode === 'Create' ? createTimerOn : timerOn);
-  furnaceGroup.toggle('Burn timer', timerShown, (on) => {
+  settingsGroup.toggle('Burn timer', timerShown, (on) => {
     if (mode === 'Create') createTimerOn = save('createTimerOn', on);
     else timerOn = save('timerOn', on);
-  }, {
-    disabled: () => running,
-    title: 'Off: columns burn only when you press X (or right-click)',
-  });
-  furnaceGroup.number('Seconds a column', () => timerSeconds, (v) => (timerSeconds = save('timerSeconds', Math.max(1, Math.min(120, v)))), {
+  }, { disabled: () => running });
+  settingsGroup.number('Burn timer (s)', () => timerSeconds, (v) => (timerSeconds = save('timerSeconds', Math.max(1, Math.min(120, v)))), {
     min: 1,
     max: 120,
     step: 0.1,
     disabled: () => running,
     hidden: () => !timerShown(),
-    title: "The client's furnace takes 15.3 seconds a column (50 ticks of 306 ms)",
+  });
+  settingsGroup.number('Difficulty', () => difficulty, (n) => (difficulty = save('difficulty', Math.max(0, Math.min(100, Math.round(n))))), {
+    min: 0,
+    max: 100,
+    disabled: () => running,
   });
 
-  const spawnGroup = panel.group('Spawn rates', { columns: 5, hidden: () => !sim() || mode === 'Practice' });
+  const spawnGroup = panel.group('Spawn rates', { columns: 5, hidden: () => mode === 'Practice' });
   for (const [index, label] of SPAWN_BOXES) {
     spawnGroup.number(label, () => spawnRates[index], (n) => {
       spawnRates[index] = Math.max(0, Math.round(n));
@@ -1009,25 +944,43 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     disabled: () => running,
     title: 'Switch between the default spawn rates and a board of only whites',
   });
-  spawnGroup.number('Difficulty', () => difficulty, (n) => (difficulty = save('difficulty', Math.max(0, Math.min(100, Math.round(n))))), {
-    min: 0,
-    max: 100,
-    disabled: () => running,
-    title: '50 spreads blacks and browns evenly down each column. Higher puts more blacks low and more browns high; lower the opposite.',
-  });
-  spawnGroup.note(() => 'Weights for new pieces. The client itself uses equal whites, browns and blacks, and 1 spice in 31.');
 
-  const createGroup = panel.group('Create', { hidden: () => mode !== 'Create' });
-  createGroup.note(() => 'Hold 1-5 over the board to paint black, brown, white, spice or burnt white; the mouse wheel cycles a piece. X burns a column. The brew never ends.');
+  // The board's seed can be copied in any mode, and pasted or dealt anew while playing in Create.
+  const boardGroup = panel.group('Board');
+  boardGroup.button('Copy', () => game && copyText(get_create_seed(fromColumns(game.board.columns)), 'Copy this seed:'), {
+    disabled: () => !game,
+    title: "Copy the board's seed",
+  });
+  boardGroup.button('Paste', () => void pasteSeed().then((ok) => ok && running && start()), {
+    hidden: () => mode !== 'Create',
+    disabled: () => !running,
+    title: 'Play a board from a pasted seed',
+  });
+  boardGroup.button('Generate', () => {
+    seedText = '';
+    start();
+    copyText(get_create_seed(fromColumns(game!.board.columns)), 'Copy this seed:');
+  }, { hidden: () => mode !== 'Create', disabled: () => !running, title: 'Deal a new board and copy its seed' });
   for (const [i, name] of ['Black', 'Brown', 'White', 'Spice', 'Burnt'].entries()) {
-    createGroup.button(name, () => fillBoard(PAINT_ORDER[i]), { disabled: () => !running, title: `Fill the board with ${name.toLowerCase()}` });
+    boardGroup.button(name, () => fillBoard(PAINT_ORDER[i]), {
+      hidden: () => mode !== 'Create',
+      disabled: () => !running,
+      title: `Change the entire board to ${name.toLowerCase()} (middle-click on the simulator's palette)`,
+    });
   }
 
-  const options = panel.group('Options');
-  options.toggle('Right-click burns the column', () => rightClickBurns, (on) => (rightClickBurns = save('rightClickBurns', on)), {
-    title: "The client's \"furnace right-click\" option. X always burns the column now.",
+  const seedGroup = panel.group('Seed', { hidden: () => mode !== 'Seeded' });
+  seedGroup.button('Copy', () => lastSeed && copyText(lastSeed, 'Copy this seed:'), {
+    disabled: () => running || !lastSeed,
+    title: 'Copy the seed of the last start',
   });
-  options.select(
+  seedGroup.button('Paste', () => void pasteSeed(), { disabled: () => running, title: 'Use a pasted seed for the next start' });
+  seedGroup.button('New', () => {
+    seedText = generate_seed();
+    copyText(seedText, 'Copy this seed:');
+  }, { disabled: () => running, title: 'Make a new seed, copy it and use it for the next start' });
+
+  panel.group('Sound').select(
     'Volume',
     [
       { value: 0, label: 'Off' },
@@ -1041,44 +994,6 @@ export default (async ({ screen, input, panel, store, ticks }) => {
       sounds.setVolume(v / 6);
     },
   );
-
-  const best = () => bests[running || game ? bestKey() : mode === 'Practice' ? `Practice ${practiceNum.join(',')}` : mode] ?? {};
-  panel.group('Jug').stats(['', 'Now', 'Best'], () => {
-    const g = game;
-    const up = g ? g.columns.filter((c) => c.distilled).length : 0;
-    return [
-      ['In the jug', g ? `${g.distilled} / 100` : '-', ''],
-      ['Furnace', g && running && !g.timerless ? `${Math.max(0, Math.min(49, g.furnace))} / 49` : '-', ''],
-      ['Columns', g ? `${up} up, ${g.columns.length - up} burnt` : '-', ''],
-      ['Points', g ? String(g.points) : '-', best().points !== undefined ? String(best().points) : '-'],
-      ['Per column up', g && up ? (g.points / up).toFixed(2) : '-', ''],
-      ['Clear streak', g ? String(g.board.consecCrystal) : '-', best().streak ? String(best().streak) : '-'],
-      ['Rating', 'not yet', ''],
-    ];
-  }).note(() => "Points are the client's own count for each column (white 1, spice 3, brown 0, black -1, burnt white -3, plus 4 for each Crystal Clear in a row before this one). The rating comes from the server, so it isn't worked out yet.");
-
-  panel.group('Columns').stats(['', 'This brew'], () => [
-    ['Crystal clear', String(tally.clear)],
-    ['Longest clear streak', String(tally.bestStreak)],
-    ['Smooth', String(tally.smooth)],
-    ['Plain', String(tally.plain)],
-    ['Blecch', String(tally.blecch)],
-    ['Burnt', String(tally.burnt)],
-    ['Spicy', String(tally.spicy)],
-    ['Wasted spice', String(tally.wastedSpice)],
-    ['Whites burned', String(tally.burntWhites)],
-    ['Burnt whites owed', game ? String(Math.floor(game.board.discardedLights / 2)) : '-'],
-    ['Swaps', String(tally.swaps)],
-  ]);
-  panel.group('Last column').stats(['', ''], () => {
-    const r = lastResult;
-    if (!r) return [['-', '']];
-    return [
-      ['Went', r.distilled ? 'into the jug' : 'into the furnace'],
-      ['White / brown / black / spice', `${r.lights} / ${r.mediums} / ${r.heavies} / ${r.spices}`],
-      ['Points', r.bonus ? `${r.score} + ${r.bonus} bonus` : String(r.score)],
-    ];
-  });
 
   if (import.meta.env.DEV) {
     (window as unknown as Record<string, unknown>).__brew = {
