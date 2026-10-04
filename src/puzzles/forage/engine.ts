@@ -1,593 +1,529 @@
-// Forage as the real game plays it, from the Puzzle Pirates client (com.threerings.piracy.puzzle.
-// duty.forage and the shared drop-puzzle engine). File references below are to the decompiled
-// client. The client leaves crate sizes to the server, so those still use the simulator's
-// per-forage-level estimates (CHEST_WEIGHTINGS).
+// Forage's moves and cascades, ported from the Puzzle Pirates client's controller for the puzzle
+// (duty/forage/client/o, with ForageController and the drop-puzzle loop in puzzle/drop/client/c).
+// board.ts holds the board; this plays moves on it and records each step's animation, with the
+// client's timings, for index.ts to draw.
 //
-// A move is a 2x2 rotation or a tool. The board then settles by repeating the first of these
-// that does anything: gravity and refill, collecting crates on the bottom row, clearing matches,
-// spawning a crate. Once settled, any ants take one step and the board settles again.
+// A move is a 2x2 turn or a tool. The board then settles by repeating the first of these that does
+// anything, waiting for each one's animation: gravity and refill, collecting crates that reach the
+// bottom row, clearing runs, spawning a crate the server asked for. Once nothing more happens the
+// ants take a step and the board settles again; then the move is over and its points are sent.
 //
-// Every change is recorded as an animation step for the view to play.
-import type { PyRandom } from '../../core/pyrandom';
-import { type Board, COLOURS, COLS, ROWS } from './logic';
+// Crates come from the server, which isn't in the client. How the simulator stands in for it is up
+// to the mode: see CrateSource.
+import {
+  CRATE_SIZES,
+  CratePoints,
+  crateSize,
+  EARTHQUAKE,
+  EMPTY,
+  ForageBoard,
+  HEIGHT,
+  isAnts,
+  isCrate,
+  isCrateAnchor,
+  isTool,
+  MACHETE,
+  makeCrate,
+  MONKEY,
+  SHOVEL,
+  WIDTH,
+} from './board';
 
-/** Ants face left, up, right or down. Turning clockwise adds one. */
-export type Dir = 0 | 1 | 2 | 3;
-export type Tool = 'm' | 'n' | 'o' | 'p';
+/** [x, y] in cells; off the board for pieces coming in or leaving. */
+export type Cell = [number, number];
 
-export type Cell =
-  | { id: number; kind: 'colour'; colour: string }
-  | { id: number; kind: 'tool'; tool: Tool }
-  | { id: number; kind: 'ant'; count: number; dir: Dir }
-  | { id: number; kind: 'crate'; width: 1 | 2 | 3; height: 1 | 2 };
+/** Cells are 45px (ForageBoardView). */
+export const CELL = 45;
 
-/** grid[row][column]. A crate is one Cell object in every slot it covers. */
-export type Grid = (Cell | null)[][];
-export type Pos = [number, number];
-
-export interface Sprite {
-  cell: Cell;
-  /** Top-left [row, column]; may be off the board. */
-  from: Pos;
-  to: Pos;
-  /** Milliseconds after the step starts. */
-  delay: number;
-  duration: number;
-  motion?: 'wobble' | 'arc' | 'bob';
-  /** Wobble: where in its sine the bob starts, so pieces bob out of step. */
-  phase?: number;
-  /** clear: dims for the duration, then pops. out/in: fades out or in. */
-  fade?: 'clear' | 'out' | 'in';
-}
-
-export interface Step {
-  /** Everything that stays put during the step. */
-  grid: Grid;
-  sprites: Sprite[];
-  duration: number;
-  /** A sound to play as the step starts. */
-  sound?: 'ants';
-}
-
-/** Animation timings in milliseconds. */
+/** Animation timings in milliseconds, from the client. */
 export const TIMING = {
-  /** Rotation: each piece moves straight to its new cell (client/o.java:302-313). */
+  /** A 2x2 turn: each piece slides straight to its new cell (client/o, 250L). */
   turn: 250,
-  /** Earthquake slides bob 9px up and down at 0.03 rad/ms, from a random phase per piece. */
-  wobblePx: 9,
+  /** Gravity: 45px x rows at 0.35 x 1.5 px/ms, truncated per piece (client/w). */
+  fall: (rows: number) => Math.trunc((CELL * rows) / Math.fround(Math.fround(0.35) * 1.5)),
+  /** Earthquake: 45px x columns at 0.1 px/ms, plus up to 20% more at random (client/s). */
+  slide: (columns: number) => {
+    const t = Math.trunc((CELL * columns) / Math.fround(0.1));
+    return Math.trunc(t + Math.floor(Math.random() * Math.trunc(t * 0.2)) - 0.1);
+  },
+  /** The earthquake's pieces bob up and down 9px (a fifth of a cell) at 0.03 rad/ms (client/l). */
+  wobblePx: CELL / 5,
   wobbleRate: 0.03,
-  /** Falls at a constant 0.525 px/ms: 45px rows (client/w.java:10-11, client/o.java:427-429). */
-  fallPerRow: 45 / (0.35 * 1.5),
-  /** A cleared piece dims to 20% (ForageBoardView.java:355-359), then pops (about 400ms, not blocking). */
+  /** Ants walk 45px at 0.35 px/ms, then twice that (client/y). */
+  antStep: Math.trunc(CELL / Math.fround(0.35)) * 2,
+  /** A cleared piece fades from full to 20% at 0.04 a millisecond, then goes (ForageBoardView.a). */
   clear: 20,
-  pop: 400,
-  /** Tool clears ripple out from the tool (client.A: distance x 50). */
-  toolRipple: 50,
-  /** Earthquake slide per column, plus up to 20% (client/s.java:13-15). */
-  quakePerColumn: 450,
-  /** Ants walk a cell in about 257ms (client/y.java:11-13). */
-  antStep: 257,
-  /** The monkey dances 17 frames at 10fps, leaves at 1ms/px, and its pieces fly 5ms/px (ForageBoardView.java:251-322). */
+  /** Tool clears go outward from the tool, 50ms a cell (client/A). */
+  ripple: 50,
+  /** The cleared piece's pop: 5 frames at 12-14 fps, not holding up the board (ForageBoardView.a(int)). */
+  popFrames: 5,
+  /** The monkey drops and leaves at 1 px/ms, dances 17 frames at 10 fps, and throws at 5 ms/px. */
   monkeyDance: 1700,
-  monkeyLeavePerPx: 1,
-  monkeyThrowPerPx: 5,
-  /** A collected crate fades for 20ms and is gone (ForageBoardView.java:346-359). */
-  crateCollect: 20,
+  monkeyThrow: 5,
+  /** Pieces fly on and off the board at 1 ms/px for the intro and outro (client/j). */
+  introPerPx: 1,
+  /** The outro starts a second after the "Great work!" (client/o.i). */
+  outroDelay: 1000,
 };
 
-/** Chance (%) that a new piece is special, by the move's combo so far (ForageBoard.java:13). */
-const SPECIAL_CHANCE = [0, 1, 4, 7, 9, 10, 11, 12, 13];
-/** Special weights: shovel, machete, monkey, earthquake, ants (ForageBoard.java:14). */
-const SPECIALS: { kind: Tool | 'ants'; weight: number }[] = [
-  { kind: 'n', weight: 2 },
-  { kind: 'm', weight: 2 },
-  { kind: 'p', weight: 1 },
-  { kind: 'o', weight: 1 },
-  { kind: 'ants', weight: 1 },
-];
-/**
- * Normal forage crate points: width² × step bonus × bonus for each extra crate in the same step
- * (a/g.java:24-31). The Gauntlet (cursed isle) scores a flat 1, 2 or 3 per crate instead; that is
- * worked out on the server, so it isn't in the client.
- */
-const STEP_BONUS = [1, 1.5, 2];
-const CRATE_BONUS = [1, 2, 4];
-const ANT_COUNT = 8;
+export type SoundName =
+  | 'piece_swap'
+  | 'piece_destroy'
+  | 'shovel'
+  | 'machete'
+  | 'monkey'
+  | 'earthquake'
+  | 'ants'
+  | 'intro'
+  | 'cursed_intro'
+  | 'outro'
+  | 'score_small'
+  | 'score_medium'
+  | 'score_big';
 
-const DIRS: Record<Dir, Pos> = { 0: [0, -1], 1: [-1, 0], 2: [0, 1], 3: [1, 0] };
+export interface Sprite {
+  piece: number;
+  from: Cell;
+  to: Cell;
+  delay: number;
+  duration: number;
+  /** line: straight (turns, gravity, ants). wobble: the earthquake's bob. arc: the monkey's throws. */
+  path: 'line' | 'wobble' | 'arc';
+  phase?: number;
+  /** A cleared piece: shown until `delay`, fades over `duration`, then gone. */
+  clear?: boolean;
+  /** Walking ants cycle their frames. */
+  walk?: boolean;
+}
 
-export interface Rules {
-  /** Which specials can appear in refills. */
-  specials: { n: boolean; m: boolean; p: boolean; o: boolean; ants: boolean };
-  /** Crate spawning, or null for none (puzzles). Weights for widths 1, 2 and 3. */
-  crates: readonly [number, number, number] | null;
-  /**
-   * How crates score. 'gauntlet' (cursed isle): 1, 2 or 3 points by width. 'forage': the client's
-   * normal crate points. Both spawn chests like the desktop simulator (the server's job in the
-   * real game).
-   */
-  mode: 'gauntlet' | 'forage';
+/** The monkey (3x3 cells big), by the top-left cell of its box; facing 1 is mirrored. */
+export interface MonkeyAnim {
+  kind: 'drop' | 'dance' | 'leave';
+  box: Cell;
+  facing: number;
+  delay: number;
+  duration: number;
+}
+
+/** Things that don't hold up the board: pops, floating text. */
+export type Effect =
+  | { kind: 'pop'; piece: number; at: Cell; delay: number }
+  | { kind: 'text'; text: string; size: number; delay: number };
+
+export interface Step {
+  /** What holds still during the step. */
+  board: number[];
+  sprites: Sprite[];
+  monkey: MonkeyAnim[];
+  sounds: { name: SoundName; delay: number }[];
+  effects: Effect[];
+  duration: number;
 }
 
 export interface MoveResult {
+  /** The move's points as the client works them out for normal foraging. */
   points: number;
-  /** Crates collected by width: [1x1, 2x2, 3x2]. */
+  /** Gauntlet points: 1, 2 or 3 a crate by width (the simulator's cursed isle scoring). */
+  gauntletPoints: number;
+  /** Crates collected, by size: [1x1, 2x2, 3x2]. */
   collected: [number, number, number];
-  /** Cascade steps in which crates were collected; 2+ shows "Double!" or "Triple!". */
-  crateSteps: number;
-  /** Most runs cleared in one step: what the refills' special chance was based on. */
+  /** Cascade steps that collected crates ("Double!", "Triple!"). */
+  chained: number;
+  /** Runs cleared at once at most: what the refills' special chance came from. */
   combo: number;
 }
 
-/** The wobble's random phase is only for looks, so it doesn't draw on the game's seeded random. */
-const wobble = (): Pick<Sprite, 'motion' | 'phase'> => ({
-  motion: 'wobble',
-  phase: Math.random() * TIMING.turn * TIMING.wobbleRate,
-});
+/**
+ * Stands in for the server's crate requests. beforeMove runs as the player moves (where the client
+ * applies a request), afterMove once the move has settled (the simulator's Gauntlet spawning).
+ */
+export interface CrateSource {
+  beforeMove?(game: Forage): void;
+  /** Places a crate if it wants to; returns whether it did. */
+  afterMove?(game: Forage): boolean;
+}
 
-const inBoard = (r: number, c: number) => r >= 0 && r < ROWS && c >= 0 && c < COLS;
+/** The moved piece for a 2x2 turn, in the client's order: bottom-left, top-left, top-right, bottom-right. */
+const TURN: Cell[] = [
+  [0, 1],
+  [0, 0],
+  [1, 0],
+  [1, 1],
+];
 
 export class Forage {
-  grid: Grid = Array.from({ length: ROWS }, () => Array<Cell | null>(COLS).fill(null));
+  board: ForageBoard;
   steps: Step[] = [];
-  private nextId = 1;
-  /** Most separate runs cleared in one step of this move (capped at 8); sets the special chance. */
-  private combo = 0;
-  /** Gauntlet mode: the next chest's width and column, and moves since the last one. */
-  private spawner: { width: 1 | 2 | 3; column: number; movesSinceLast: number } | null = null;
+  /** Crates collected this game (ForageController's e). */
+  cratesCollected = 0;
   /**
-   * Crates still to come on this board: one per banana in the real game, where the server stops
-   * sending them once the meter's worth have spawned. The board still holds at most 3 at once.
+   * What's in each crate slot (ForageObject.crateCommodities), as the art tile for its size; the
+   * server fills these in.
    */
-  crateBudget = Infinity;
+  crateArt = [0, 0, 0];
+  private points = new CratePoints();
+  private result = Forage.emptyResult();
 
   constructor(
-    private readonly rng: PyRandom,
-    public rules: Rules,
-  ) {}
-
-  // ---- Making pieces ----
-
-  private colour(): Cell {
-    return { id: this.nextId++, kind: 'colour', colour: this.rng.choice(COLOURS) };
+    seed: number | bigint,
+    public crateSource: CrateSource = {},
+    difficulty = 8,
+  ) {
+    this.board = new ForageBoard(seed, difficulty);
   }
 
-  private tool(tool: Tool): Cell {
-    return { id: this.nextId++, kind: 'tool', tool };
+  static emptyResult(): MoveResult {
+    return { points: 0, gauntletPoints: 0, collected: [0, 0, 0], chained: 0, combo: 0 };
   }
 
-  private ant(count: number, dir: Dir, id = this.nextId++): Cell {
-    return { id, kind: 'ant', count, dir };
+  get cells(): number[] {
+    return this.board.cells;
   }
 
-  /** A piece for a refill (ForageBoard.java:113-134). */
-  private newPiece(): Cell {
-    if (this.rng.random() * 100 >= SPECIAL_CHANCE[Math.min(this.combo, 8)]) return this.colour();
-    let options = SPECIALS.filter((s) => this.rules.specials[s.kind]);
-    // Only one set of ants at a time.
-    if (this.cells().some(([cell]) => cell.kind === 'ant')) options = options.filter((s) => s.kind !== 'ants');
-    if (!options.length) return this.colour();
-    const pick = this.rng.choiceWeighted(
-      options.map((s) => s.kind),
-      options.map((s) => s.weight),
-    );
-    return pick === 'ants' ? this.ant(ANT_COUNT, 3) : this.tool(pick);
-  }
+  // ---- Recording steps ----
 
-  /** A random board with no three in a row and no specials (ForageBoard.java:54-70). */
-  fillRandom(): void {
-    for (let r = 0; r < ROWS; r++) {
-      for (let c = 0; c < COLS; c++) {
-        let cell: Cell;
-        do cell = this.colour();
-        while (this.makesRun(cell, r, c));
-        this.grid[r][c] = cell;
-      }
-    }
-  }
+  private current: Step | null = null;
 
-  private makesRun(cell: Cell, r: number, c: number): boolean {
-    const same = (rr: number, cc: number) => {
-      const other = this.grid[rr]?.[cc];
-      return other?.kind === 'colour' && cell.kind === 'colour' && other.colour === cell.colour;
-    };
-    return (same(r, c - 1) && same(r, c - 2)) || (same(r - 1, c) && same(r - 2, c));
-  }
-
-  /** Loads a board written in the simulator's letters (see logic.ts). */
-  load(board: Board): void {
-    this.grid = Array.from({ length: ROWS }, () => Array<Cell | null>(COLS).fill(null));
-    const crates: Record<string, [1 | 2 | 3, 1 | 2]> = { k: [1, 1], g: [2, 2], a: [3, 2] };
-    for (let r = 0; r < ROWS; r++) {
-      for (let c = 0; c < COLS; c++) {
-        const p = board[r][c];
-        if ((COLOURS as readonly string[]).includes(p)) this.grid[r][c] = { id: this.nextId++, kind: 'colour', colour: p };
-        else if (p === 'm' || p === 'n' || p === 'o' || p === 'p') this.grid[r][c] = this.tool(p);
-        else if (p === 'q') this.grid[r][c] = this.ant(ANT_COUNT, 3);
-        else if (crates[p]) {
-          const [width, height] = crates[p];
-          const crate: Cell = { id: this.nextId++, kind: 'crate', width, height };
-          for (let dr = 0; dr < height; dr++) for (let dc = 0; dc < width; dc++) this.grid[r + dr][c + dc] = crate;
-        }
-      }
-    }
-  }
-
-  // ---- Looking at the board ----
-
-  /** Every piece once, with its top-left position. */
-  cells(): [Cell, Pos][] {
-    const seen = new Set<Cell>();
-    const out: [Cell, Pos][] = [];
-    for (let r = 0; r < ROWS; r++) {
-      for (let c = 0; c < COLS; c++) {
-        const cell = this.grid[r][c];
-        if (cell && !seen.has(cell)) {
-          seen.add(cell);
-          out.push([cell, [r, c]]);
-        }
-      }
-    }
-    return out;
-  }
-
-  crateCount(): number {
-    return this.cells().filter(([cell]) => cell.kind === 'crate').length;
-  }
-
-  private snapshot(): Grid {
-    return this.grid.map((row) => [...row]);
+  private begin(): Step {
+    this.current = { board: [], sprites: [], monkey: [], sounds: [], effects: [], duration: 0 };
+    return this.current;
   }
 
   /**
-   * Records a step. `still` is what holds still (by default the board now), minus the
-   * landing spots of sprites that move or fade in, so nothing is drawn twice.
+   * Finishes a step: everything not moving holds still, and the step lasts until its last
+   * blocking animation ends.
    */
-  private record(sprites: Sprite[], still = this.snapshot()): void {
-    if (!sprites.length) return;
-    for (const s of sprites) {
-      if (s.fade === 'clear' || s.fade === 'out') continue;
-      const [w, h] = s.cell.kind === 'crate' ? [s.cell.width, s.cell.height] : [1, 1];
-      for (let dr = 0; dr < h; dr++) {
-        for (let dc = 0; dc < w; dc++) {
-          const [r, c] = [s.to[0] + dr, s.to[1] + dc];
-          if (inBoard(r, c) && still[r][c] === s.cell) still[r][c] = null;
-        }
-      }
+  private end(): void {
+    const step = this.current!;
+    this.current = null;
+    const still = this.board.cells.slice();
+    for (const s of step.sprites) {
+      if (s.clear) continue;
+      const [x, y] = s.to;
+      if (x >= 0 && y >= 0 && x < WIDTH && y < HEIGHT) still[y * WIDTH + x] = EMPTY;
     }
-    this.steps.push({ grid: still, sprites, duration: Math.max(...sprites.map((s) => s.delay + s.duration)) });
+    step.board = still;
+    step.duration = Math.max(
+      0,
+      ...step.sprites.map((s) => s.delay + s.duration),
+      ...step.monkey.map((m) => m.delay + m.duration),
+    );
+    this.steps.push(step);
+  }
+
+  private sound(name: SoundName, delay = 0): void {
+    this.current?.sounds.push({ name, delay });
+  }
+
+  /** A falling piece (client/w): pieces from above the board are made there and drop in. */
+  private fall = (piece: number, x: number, sy: number, tx: number, ty: number) => {
+    this.current?.sprites.push({ piece, from: [x, sy], to: [tx, ty], delay: 0, duration: TIMING.fall(Math.abs(ty - sy)), path: 'line' });
+  };
+
+  /** Clears a cell (client/A): it fades after `ripple` cells' delay, with a pop and one destroy sound per kind of piece and delay. */
+  private clearCell(x: number, y: number, ripple: number, heard: Map<number, Set<number>>): void {
+    const piece = this.board.getPiece(x, y);
+    if (piece !== EMPTY) {
+      const delay = ripple * TIMING.ripple;
+      const kinds = heard.get(delay) ?? new Set<number>();
+      heard.set(delay, kinds);
+      if (!kinds.has(piece)) {
+        this.sound('piece_destroy', delay);
+        kinds.add(piece);
+      }
+      // Crates fade as one image, from their bottom-left cell.
+      if (!isCrate(piece) || isCrateAnchor(piece)) {
+        this.current?.sprites.push({ piece, from: [x, y], to: [x, y], delay, duration: TIMING.clear, path: 'line', clear: true });
+      }
+      if (piece < 5) this.current?.effects.push({ kind: 'pop', piece, at: [x, y], delay });
+    }
+    this.board.setPiece(x, y, EMPTY);
   }
 
   // ---- Moves ----
 
   /**
-   * Rotates the 2x2 whose top-left is (r, c), anticlockwise for `ccw`. Any cell that is empty,
-   * a tool or a crate makes it illegal (ForageBoard.java:222-238); it doesn't need to make a
-   * match. Four of the same colour turn but don't count as a move (client/o.java:222-225).
+   * The player clicks with the cursor's top-left at (x, y): a tool there is used, otherwise the
+   * 2x2 turns, anticlockwise for `ccw` (client/o.a(int, int, boolean)). Four of the same turn
+   * but aren't a move. Returns what happened; for a move, the board has then settled.
    */
-  turn(r: number, c: number, ccw: boolean): 'illegal' | 'same' | 'moved' {
-    r = Math.min(r, ROWS - 2);
-    c = Math.min(c, COLS - 2);
-    const corners: Pos[] = [
-      [r, c],
-      [r, c + 1],
-      [r + 1, c + 1],
-      [r + 1, c],
-    ];
-    const cells = corners.map(([rr, cc]) => this.grid[rr][cc]);
-    if (cells.some((cell) => !cell || cell.kind === 'tool' || cell.kind === 'crate')) return 'illegal';
-    const shift = ccw ? 3 : 1;
-    const sprites: Sprite[] = [];
-    cells.forEach((cell, i) => {
-      let moved = cell!;
-      // Ants turn with the block (ForageBoard.java:240-253).
-      if (moved.kind === 'ant') moved = this.ant(moved.count, (((moved.dir + (ccw ? 3 : 1)) % 4) as Dir), moved.id);
-      const to = corners[(i + shift) % 4];
-      this.grid[to[0]][to[1]] = moved;
-      sprites.push({ cell: moved, from: corners[i], to, delay: 0, duration: TIMING.turn });
-    });
-    this.record(sprites);
-    const first = cells[0]!;
-    const same = cells.every((cell) => cell!.kind === 'colour' && first.kind === 'colour' && cell!.colour === first.colour);
-    return same ? 'same' : 'moved';
-  }
-
-  /** Uses the tool at (r, c); left click (ccw) goes left. Returns false if there isn't one. */
-  useTool(r: number, c: number, ccw: boolean): boolean {
-    const cell = this.grid[r]?.[c];
-    if (cell?.kind !== 'tool') return false;
-    const targets: Pos[] = [];
-    if (cell.tool === 'n') {
-      // Shovel: its cell and everything below (client/o.java:316-329).
-      for (let rr = r; rr < ROWS; rr++) targets.push([rr, c]);
-    } else if (cell.tool === 'm') {
-      // Machete: its row, to the left or right (client/o.java:331-351).
-      for (let cc = 0; cc < COLS; cc++) if (ccw ? cc <= c : cc >= c) targets.push([r, cc]);
-    } else if (cell.tool === 'o') {
-      // Earthquake: itself and the whole edge column (client/o.java:395-413).
-      targets.push([r, c]);
-      const edge = ccw ? 0 : COLS - 1;
-      for (let rr = 0; rr < ROWS; rr++) if (rr !== r || edge !== c) targets.push([rr, edge]);
-    } else {
-      this.monkey(r, c);
-      return true;
+  act(x: number, y: number, ccw: boolean): 'illegal' | 'same' | 'moved' {
+    const b = this.board;
+    const at = (xx: number, yy: number) => (b.inBounds(xx, yy) ? b.getPiece(xx, yy) : EMPTY);
+    const tool = at(x, y);
+    if (!isTool(tool) && !b.isLegalRotate(x, y)) return 'illegal';
+    const four = [at(x, y + 1), at(x, y), at(x + 1, y), at(x + 1, y + 1)];
+    if (four.every((p) => p === four[0])) {
+      this.turn(x, y, ccw);
+      return 'same';
     }
-    this.clearCells(targets, [r, c], true);
-    if (cell.tool === 'o') this.slide(ccw ? 'left' : 'right');
-    return true;
+    this.crateSource.beforeMove?.(this);
+    this.result = Forage.emptyResult();
+    if (tool === SHOVEL) this.shovel(x, y);
+    else if (tool === MACHETE) this.machete(x, y, ccw);
+    else if (tool === MONKEY) this.monkey(x, y);
+    else if (tool === EARTHQUAKE) this.earthquake(x, y, ccw);
+    else this.turn(x, y, ccw);
+    this.points.endStep();
+    this.settle(true);
+    return 'moved';
   }
 
-  /** Empties cells (crates are skipped), dimming each after a ripple delay from `origin`. */
-  private clearCells(targets: Pos[], origin: Pos, ripple: boolean): void {
-    const still = this.snapshot();
-    const sprites: Sprite[] = [];
-    for (const [r, c] of targets) {
-      const cell = this.grid[r][c];
-      if (!cell || cell.kind === 'crate') continue;
-      this.grid[r][c] = null;
-      still[r][c] = null;
-      const distance = Math.abs(r - origin[0]) + Math.abs(c - origin[1]);
-      sprites.push({ cell, from: [r, c], to: [r, c], delay: ripple ? distance * TIMING.toolRipple : 0, duration: TIMING.clear, fade: 'clear' });
-    }
-    this.record(sprites, still);
+  /** The result of the last move. */
+  get lastResult(): MoveResult {
+    return this.result;
   }
 
-  /** Monkey: dances, leaves, and throws new colours into the 5x5 around it (client/o.java:371-393). */
-  private monkey(r: number, c: number): void {
-    const monkey = this.grid[r][c]!;
-    const dance = this.snapshot();
-    dance[r][c] = null;
-    this.steps.push({
-      grid: dance,
-      sprites: [{ cell: monkey, from: [r, c], to: [r, c], delay: 0, duration: TIMING.monkeyDance, motion: 'bob' }],
-      duration: TIMING.monkeyDance,
+  private turn(x: number, y: number, ccw: boolean): void {
+    const step = this.begin();
+    this.sound('piece_swap');
+    const b = this.board;
+    const pieces = TURN.map(([dx, dy]) => b.possiblyRotateAnts(x + dx, y + dy, ccw));
+    // Anticlockwise, each piece moves to the corner before it in TURN's order (top-left to
+    // bottom-left); clockwise, to the one after.
+    TURN.forEach(([dx, dy], i) => {
+      const [tx, ty] = TURN[(i + (ccw ? 3 : 1)) % 4];
+      b.setPiece(x + tx, y + ty, pieces[i]);
+      step.sprites.push({ piece: pieces[i], from: [x + dx, y + dy], to: [x + tx, y + ty], delay: 0, duration: TIMING.turn, path: 'line' });
     });
-    const still = this.snapshot();
-    const leave = (r + 2) * 45 * TIMING.monkeyLeavePerPx;
-    const sprites: Sprite[] = [{ cell: monkey, from: [r, c], to: [-2, c], delay: 0, duration: leave }];
-    still[r][c] = null;
-    for (let rr = r - 2; rr <= r + 2; rr++) {
-      for (let cc = c - 2; cc <= c + 2; cc++) {
-        const old = this.grid[rr]?.[cc];
-        if (!inBoard(rr, cc) || old?.kind === 'crate') continue;
-        if (old && old !== monkey) sprites.push({ cell: old, from: [rr, cc], to: [rr, cc], delay: 0, duration: TIMING.clear, fade: 'clear' });
-        still[rr][cc] = null;
-        const fresh = this.colour();
-        this.grid[rr][cc] = fresh;
-        const px = 45 * (Math.abs(rr - r) + Math.abs(cc - c));
-        sprites.push({ cell: fresh, from: [r, c], to: [rr, cc], delay: leave, duration: Math.max(1, px) * TIMING.monkeyThrowPerPx, motion: 'arc' });
+    this.end();
+  }
+
+  /** Shovel: its cell and everything below it, crates skipped (client/o.a(int,int,int,HashMap)). */
+  private shovel(x: number, y: number): void {
+    this.begin();
+    this.sound('shovel');
+    const heard = new Map<number, Set<number>>();
+    for (let yy = y; yy < HEIGHT; yy++) if (!isCrate(this.board.getPiece(x, yy))) this.clearCell(x, yy, yy - y, heard);
+    this.end();
+  }
+
+  /** Machete: its cell and the rest of its row to the left (anticlockwise) or right, crates skipped. */
+  private machete(x: number, y: number, left: boolean): void {
+    this.begin();
+    this.sound('machete');
+    const heard = new Map<number, Set<number>>();
+    for (let xx = 0; xx < WIDTH; xx++) {
+      if ((left ? xx <= x : xx >= x) && !isCrate(this.board.getPiece(xx, y))) this.clearCell(xx, y, Math.abs(xx - x), heard);
+    }
+    this.end();
+  }
+
+  /**
+   * Earthquake: clears itself and the whole left (anticlockwise) or right column, crates skipped,
+   * and at once slides the board that way like sideways gravity, refilling from the other side.
+   */
+  private earthquake(x: number, y: number, left: boolean): void {
+    this.begin();
+    this.sound('earthquake');
+    const heard = new Map<number, Set<number>>();
+    this.clearCell(x, y, 0, heard);
+    const edge = left ? 0 : WIDTH - 1;
+    for (let yy = 0; yy < HEIGHT; yy++) if (!isCrate(this.board.getPiece(edge, yy))) this.clearCell(edge, yy, 0, heard);
+    this.board.slidePieces(!left, (piece, sx, sy, tx, ty) => {
+      this.current?.sprites.push({
+        piece,
+        from: [sx, sy],
+        to: [tx, ty],
+        delay: 0,
+        duration: TIMING.slide(Math.abs(tx - sx)),
+        path: 'wobble',
+        phase: Math.random() * Math.PI * 2,
+      });
+    });
+    this.end();
+  }
+
+  /**
+   * Monkey: drops in over a 3x3 around itself, dances while it throws a new piece into every cell
+   * of the 5x5 around it (crates skipped), then climbs away (client/o.a(int, int), b(int, int)).
+   * The new pieces come from getNextPiece without ants, and since nothing has matched yet this
+   * move, they are always fruit.
+   */
+  private monkey(x: number, y: number): void {
+    const b = this.board;
+    const facing = x < Math.trunc(WIDTH / 2) ? 1 : x > Math.trunc(WIDTH / 2) ? 0 : Math.random() < 0.5 ? 0 : 1;
+    const box: Cell = [Math.min(Math.max(0, x - 1), WIDTH - 3), Math.min(Math.max(0, y - 1), HEIGHT - 3)];
+    const travel = (box[1] + 3) * CELL;
+    let step = this.begin();
+    this.sound('monkey');
+    step.monkey.push({ kind: 'drop', box, facing, delay: 0, duration: travel });
+    this.end();
+
+    step = this.begin();
+    step.monkey.push({ kind: 'dance', box, facing, delay: 0, duration: TIMING.monkeyDance });
+    step.monkey.push({ kind: 'leave', box, facing, delay: TIMING.monkeyDance, duration: travel });
+    const centre: Cell = [Math.min(Math.max(1, x), WIDTH - 2), Math.min(Math.max(1, y), HEIGHT - 2)];
+    for (let dx = -2; dx <= 2; dx++) {
+      for (let dy = -2; dy <= 2; dy++) {
+        const [tx, ty] = [x + dx, y + dy];
+        if (!b.inBounds(tx, ty) || isCrate(b.getPiece(tx, ty))) continue;
+        const piece = b.getNextPiece(false);
+        const old = b.getPiece(tx, ty);
+        b.setPiece(tx, ty, piece);
+        if (tx === centre[0] && ty === centre[1]) continue;
+        const duration = CELL * (Math.abs(tx - centre[0]) + Math.abs(ty - centre[1])) * TIMING.monkeyThrow;
+        step.sprites.push({ piece, from: centre, to: [tx, ty], delay: 0, duration, path: 'arc' });
+        // The old piece stays until the new one lands on it.
+        if (old !== EMPTY) step.sprites.push({ piece: old, from: [tx, ty], to: [tx, ty], delay: duration, duration: 0, path: 'line', clear: true });
       }
     }
-    this.record(sprites, still);
+    this.end();
   }
 
   // ---- Settling ----
 
   /**
-   * Gravity (down) or an earthquake's slide (left/right): everything moves toward the edge
-   * until it lands, crates as rigid blocks, and new pieces come in from the far side
-   * (drop/a/f.java:30-81). Returns whether anything moved or arrived.
+   * Settles the board (client/o.o() and p()): gravity, crates, runs, spawns, until nothing happens;
+   * then the ants step and it settles again; then the move ends.
    */
-  private slide(direction: 'down' | 'left' | 'right'): boolean {
-    const [dr, dc]: Pos = direction === 'down' ? [1, 0] : direction === 'left' ? [0, -1] : [0, 1];
-    const start = new Map<Cell, Pos>(this.cells());
-    const at = new Map<Cell, Pos>(start);
-    let moved = true;
-    while (moved) {
-      moved = false;
-      // Nearest the edge first, so a whole column can move on the same pass.
-      const units = [...at.entries()].sort(([, a], [, b]) => (b[0] * dr + b[1] * dc) - (a[0] * dr + a[1] * dc));
-      for (const [cell, [r, c]] of units) {
-        const [w, h] = cell.kind === 'crate' ? [cell.width, cell.height] : [1, 1];
-        let free = true;
-        for (let y = 0; y < h && free; y++) {
-          for (let x = 0; x < w && free; x++) {
-            const [tr, tc] = [r + y + dr, c + x + dc];
-            const there = inBoard(tr, tc) ? this.grid[tr][tc] : undefined;
-            if (there === undefined || (there !== null && there !== cell)) free = false;
-          }
-        }
-        if (!free) continue;
-        for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) this.grid[r + y][c + x] = null;
-        for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) this.grid[r + y + dr][c + x + dc] = cell;
-        at.set(cell, [r + dr, c + dc]);
-        moved = true;
-      }
-    }
-    const perCell = direction === 'down' ? TIMING.fallPerRow : TIMING.quakePerColumn * (1 + Math.random() * 0.2);
-    const sprites: Sprite[] = [];
-    for (const [cell, to] of at) {
-      const from = start.get(cell)!;
-      const distance = Math.abs(to[0] - from[0]) + Math.abs(to[1] - from[1]);
-      if (distance) sprites.push({ cell, from, to, delay: 0, duration: distance * perCell, ...(direction !== 'down' && wobble()) });
-    }
-    // Refill the empty cells at the far end of each line, as if they'd been waiting just off the board.
-    const lines = direction === 'down' ? COLS : ROWS;
-    const length = direction === 'down' ? ROWS : COLS;
-    const pos = (line: number, i: number): Pos =>
-      direction === 'down' ? [i, line] : direction === 'left' ? [line, COLS - 1 - i] : [line, i];
-    for (let line = 0; line < lines; line++) {
-      let empty = 0;
-      while (empty < length && this.grid[pos(line, empty)[0]][pos(line, empty)[1]] === null) empty++;
-      for (let i = 0; i < empty; i++) {
-        const [r, c] = pos(line, i);
-        const cell = this.newPiece();
-        this.grid[r][c] = cell;
-        sprites.push({ cell, from: [r - dr * empty, c - dc * empty], to: [r, c], delay: 0, duration: empty * perCell });
-      }
-    }
-    this.record(sprites);
-    return sprites.length > 0;
-  }
-
-  /** Crates whose bottom row is on the bottom of the board are collected (client/o.java:529-574). */
-  private collectCrates(result: MoveResult): boolean {
-    const done = this.cells().filter(([cell, [r]]) => cell.kind === 'crate' && r + cell.height - 1 === ROWS - 1);
-    if (!done.length) return false;
-    const sprites: Sprite[] = [];
-    done
-      .sort(([, a], [, b]) => a[1] - b[1])
-      .forEach(([cell, [r, c]], k) => {
-        if (cell.kind !== 'crate') return;
-        result.points +=
-          this.rules.mode === 'gauntlet'
-            ? cell.width
-            : Math.trunc(cell.width ** 2 * STEP_BONUS[Math.min(result.crateSteps, 2)] * CRATE_BONUS[Math.min(k, 2)]);
-        result.collected[cell.width - 1]++;
-        for (let y = 0; y < cell.height; y++) for (let x = 0; x < cell.width; x++) this.grid[r + y][c + x] = null;
-        sprites.push({ cell, from: [r, c], to: [r, c], delay: 0, duration: TIMING.crateCollect, fade: 'out' });
-      });
-    result.crateSteps++;
-    this.record(sprites);
-    return true;
-  }
-
-  /** Runs of three or more of a colour, across or down, all cleared together (drop/a/b.java:17-60). */
-  private clearMatches(): boolean {
-    const marked = new Set<string>();
-    let runs = 0;
-    const scan = (lines: number, length: number, at: (line: number, i: number) => Pos) => {
-      for (let line = 0; line < lines; line++) {
-        let i = 0;
-        while (i < length) {
-          const [r, c] = at(line, i);
-          const cell = this.grid[r][c];
-          let j = i + 1;
-          if (cell?.kind === 'colour') {
-            for (; j < length; j++) {
-              const other = this.grid[at(line, j)[0]][at(line, j)[1]];
-              if (other?.kind !== 'colour' || other.colour !== cell.colour) break;
-            }
-            if (j - i >= 3) {
-              runs++;
-              for (let k = i; k < j; k++) marked.add(at(line, k).join(','));
-            }
-          }
-          i = j;
-        }
-      }
-    };
-    scan(ROWS, COLS, (r, c) => [r, c]);
-    scan(COLS, ROWS, (c, r) => [r, c]);
-    if (!runs) return false;
-    this.combo = Math.max(this.combo, Math.min(runs, 8));
-    this.clearCells(
-      [...marked].map((key) => key.split(',').map(Number) as Pos),
-      [0, 0],
-      false,
-    );
-    return true;
-  }
-
-  /**
-   * Gauntlet chest spawning, from the desktop simulator (board_calc.try_spawn_chest and the CI
-   * loop in app.pyw). The next chest and its column are picked ahead of time. At most one chest
-   * every two moves and 3 on the board; a cursed chest waits until no jar or chest is left, and a
-   * jar until there's no cursed chest and fewer than 2 jars. The chest overwrites colours at the
-   * top; if any are missing it waits, and after three such moves it tries every column. In
-   * normal forage the client rolls a spawn chance instead, but the server-run Gauntlet logic
-   * paces chests better, so every mode uses it.
-   */
-  private gauntletSpawn(): boolean {
-    const weights = this.rules.crates;
-    if (!weights || this.crateBudget <= 0) return false;
-    const widths = ([1, 2, 3] as const).filter((w) => weights[w - 1] > 0);
-    if (!widths.length) return false;
-    const pick = () => {
-      const width = this.rng.choiceWeighted(
-        widths,
-        widths.map((w) => weights[w - 1]),
-      );
-      return { width, column: this.rng.choice(Array.from({ length: COLS + 1 - width }, (_, i) => i)) };
-    };
-    const s = (this.spawner ??= { ...pick(), movesSinceLast: -1 });
-    const onBoard = [0, 0, 0];
-    for (const [cell] of this.cells()) if (cell.kind === 'crate') onBoard[cell.width - 1]++;
-    const total = onBoard[0] + onBoard[1] + onBoard[2];
-    s.movesSinceLast++;
-    let placed = false;
-    const fits =
-      s.width === 1 || (s.width === 2 && onBoard[2] === 0 && onBoard[1] < 2) || (s.width === 3 && onBoard[1] === 0 && onBoard[2] < 1);
-    if (s.movesSinceLast >= 2 && total < 3 && fits) {
-      const height = s.width === 1 ? 1 : 2;
-      const blocked = (c: number) => {
-        for (let r = 0; r < height; r++) for (let x = 0; x < s.width; x++) if (this.grid[r][c + x]?.kind !== 'colour') return true;
-        return false;
-      };
-      let isBlocked = blocked(s.column);
-      if (isBlocked && s.movesSinceLast >= 3) {
-        // The desktop version tries every column in a random order, keeping the last one tried.
-        for (const c of this.rng.shuffle(Array.from({ length: COLS + 1 - s.width }, (_, i) => i))) {
-          s.column = c;
-          isBlocked = blocked(c);
-        }
-      }
-      if (!isBlocked) {
-        // It drops in from above the board at the usual fall speed, and the pieces it lands on
-        // go at once (a/d.java:36-59).
-        const crate: Cell = { id: this.nextId++, kind: 'crate', width: s.width, height };
-        for (let r = 0; r < height; r++) for (let x = 0; x < s.width; x++) this.grid[r][s.column + x] = crate;
-        this.record([{ cell: crate, from: [-height, s.column], to: [0, s.column], delay: 0, duration: height * TIMING.fallPerRow }]);
-        Object.assign(s, pick(), { movesSinceLast: 0 });
-        this.crateBudget--;
-        placed = true;
-      }
-    }
-    if (total + (placed ? 1 : 0) === 3) s.movesSinceLast = -1;
-    return placed;
-  }
-
-  /**
-   * Each set of ants steps once, eating the piece ahead; anything else ahead (the edge, a
-   * crate, a gap, other ants) and they starve (ForageBoard.java:255-301).
-   */
-  private stepAnts(): boolean {
-    const ants = this.cells().filter(([cell]) => cell.kind === 'ant');
-    if (!ants.length) return false;
-    const still = this.snapshot();
-    const sprites: Sprite[] = [];
-    for (const [ant, [r, c]] of ants) {
-      if (ant.kind !== 'ant') continue;
-      const [dr, dc] = DIRS[ant.dir];
-      const [tr, tc] = [r + dr, c + dc];
-      const food = inBoard(tr, tc) ? this.grid[tr][tc] : null;
-      this.grid[r][c] = null;
-      still[r][c] = null;
-      if (food && (food.kind === 'colour' || food.kind === 'tool')) {
-        sprites.push({ cell: food, from: [tr, tc], to: [tr, tc], delay: TIMING.antStep * 0.8, duration: TIMING.clear, fade: 'clear' });
-        still[tr][tc] = null;
-        const fed = ant.count > 1 ? this.ant(ant.count - 1, ant.dir, ant.id) : null;
-        this.grid[tr][tc] = fed;
-        sprites.push({ cell: fed ?? ant, from: [r, c], to: [tr, tc], delay: 0, duration: TIMING.antStep, ...(!fed && { fade: 'out' as const }) });
-      } else {
-        sprites.push({ cell: ant, from: [r, c], to: [r, c], delay: 0, duration: TIMING.antStep, fade: 'out' });
-      }
-    }
-    this.record(sprites, still);
-    this.steps[this.steps.length - 1].sound = 'ants';
-    return true;
-  }
-
-  /** Settles the board after a move, then lets ants step and settles again (client/o.java:467-513). */
-  settle(): MoveResult {
-    const result: MoveResult = { points: 0, collected: [0, 0, 0], crateSteps: 0, combo: 0 };
-    let antsMoved = false;
-    let chestsDone = false;
+  private settle(moved: boolean): void {
+    let antsToTick = moved;
     for (;;) {
-      if (this.slide('down') || this.collectCrates(result) || this.clearMatches()) continue;
-      if (!antsMoved) {
-        antsMoved = true;
-        if (this.stepAnts()) continue;
-      }
-      // Chests come in once the move has played out, as in the desktop version.
-      if (!chestsDone) {
-        chestsDone = true;
-        if (this.gauntletSpawn()) continue;
+      if (this.gravity() || this.collectCrates() || this.clearRuns() || this.spawnCrate()) continue;
+      if (antsToTick) {
+        antsToTick = false;
+        this.tickAnts();
+        continue;
       }
       break;
     }
-    result.combo = this.combo;
-    this.combo = 0;
-    return result;
+    if (!moved) return;
+    // The end of the move (client/o.p()).
+    this.result.points = this.points.total;
+    this.result.chained = this.points.chained;
+    this.result.combo = this.board.comboCount;
+    if (this.result.chained > 1) this.textEffect(this.result.chained < 4 ? ['', '', 'Double!', 'Triple!'][this.result.chained] : 'Triple!', this.result.points);
+    this.board.comboCount = 0;
+    this.points.reset();
+    // The simulator's Gauntlet chests come in once the move has played out.
+    if (this.crateSource.afterMove?.(this)) this.settle(false);
+  }
+
+  private textEffect(text: string, size: number): void {
+    const last = this.steps[this.steps.length - 1];
+    last?.effects.push({ kind: 'text', text, size, delay: last.duration });
+  }
+
+  private gravity(): boolean {
+    this.begin();
+    const moved = this.board.dropPieces(this.fall) > 0;
+    if (moved) this.end();
+    else this.current = null;
+    return moved;
+  }
+
+  /**
+   * Crates whose bottom-left cell reaches the bottom row are collected (client/o.j()). Normal
+   * foraging scores them with CratePoints; the Gauntlet's flat points are worked out alongside.
+   */
+  private collectCrates(): boolean {
+    const b = this.board;
+    let any = false;
+    let count = 0;
+    let stepPoints = 0;
+    const step = this.begin();
+    const heard = new Map<number, Set<number>>();
+    for (let x = 0; x < WIDTH; x++) {
+      const p = b.getPiece(x, HEIGHT - 1);
+      if (!isCrateAnchor(p)) continue;
+      any = true;
+      const { width, height } = CRATE_SIZES[crateSize(p)];
+      b.decreaseCrates();
+      b.decreaseCrateArea(width * height);
+      for (let dx = 0; dx < width; dx++) for (let dy = 0; dy < height; dy++) this.clearCell(x + dx, HEIGHT - 1 - dy, 0, heard);
+      stepPoints += this.points.crate(width);
+      this.result.gauntletPoints += width;
+      this.result.collected[crateSize(p)]++;
+      this.cratesCollected++;
+      count++;
+    }
+    if (count > 0) step.effects.push({ kind: 'text', text: count === 1 ? 'Crate cleared!' : `${count} crates cleared!`, size: stepPoints * 2, delay: 0 });
+    if (any) {
+      this.points.endStep();
+      this.end();
+    } else this.current = null;
+    return any;
+  }
+
+  /** Every run of three or more fruit goes at once (client/o.k()). */
+  private clearRuns(): boolean {
+    const runs = this.board.findRuns();
+    if (!runs.length) return false;
+    this.begin();
+    const heard = new Map<number, Set<number>>();
+    for (const run of runs) for (const [x, y] of ForageBoard.runCells(run)) this.clearCell(x, y, 0, heard);
+    this.board.setComboCount(runs.length);
+    this.points.endStep();
+    this.end();
+    return true;
+  }
+
+  /** A crate the server asked for (client/o.h()). */
+  private spawnCrate(): boolean {
+    this.begin();
+    const placed = this.board.spawnCrate(this.fall) > 0;
+    if (placed) this.end();
+    else this.current = null;
+    return placed;
+  }
+
+  /** The ants step once a move (client/o.p(), ForageBoard.tickAnts). */
+  private tickAnts(): void {
+    if (!this.board.antsOnBoard()) return;
+    const step = this.begin();
+    let ants = EMPTY;
+    for (let x = 0; x < WIDTH && ants === EMPTY; x++) for (let y = 0; y < HEIGHT && ants === EMPTY; y++) if (isAnts(this.board.getPiece(x, y))) ants = this.board.getPiece(x, y);
+    this.board.tickAnts(
+      (x, y, tx, ty) => {
+        this.sound('ants');
+        // The ants walk into the cell they ate, still showing their old count; after their last
+        // bite they're gone once they get there.
+        step.sprites.push({ piece: ants, from: [x, y], to: [tx, ty], delay: 0, duration: TIMING.antStep, path: 'line', walk: true });
+      },
+      // Starving ants just disappear.
+      () => {},
+    );
+    this.end();
+  }
+
+  // ---- Crates from outside the client ----
+
+  /** Puts a crate of `size` in at column `x` of the top rows, as the simulator's Gauntlet does, dropping in. */
+  dropCrate(size: number, x: number, key = 0): void {
+    const b = this.board;
+    const { width, height } = CRATE_SIZES[size];
+    this.begin();
+    b.increaseCrates();
+    b.increaseCrateArea(width * height);
+    for (let dx = 0; dx < width; dx++) {
+      for (let dy = 0; dy < height; dy++) {
+        const part = dx === 0 && dy === 0 ? 0 : dy === 0 ? 1 : 2;
+        const piece = makeCrate(part, key, size);
+        b.setPiece(x + dx, height - 1 - dy, piece);
+        this.fall(piece, x + dx, -1 - dy, x + dx, height - 1 - dy);
+      }
+    }
+    this.end();
+  }
+
+  /** Loads a board, counting its crates in. */
+  load(cells: readonly number[]): void {
+    const b = this.board;
+    cells.forEach((p, i) => (b.cells[i] = p));
+    b.crates = 0;
+    b.crateArea = 0;
+    for (const p of cells) {
+      if (isCrateAnchor(p)) {
+        const { width, height } = CRATE_SIZES[crateSize(p)];
+        b.increaseCrates();
+        b.increaseCrateArea(width * height);
+      }
+    }
+  }
+
+  /** How many crates are on the board. */
+  crateCount(): number {
+    return this.board.cells.filter(isCrateAnchor).length;
   }
 }
