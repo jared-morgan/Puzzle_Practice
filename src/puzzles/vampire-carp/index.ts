@@ -675,8 +675,14 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     saveConfig();
   };
 
-  const settings = panel.group('Game');
-  settings.select(
+  panel.clock(() =>
+    config.unlimited
+      ? { label: 'Time', ms: timePassed }
+      : { label: 'Time left', ms: sessionTime() - timePassed, countdown: true, warn: boardActive && sessionTime() - timePassed < 10000 },
+  );
+
+  const session = panel.group();
+  session.select(
     'Mode',
     [
       { value: 'normal', label: 'Normal' },
@@ -687,6 +693,50 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     setMode,
     { title: 'Ghost hides placed pieces; Speed deals small holes with the pieces to fill them' },
   );
+  session.note(() => {
+    const parts: string[] = [];
+    if (config.speed) {
+      const holes = `${config.speedHoles} hole${config.speedHoles > 1 ? 's' : ''}`;
+      const pieces = `${config.speedSize} piece${config.speedSize > 1 ? 's' : ''} each`;
+      const always = config.speedSize > 1 && config.speedLetter !== 12 ? `, always a ${PIECES_NO_PUTTY[config.speedLetter].toUpperCase()}` : '';
+      parts.push(`${holes} of ${pieces}${always}`);
+    }
+    if (seeded) parts.push('Seeded');
+    if (config.cheats) parts.push('Cheats');
+    if (!scoreCounting || config.unlimited || config.cheats) parts.push('No PB');
+    return parts.join(' · ');
+  });
+
+  const pauseAvailable = () => timePassed > 0 && timePassed < sessionTime() && pauseTime > 0;
+  session
+    .button(
+      'Start',
+      () => {
+        if (!boardActive) startSession();
+        boardActive = !boardActive;
+      },
+      { variant: 'primary', label: () => (boardActive ? 'Stop' : 'Start') },
+    )
+    .button(
+      'Pause',
+      () => {
+        if (boardActive) pauseTime = timePassed;
+        else if (pauseTime > 0) startTime = ticks();
+        if (pauseAvailable()) boardActive = !boardActive;
+      },
+      { label: () => (boardActive ? 'Pause' : 'Play'), disabled: () => !boardActive && !pauseAvailable() },
+    )
+    .button(
+      'Dismiss',
+      () => {
+        if (!boardActive) return;
+        boardIndex++;
+        newBoard();
+      },
+      { disabled: () => !boardActive, title: 'Deal a new board without restarting the clock' },
+    );
+
+  const settings = panel.settings.group('Game');
   const speedHidden = () => !config.speed;
   settings.select(
     'Holes',
@@ -752,38 +802,7 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     { title: 'Pick any piece from the cheat pieces (no PB)' },
   );
 
-  const pauseAvailable = () => timePassed > 0 && timePassed < sessionTime() && pauseTime > 0;
-  panel
-    .group()
-    .button(
-      'Start',
-      () => {
-        if (!boardActive) startSession();
-        boardActive = !boardActive;
-      },
-      { variant: 'primary', label: () => (boardActive ? 'Stop' : 'Start') },
-    )
-    .button(
-      'Pause',
-      () => {
-        if (boardActive) pauseTime = timePassed;
-        else if (pauseTime > 0) startTime = ticks();
-        if (pauseAvailable()) boardActive = !boardActive;
-      },
-      { label: () => (boardActive ? 'Pause' : 'Play'), disabled: () => !boardActive && !pauseAvailable() },
-    )
-    .button(
-      'Dismiss',
-      () => {
-        if (!boardActive) return;
-        boardIndex++;
-        newBoard();
-      },
-      { disabled: () => !boardActive, title: 'Deal a new board without restarting the clock' },
-    );
-
   panel.group('Score').stats(['', 'Now', 'PB'], () => [
-    ['Time', timePassed < sessionTime() ? String(Math.trunc(timePassed / 1000)) : '120', ''],
     ['Score', String(score()), String(bestScore)],
     ['Vampire proof', String(stats.grades[2]), ''],
     ['Creaky', String(stats.grades[1]), ''],
@@ -850,7 +869,7 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     cheats.append(line);
   }
 
-  panel.group('Look').select(
+  panel.settings.group('Look').select(
     'Graphics',
     [
       { value: 'vampire', label: 'Vampire Lair' },
@@ -861,7 +880,7 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     { title: 'The Vampire Lair’s dark art, or normal carpentry’s' },
   );
 
-  panel.group('Sound').select(
+  panel.settings.group('Sound').select(
     'Volume',
     [
       { value: 0, label: 'Off' },

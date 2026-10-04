@@ -217,6 +217,8 @@ export default (async ({ screen, input, panel, store, ticks }) => {
   /** The start: every piece floats in from 360px below, the higher ones quicker (haul/client/h). */
   let intro: { start: number; durations: number[] } | null = null;
   let roundEnd = 0;
+  /** When the game ended, so its clock stops there. */
+  let stoppedAt = 0;
   /** Spawn mode: a chest has come in, so the board is dealt again once it has finished moving. */
   let redeal = false;
   /** Spawn mode: the chest that came in, floating up until the board settles. */
@@ -370,6 +372,7 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     // A round counts when its time is up, or in clear mode when the board is cleared; not when stopped early.
     const completed = mode === 'clear' ? clearMs > 0 : timed() && !!roundEnd && ticks() >= roundEnd;
     if (completed && running) store.addHistory(bestKey(), { score: score() });
+    stoppedAt = ticks();
     running = false;
     active = false;
     finished = true;
@@ -784,31 +787,32 @@ export default (async ({ screen, input, panel, store, ticks }) => {
 
   // ---- Panel ----
 
-  const game = panel.group('Game');
-  game.select('Mode', MODES, () => mode, (m) => {
+  /** The clock's now: it stops when the game does. */
+  const clockNow = () => (running ? ticks() : stoppedAt);
+  panel.clock(() => {
+    const best = bests[bestKey()];
+    if (mode === 'clear') {
+      const ms = clearMs || (clockStart ? clockNow() - clockStart : 0);
+      return { label: 'Time', ms, best: best ?? null };
+    }
+    if (!timed()) return null;
+    const ms = roundEnd ? roundEnd - clockNow() : roundSecs * 1000;
+    return { label: 'Time left', ms, countdown: true, warn: running && ms < 10000 };
+  });
+
+  const session = panel.group();
+  session.select('Mode', MODES, () => mode, (m) => {
     mode = m;
     store.set('mode', m);
   }, { disabled: () => running, title: '0-2 chests: as one is hauled the next comes. Spawn: a chest in the middle four columns scores 3, plus 12 less the pieces left above it once it lands; elsewhere -9. Then the board resets. Clear: haul one chest as fast as you can' });
-  game.select('Round', ROUNDS, () => roundSecs, (s) => {
-    roundSecs = s;
-    store.set('round', s);
-  }, { disabled: () => running, hidden: () => mode === 'clear' });
-  panel.group().button('Start', () => (running ? stop() : start()), { variant: 'primary', label: () => (running ? 'Stop' : finished ? 'Play again' : 'Start') });
+  session.button('Start', () => (running ? stop() : start()), { variant: 'primary', label: () => (running ? 'Stop' : finished ? 'Play again' : 'Start') });
 
-  const secondsLeft = () => (roundEnd ? Math.max(0, Math.ceil((roundEnd - ticks()) / 1000)) : roundSecs);
-  const clock = (s: number) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
   const best = () => bests[bestKey()];
   panel.group('Haul').stats(['', 'Now', 'Best'], () => {
     const rows: string[][] = [];
-    if (mode === 'clear') {
-      const ms = clearMs || (running && clockStart ? ticks() - clockStart : 0);
-      rows.push(['Time', seconds(ms), best() ? seconds(best()) : '-']);
-    } else {
-      rows.push(['Time left', timed() ? clock(running || finished ? secondsLeft() : roundSecs) : '-', '']);
-      if (mode === 'spawn') {
-        rows.push(['Spawn score', String(tally.spawnScore), timed() && best() !== undefined ? String(best()) : '-']);
-        rows.push(['Chests in middle', `${tally.middle} / ${tally.spawned}`, '']);
-      }
+    if (mode === 'spawn') {
+      rows.push(['Spawn score', String(tally.spawnScore), timed() && best() !== undefined ? String(best()) : '-']);
+      rows.push(['Chests in middle', `${tally.middle} / ${tally.spawned}`, '']);
     }
     rows.push(['Points', String(tally.points), mode !== 'spawn' && mode !== 'clear' && timed() && best() ? String(best()) : '-']);
     return [
@@ -827,6 +831,11 @@ export default (async ({ screen, input, panel, store, ticks }) => {
   historyGroup(panel, () => (timed() && mode !== 'spawn' ? store.history(bestKey()) : null), [{ label: 'Points', value: (g) => String(g.score) }]);
 
   panel.group('Combos').stats(['', 'Count'], () => COMBO_NAMES.map((name) => [name, String(tally.combos[name] ?? 0)]));
+
+  panel.settings.group('Game', { hidden: () => mode === 'clear' }).select('Round', ROUNDS, () => roundSecs, (s) => {
+    roundSecs = s;
+    store.set('round', s);
+  }, { disabled: () => running, title: 'How long the chest modes last' });
 
   return { frame, dispose: () => sounds.dispose() };
 }) satisfies PuzzleFactory;

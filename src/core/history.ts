@@ -1,5 +1,5 @@
-// A puzzle's past games in its side panel: how many were played with the current settings, and
-// the most recent ones, newest first. The games come from Store.history / Store.addHistory.
+// A puzzle's past games on the panel's History tab: how many were played with the current
+// settings, and the most recent ones, newest first. The games come from Store.history / Store.addHistory.
 import type { Panel } from './panel';
 import type { GameRecord } from './storage';
 
@@ -20,12 +20,13 @@ function when(at: number): string {
 }
 
 /**
- * Adds a History card. `games` returns the history for the settings in use (or null when the
+ * Adds a card to the History tab. `games` returns the history for the settings in use (or null when the
  * current mode keeps none, which hides the card).
  */
-export function historyGroup(panel: Panel, games: () => readonly GameRecord[] | null, columns: readonly HistoryColumn[], title = 'History'): void {
+export function historyGroup(panel: Panel, games: () => readonly GameRecord[] | null, columns: readonly HistoryColumn[], title = 'Past games'): void {
   const hidden = () => games() === null;
   panel
+    .tab('History')
     .group(title, { hidden })
     .note(() => {
       const n = games()?.length ?? 0;

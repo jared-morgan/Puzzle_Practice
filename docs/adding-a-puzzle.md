@@ -43,6 +43,14 @@ All in `src/core/`:
   setter. The host calls `panel.sync()` after every frame, so controls follow the game's state;
   `disabled` and `hidden` take getters too, e.g. `{ disabled: () => running }`. Keys typed into
   the panel never reach the game.
+
+  The panel has a **Play** tab and a **Settings** tab, and every puzzle lays them out the same way
+  so players find things in the same place:
+  - Play: `panel.clock(...)` first if any mode can be timed (it returns null for untimed modes,
+    and the card says so); then the session card from `panel.group()` with Mode, a `note` saying
+    what's set on the Settings tab, and Start / Stop; then the score and anything used during a game.
+  - Settings: `panel.settings.group(...)` for everything chosen before a game, with Look and
+    Sound last. Don't repeat the time in the score table: the clock shows it, with any best time.
 - **`input`** (`input.ts`): events use pygame's names and button numbers (1 left, 2 middle, 3 right,
   4/5 wheel). Keys are lower-case `KeyboardEvent.key` values, with `'space'` for the space bar.
   `input.mouse` is the cursor position. `within(pos, x1, x2, y1, y2)` tests a box.
