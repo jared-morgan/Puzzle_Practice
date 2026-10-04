@@ -1,12 +1,23 @@
-// The settings panel beside a puzzle's canvas: real HTML controls instead of controls drawn on
-// the canvas. A puzzle builds it once from `ctx.panel`, binding each control to a getter and a
-// setter; the host calls `sync()` after every frame, so controls follow the game's state
-// (values, disabled, hidden) without the puzzle pushing updates.
+// The panel beside a puzzle's canvas: real HTML controls instead of controls drawn on the canvas.
+// A puzzle builds it once from `ctx.panel`, binding each control to a getter and a setter; the
+// host calls `sync()` after every frame, so controls follow the game's state (values, disabled,
+// hidden) without the puzzle pushing updates.
 //
-//   const g = panel.group('Mode');
-//   g.select('Mode', [{ value: 'ci', label: 'CI' }], () => settings.mode, (m) => (settings.mode = m));
-//   g.toggle('Ants', () => settings.ants, (on) => (settings.ants = on), { disabled: () => running });
-//   panel.group().button('Start', start, { variant: 'primary', label: () => (running ? 'Stop' : 'Start') });
+// It has two tabs, laid out the same way in every puzzle so things are where players expect:
+//
+//   Play      the clock (always first, when the puzzle can be timed), then the session card
+//             (Mode, a line saying what's set, Start / Stop), then the score and anything else
+//             that matters during a game.
+//   Settings  everything chosen before a game: the rest of the game's options, then Look and
+//             Sound last.
+//
+//   panel.clock(() => (timed ? { label: 'Time left', ms: left, countdown: true } : null));
+//   const session = panel.group();
+//   session.select('Mode', MODES, () => settings.mode, (m) => (settings.mode = m), { disabled: () => running });
+//   session.note(() => `Difficulty ${settings.difficulty}`);
+//   session.button('Start', start, { variant: 'primary', label: () => (running ? 'Stop' : 'Start') });
+//   panel.group('Score').stats(['', 'Now', 'Best'], () => [['Moves', String(moves), String(best)]]);
+//   panel.settings.group('Game').toggle('Ants', () => settings.ants, (on) => (settings.ants = on), { disabled: () => running });
 
 type Get<T> = () => T;
 
@@ -54,12 +65,37 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, className = '', text 
   return node;
 }
 
-export class Panel {
-  private readonly syncers: Array<() => void> = [];
-  /** Where the canvas should get focus back after a control is used, so keys reach the game. */
-  onUsed: () => void = () => {};
+export interface ClockReading {
+  /** What the time means, e.g. 'Time' or 'Time left'. */
+  label: string;
+  ms: number;
+  /** A count down, shown as m:ss; otherwise a stopwatch, shown to the hundredth. */
+  countdown?: boolean;
+  /** A record to beat, in the same format. */
+  best?: number | null;
+  /** Shows the time in red, e.g. the last ten seconds. */
+  warn?: boolean;
+}
 
-  constructor(readonly root: HTMLElement) {}
+/** The clock's text: m:ss counting down, seconds to the hundredth (m:ss.cc past a minute) counting up. */
+export function formatClock(ms: number, countdown = false): string {
+  if (!Number.isFinite(ms) || ms >= 3_600_000) return '-';
+  ms = Math.max(0, ms);
+  if (countdown) {
+    const s = Math.ceil(ms / 1000);
+    return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+  }
+  const cs = Math.floor(ms / 10);
+  const secs = ((cs % 6000) / 100).toFixed(2);
+  return cs < 6000 ? secs : `${Math.floor(cs / 6000)}:${secs.padStart(5, '0')}`;
+}
+
+/** One tab's column of cards. */
+export class Page {
+  constructor(
+    private readonly panel: Panel,
+    readonly element: HTMLElement,
+  ) {}
 
   /** A card of related controls, with an optional heading. */
   group(title?: string, options: GroupOptions = {}): Group {
@@ -69,9 +105,101 @@ export class Panel {
       card.classList.add('is-columns');
       card.style.setProperty('--columns', String(options.columns));
     }
-    this.root.append(card);
-    this.watch(card, options);
-    return new Group(this, card);
+    this.element.append(card);
+    this.panel.watch(card, options);
+    return new Group(this.panel, card);
+  }
+}
+
+export class Panel {
+  private readonly syncers: Array<() => void> = [];
+  private readonly tabs = el('nav', 'panel-tabs');
+  private readonly pages: Array<{ name: string; tab: HTMLButtonElement; page: Page }> = [];
+  private readonly clockCard = el('section', 'panel-group panel-clock');
+  /** Where the canvas should get focus back after a control is used, so keys reach the game. */
+  onUsed: () => void = () => {};
+  /** What a game shows: the clock, the session card, the score. `panel.group()` adds here. */
+  readonly play: Page;
+  /** What's chosen before a game. */
+  readonly settings: Page;
+
+  constructor(readonly root: HTMLElement) {
+    this.tabs.setAttribute('role', 'tablist');
+    root.append(this.tabs);
+    this.play = this.tab('Play');
+    this.settings = this.tab('Settings');
+    this.clockCard.hidden = true;
+    this.play.element.append(this.clockCard);
+    this.show(this.pages[0].name);
+    // A tab with nothing on it isn't worth a tab bar.
+    this.addSync(() => {
+      let shown = 0;
+      for (const { tab, page } of this.pages) {
+        const empty = ![...page.element.children].some((card) => !(card as HTMLElement).hidden);
+        if (tab.hidden !== empty) tab.hidden = empty;
+        if (!empty) shown++;
+      }
+      this.tabs.hidden = shown < 2;
+    });
+  }
+
+  /** The page for a tab, made the first time it's asked for; tabs sit in the order they're made. */
+  tab(name: string): Page {
+    const existing = this.pages.find((p) => p.name === name);
+    if (existing) return existing.page;
+    const tab = el('button', 'panel-tab', name);
+    tab.type = 'button';
+    tab.setAttribute('role', 'tab');
+    tab.addEventListener('click', () => {
+      this.show(name);
+      this.used();
+    });
+    this.tabs.append(tab);
+    const element = el('div', 'panel-page');
+    element.setAttribute('role', 'tabpanel');
+    this.root.append(element);
+    const page = new Page(this, element);
+    this.pages.push({ name, tab, page });
+    if (this.pages.length > 1) element.hidden = true;
+    return page;
+  }
+
+  /** Switches to a tab, e.g. back to Play when a game starts. */
+  show(name: string): void {
+    for (const p of this.pages) {
+      const on = p.name === name;
+      p.page.element.hidden = !on;
+      p.tab.classList.toggle('is-active', on);
+      p.tab.setAttribute('aria-selected', String(on));
+    }
+  }
+
+  /** A card of related controls on the Play tab, with an optional heading. */
+  group(title?: string, options: GroupOptions = {}): Group {
+    return this.play.group(title, options);
+  }
+
+  /**
+   * The clock, first on the Play tab in every puzzle that can be timed. `get` returns null when
+   * the mode or its settings have no clock, which says so instead of the time.
+   */
+  clock(get: Get<ClockReading | null>): void {
+    const label = el('span', 'panel-clock-label');
+    const time = el('span', 'panel-clock-time');
+    const best = el('span', 'panel-clock-best');
+    this.clockCard.replaceChildren(label, time, best);
+    this.clockCard.hidden = false;
+    this.addSync(() => {
+      const reading = get();
+      const labelText = reading?.label ?? 'Time';
+      const timeText = reading ? formatClock(reading.ms, reading.countdown) : 'Not timed';
+      const bestText = reading?.best != null ? `Best ${formatClock(reading.best, reading.countdown)}` : '';
+      if (label.textContent !== labelText) label.textContent = labelText;
+      if (time.textContent !== timeText) time.textContent = timeText;
+      if (best.textContent !== bestText) best.textContent = bestText;
+      time.classList.toggle('is-off', !reading);
+      time.classList.toggle('is-warn', !!reading?.warn);
+    });
   }
 
   /** Brings every control in line with the game's state. Cheap when nothing changed. */

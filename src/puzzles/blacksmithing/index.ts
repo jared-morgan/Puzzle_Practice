@@ -203,10 +203,6 @@ export default (async ({ screen, input, panel, store, ticks }) => {
   /** A perfect-board run: boards dealt one after another, with the points they've scored. */
   const run = { active: false, start: 0, end: 0, points: 0, boards: 0, timeUp: false };
   const timeLeft = () => (timerMs ? Math.max(0, timerMs - ((run.active ? ticks() : run.end) - run.start)) : null);
-  const clock = (ms: number) => {
-    const secs = Math.ceil(ms / 1000);
-    return `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`;
-  };
 
   let board: IronBoard | null = null;
   /** Each square as drawn: it changes when the hammer lands, a little after the strike. */
@@ -789,19 +785,6 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     if (ended.size) anims = anims.filter((a) => !ended.has(a));
     drawMessages(now);
 
-    const left = timeLeft();
-    if (mode === 'perfect' && left !== null && (run.active || run.timeUp)) {
-      ctx.save();
-      ctx.font = `36px "${FONT}"`;
-      ctx.textAlign = 'center';
-      ctx.lineWidth = 3;
-      ctx.strokeStyle = '#000';
-      ctx.fillStyle = left < 10000 ? '#ff8060' : '#fff';
-      ctx.strokeText(clock(left), WIDTH / 2, 40);
-      ctx.fillText(clock(left), WIDTH / 2, 40);
-      ctx.restore();
-    }
-
     if (!running && !finished) {
       ctx.save();
       ctx.font = `30px "${FONT}"`;
@@ -819,30 +802,21 @@ export default (async ({ screen, input, panel, store, ticks }) => {
 
   /** Settings are locked while a sword or a run is going. */
   const busy = () => running || run.active;
-  const game = panel.group('Game');
-  game.select('Mode', MODES, () => mode, (m) => {
+  panel.clock(() => {
+    const left = mode === 'perfect' ? timeLeft() : null;
+    return left === null ? null : { label: 'Time left', ms: left, countdown: true, warn: run.active && left < 10000 };
+  });
+
+  const session = panel.group();
+  session.select('Mode', MODES, () => mode, (m) => {
     mode = m;
     store.set('mode', m);
   }, { disabled: busy });
-  game.number('Board size', () => perfectSize, (n) => {
-    perfectSize = Math.max(MIN_PERFECT_SIZE, Math.min(MAX_PERFECT_SIZE, Math.round(n) || 3));
-    store.set('perfectSize', perfectSize);
-  }, {
-    min: MIN_PERFECT_SIZE,
-    max: MAX_PERFECT_SIZE,
-    disabled: busy,
-    hidden: () => mode !== 'perfect',
-    title: 'Squares along each side; every square can be struck once',
+  session.note(() => {
+    const level = `Difficulty ${difficulty}`;
+    return mode === 'perfect' ? `${perfectSize}x${perfectSize} board · ${level}` : level;
   });
-  game.select('Timer', TIMERS, () => timerMs, (ms) => {
-    timerMs = ms;
-    store.set('perfectTimer', ms);
-  }, { disabled: busy, hidden: () => mode !== 'perfect', title: 'Boards keep coming until Stop, or until the time runs out' });
-  game.select('Difficulty', DIFFICULTIES, () => difficulty, (d) => {
-    difficulty = d;
-    store.set('difficulty', d);
-  }, { disabled: busy, title: 'Which pieces appear (YPPedia: Blacksmithing, Difficulty levels)' });
-  panel.group().button('Start', () => {
+  session.button('Start', () => {
     if (mode === 'perfect') {
       if (run.active) endRun(false);
       else startRun();
@@ -853,10 +827,8 @@ export default (async ({ screen, input, panel, store, ticks }) => {
   const best = () => bests[String(difficulty)];
   const perfectRecord = () => perfectRecords[perfectKey()];
   panel.group('Run', { hidden: () => mode !== 'perfect' }).stats(['', 'This run', 'Best'], () => {
-    const left = timeLeft();
     const best = timerMs ? timedBests[perfectKey()] : undefined;
     return [
-      ...(left !== null ? [['Time left', clock(left), '']] : []),
       ['Points', String(run.points), best !== undefined ? String(best) : ''],
       ['Boards', String(run.boards), ''],
     ];
@@ -900,6 +872,26 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     ['Longest set run', String(tally.longestRun)],
     ['Rum jugs', String(tally.jugs)],
   ]);
+
+  const settings = panel.settings.group('Game');
+  settings.select('Difficulty', DIFFICULTIES, () => difficulty, (d) => {
+    difficulty = d;
+    store.set('difficulty', d);
+  }, { disabled: busy, title: 'Which pieces appear (YPPedia: Blacksmithing, Difficulty levels)' });
+  settings.number('Board size', () => perfectSize, (n) => {
+    perfectSize = Math.max(MIN_PERFECT_SIZE, Math.min(MAX_PERFECT_SIZE, Math.round(n) || 3));
+    store.set('perfectSize', perfectSize);
+  }, {
+    min: MIN_PERFECT_SIZE,
+    max: MAX_PERFECT_SIZE,
+    disabled: busy,
+    hidden: () => mode !== 'perfect',
+    title: 'Squares along each side; every square can be struck once',
+  });
+  settings.select('Timer', TIMERS, () => timerMs, (ms) => {
+    timerMs = ms;
+    store.set('perfectTimer', ms);
+  }, { disabled: busy, hidden: () => mode !== 'perfect', title: 'Boards keep coming until Stop, or until the time runs out' });
 
   return { frame, dispose: () => sounds.dispose() };
 }) satisfies PuzzleFactory;

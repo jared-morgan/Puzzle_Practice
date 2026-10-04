@@ -207,6 +207,96 @@ a {
   display: none;
 }
 
+.panel-tabs {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.panel-tab {
+  flex: 1;
+  min-height: 32px;
+  padding: 4px 12px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.92rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.panel-tab:hover {
+  color: var(--text);
+  background: var(--surface-hover);
+}
+
+.panel-tab.is-active {
+  background: var(--surface-2);
+  color: var(--text);
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+}
+
+.panel-tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.panel-page {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* The clock: the same card, first on the Play tab, in every puzzle that can be timed. */
+.panel-clock {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: baseline;
+  gap: 0 12px;
+}
+
+.panel-clock-label {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.panel-clock-time {
+  grid-row: span 2;
+  justify-self: end;
+  font-size: 2rem;
+  font-weight: 700;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+}
+
+.panel-clock-time.is-off {
+  color: var(--faint);
+  font-size: 1.1rem;
+  font-weight: 600;
+}
+
+.panel-clock-time.is-warn {
+  color: #ff8060;
+}
+
+.panel-clock-best {
+  color: var(--muted);
+  font-size: 0.85rem;
+  font-variant-numeric: tabular-nums;
+}
+
 .panel-group {
   display: flex;
   flex-direction: column;

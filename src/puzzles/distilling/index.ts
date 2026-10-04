@@ -875,7 +875,8 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     return true;
   }
 
-  const gameGroup = panel.group('Game');
+  const timerShown = () => (mode === 'Create' ? createTimerOn : timerOn);
+  const gameGroup = panel.group();
   gameGroup.select('Mode', MODES, () => mode, (m) => {
     mode = save('mode', m);
     seedText = '';
@@ -899,8 +900,12 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     );
   });
 
-  panel
-    .group()
+  gameGroup.note(() => {
+    if (mode === 'Practice') return '';
+    const timer = timerShown() ? `${timerSeconds}s burn timer` : 'No burn timer';
+    return `Difficulty ${difficulty} · ${timer}`;
+  });
+  gameGroup
     .button('Start', () => (running ? stop() : start()), { variant: 'primary', label: () => (running ? 'Stop' : 'Start') })
     .button('Pause', togglePause, { disabled: () => !running, label: () => (paused ? 'Resume' : 'Pause'), title: 'Esc' });
 
@@ -912,8 +917,7 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     ];
   });
 
-  const settingsGroup = panel.group('Settings', { hidden: () => mode === 'Practice' });
-  const timerShown = () => (mode === 'Create' ? createTimerOn : timerOn);
+  const settingsGroup = panel.settings.group('Game', { hidden: () => mode === 'Practice' });
   settingsGroup.toggle('Burn timer', timerShown, (on) => {
     if (mode === 'Create') createTimerOn = save('createTimerOn', on);
     else timerOn = save('timerOn', on);
@@ -931,7 +935,7 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     disabled: () => running,
   });
 
-  const spawnGroup = panel.group('Spawn rates', { columns: 5, hidden: () => mode === 'Practice' });
+  const spawnGroup = panel.settings.group('Spawn rates', { columns: 5, hidden: () => mode === 'Practice' });
   for (const [index, label] of SPAWN_BOXES) {
     spawnGroup.number(label, () => spawnRates[index], (n) => {
       spawnRates[index] = Math.max(0, Math.round(n));
@@ -980,7 +984,7 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     copyText(seedText, 'Copy this seed:');
   }, { disabled: () => running, title: 'Make a new seed, copy it and use it for the next start' });
 
-  panel.group('Sound').select(
+  panel.settings.group('Sound').select(
     'Volume',
     [
       { value: 0, label: 'Off' },

@@ -14,7 +14,6 @@ import { loadFont } from '../../core/fonts';
 import type { InputEvent, Point } from '../../core/input';
 import type { Option } from '../../core/panel';
 import type { PuzzleFactory } from '../../core/puzzle';
-import { floatStr } from '../../core/py';
 import { PyRandom } from '../../core/pyrandom';
 import {
   antCount,
@@ -439,9 +438,16 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     group.toggle(label, get, set, { disabled: locked, hidden });
   };
 
-  const setup = panel.group('Game');
-  setup.select('Mode', MODES, setting('mode').get, setting('mode').set, { disabled: locked });
-  setup.number(
+  const isCi = () => settings.mode === 'ci';
+  panel.clock(() => {
+    if (isCi()) return { label: 'Time left', ms: CI_DURATION - timePassed, countdown: true, warn: boardActive && CI_DURATION - timePassed < 10000 };
+    const puzzleBest = isPuzzle() && !settings.scramble && record;
+    return { label: 'Time', ms: timePassed, best: puzzleBest ? record!.time : null };
+  });
+
+  const session = panel.group();
+  session.select('Mode', MODES, setting('mode').get, setting('mode').set, { disabled: locked });
+  session.number(
     'Puzzle',
     () => Number(puzzleId),
     (n) => {
@@ -450,21 +456,52 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     },
     { min: 0, disabled: locked, hidden: () => !isPuzzle(), title: '0 picks a puzzle at random' },
   );
+  session.note(() => {
+    const on = (list: [string, boolean][]) => list.filter(([, b]) => b).map(([name]) => name);
+    const parts: string[] = [];
+    if (isPuzzle()) {
+      if (settings.scramble) parts.push('Scrambled');
+    } else if (settings.mode !== 'normal') parts.push(`Forage level ${settings.forageLevel}`);
+    const crates = on([['Bone box', settings.bb], ['Fetish jar', settings.fj], ['Cursed chest', settings.cc]]);
+    const specials = on([['Earthquake', settings.eq], ['Machete', settings.machete], ['Shovel', settings.shovel], ['Monkey', settings.monkey], ['Ants', settings.ants]]);
+    parts.push(crates.length ? crates.join(', ') : 'No special crates');
+    if (specials.length) parts.push(specials.join(', '));
+    return parts.join(' · ');
+  });
+  session
+    .button('Start', toggleRunning, { variant: 'primary', label: () => (!boardActive ? 'Start' : settings.mode === 'normal' ? 'Dismiss' : 'Stop') })
+    .button('New board', () => newBoard(), {
+      disabled: () => isPuzzle() || settings.mode === 'normal' || !boardActive,
+      title: 'Deal a fresh board and bananas without restarting the clock; crates from a move still playing out still count',
+    });
+
+  panel
+    .group('Score')
+    .stats(['', 'Now', 'Best'], () => {
+      const puzzleBest = isPuzzle() && !settings.scramble && record;
+      return [
+        ['Moves', movesUsed > 9999 ? 'Lots!' : String(movesUsed), puzzleBest ? String(record!.moves) : ''],
+        ...(settings.mode === 'normal' ? [['Points', String(score), '']] : []),
+        [settings.mode === 'normal' ? 'Points / move' : 'Score', scoreText(shownScore()), SCORED.has(settings.mode) && bestScore !== null ? scoreText(bestScore) : ''],
+      ];
+    });
+
+  const setup = panel.settings.group('Game', { hidden: () => settings.mode === 'normal' });
   setup.number('Forage level', setting('forageLevel').get, setting('forageLevel').set, {
     min: 0,
     max: 15,
     disabled: locked,
-    hidden: () => isPuzzle() || settings.mode === 'normal',
+    hidden: () => isPuzzle(),
     title: 'Sets which crate sizes are likely',
   });
   bind(setup, 'Scramble', 'scramble', () => !isPuzzle());
 
-  const crateGroup = panel.group('Crates');
+  const crateGroup = panel.settings.group('Crates');
   bind(crateGroup, 'Bone box', 'bb');
   bind(crateGroup, 'Fetish jar', 'fj');
   bind(crateGroup, 'Cursed chest', 'cc');
 
-  const ratios = panel.group('Chest ratios', { columns: 3, hidden: () => settings.mode !== 'normal' });
+  const ratios = panel.settings.group('Chest ratios', { columns: 3, hidden: () => settings.mode !== 'normal' });
   (['1x1', '2x2', '3x2'] as const).forEach((label, i) =>
     ratios.number(
       label,
@@ -485,33 +522,12 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     { disabled: locked, title: 'Rates of 0.65, 0.345 and 0.0047 as ratios, with the 3x2 doubled' },
   );
 
-  const specials = panel.group('Specials');
+  const specials = panel.settings.group('Specials');
   bind(specials, 'Earthquake', 'eq');
   bind(specials, 'Machete', 'machete');
   bind(specials, 'Shovel', 'shovel');
   bind(specials, 'Monkey', 'monkey');
   bind(specials, 'Ants', 'ants');
-
-  panel
-    .group()
-    .button('Start', toggleRunning, { variant: 'primary', label: () => (!boardActive ? 'Start' : settings.mode === 'normal' ? 'Dismiss' : 'Stop') })
-    .button('New board', () => newBoard(), {
-      disabled: () => isPuzzle() || settings.mode === 'normal' || !boardActive,
-      title: 'Deal a fresh board and bananas without restarting the clock; crates from a move still playing out still count',
-    });
-
-  const seconds = (ms: number) => (ms < 9999000 ? floatStr(ms / 1000).slice(0, 5) : 'Lots!');
-  panel
-    .group('Score')
-    .stats(['', 'Now', 'Best'], () => {
-      const puzzleBest = isPuzzle() && !settings.scramble && record;
-      return [
-        ['Time', seconds(timePassed), puzzleBest ? seconds(record!.time) : ''],
-        ['Moves', movesUsed > 9999 ? 'Lots!' : String(movesUsed), puzzleBest ? String(record!.moves) : ''],
-        ...(settings.mode === 'normal' ? [['Points', String(score), '']] : []),
-        [settings.mode === 'normal' ? 'Points / move' : 'Score', scoreText(shownScore()), SCORED.has(settings.mode) && bestScore !== null ? scoreText(bestScore) : ''],
-      ];
-    });
 
   // ---- Drawing ----
 
