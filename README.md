@@ -2,15 +2,21 @@
 
 Practice versions of Puzzle Pirates puzzles that run in the browser:
 
+
 - **Distilling Simulator**: swap pieces to build columns before the furnace burns them.
+- **Forage Simulator**: rotate 2×2 blocks to drop crates off the bottom, rebuilt from the game client's rules, art and
+  sounds, with the Forage Simulator's puzzles, CI and Infinite (cursed isle) modes on top.
+=======
+- **Distilling**: swap pieces so whites go into the jug and blacks into the furnace, rebuilt from the
+  game client's own rules, with the Distilling Simulator's practice modes and drills on top.
 - **Forage Simulator**: rotate 2×2 blocks to drop boxes, jars and chests.
-- **Vampire Carp**: patch coffin holes with pentomino planks (the Vampire Lair's carpentry, rebuilt from the game client).
 
 Play at https://jared-morgan.github.io/Puzzle_Practice/.
 
 Each started as a separate desktop game in Python ([Distilling_Simulator](https://github.com/jared-morgan/Distilling_Simulator),
 [Foreage-Sim](https://github.com/jared-morgan/Foreage-Sim), [Vampire_Carp](https://github.com/jared-morgan/Vampire_Carp))
 and is rewritten here in TypeScript on a shared core. Seeds give the same games as the desktop versions.
+
 
 ## Development
 
