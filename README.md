@@ -2,20 +2,20 @@
 
 Practice versions of Puzzle Pirates puzzles that run in the browser:
 
-- **Distilling**: swap pieces so whites go into the jug and blacks into the furnace, rebuilt from the
-  game client's own rules, with the Distilling Simulator's practice modes and drills on top.
-- **Forage Simulator**: rotate 2×2 blocks to drop crates off the bottom, rebuilt from the game client's rules, art and
-  sounds, with the Forage Simulator's puzzles, CI and Infinite (cursed isle) modes on top.
-- **Vampire Carp**: patch coffin holes with pentomino planks (the Vampire Lair's carpentry, rebuilt from the game client).
-- **Blacksmithing**: strike squares to forge a sword, each piece deciding where you strike next.
+- **Distilling**: swap pieces so whites go into the jug and blacks into the furnace. Includes Standard, Seeded, Create and Practice modes.
+- **Forage Simulator**: rotate 2Ã—2 blocks to drop crates off the bottom. Includes hand-made puzzles, Gauntlet and normal foraging.
+- **Treasure Haul**: match coins and use gems to haul treasure.
+- **Vampire Carp**: patch coffin holes with pentomino planks.
+- **Blacksmithing**: strike squares to forge a sword, with each piece deciding where you can strike next.
 
 Play at https://jared-morgan.github.io/Puzzle_Practice/.
+
+Play and Settings tabs are available for each puzzle. Session controls, timer and score are shown in a consistent place, with a setting to hide the timer and a shared volume control.
 
 Each started as a separate desktop game in Python ([Distilling_Simulator](https://github.com/jared-morgan/Distilling_Simulator),
 [Foreage-Sim](https://github.com/jared-morgan/Foreage-Sim), [Vampire_Carp](https://github.com/jared-morgan/Vampire_Carp))
 and is rewritten here in TypeScript on a shared core. Seeds give the same games as the desktop versions.
-Blacksmithing has no desktop version: it is built from the Puzzle Pirates client's own rules, art and sounds.
-Distilling now plays on the client's rules (decompiled from the game).
+Blacksmithing has no desktop version: it is based on Puzzle Pirates rules, art and sounds.
 
 ## Development
 
@@ -44,4 +44,4 @@ To add a puzzle, see [docs/adding-a-puzzle.md](docs/adding-a-puzzle.md).
 ## Deploying
 
 Every push to `main` is built, tested and deployed to GitHub Pages by
-`.github/workflows/pages.yml`. In the repository settings, **Pages → Source** must be **GitHub Actions**.
+`.github/workflows/pages.yml`. In the repository settings, **Pages â†’ Source** must be **GitHub Actions**.
