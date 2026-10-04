@@ -23,7 +23,6 @@ import {
   Game,
   type HoleSprite,
   newStats,
-  PIECE_OUTLINES,
   type PieceSprite,
   type SoundName,
   type Stats,
@@ -55,8 +54,15 @@ const TEXTURE_W = 5 * CELL;
 const PUTTY_W = 56;
 const PUTTY_H = 68;
 const PUTTY_SPOUT = 50;
-/** Putty's colour once poured in vampire mode (carpentry/s.H). */
-const BLOOD = 'rgb(92, 11, 20)';
+/**
+ * The two looks: the Vampire Lair's dark "_vampirate" art, or normal carpentry's. Each has its
+ * own piece outline colours by state (carpentry/r.l and r.k) and its own poured putty (s.H, s.G).
+ */
+type Look = 'vampire' | 'normal';
+const LOOKS: Record<Look, { suffix: string; outlines: string[]; putty: string }> = {
+  vampire: { suffix: '_vampirate', outlines: ['#7c6200', '#ebd7aa', '#c273ff', '#ff0000', '#8750b2', '#030303'], putty: 'rgb(92, 11, 20)' },
+  normal: { suffix: '', outlines: ['#7c6200', '#ffff00', '#00afef', '#ff0000', '#005574', '#030303'], putty: 'rgb(198, 145, 104)' },
+};
 /** The star meter (puzzle/client/d) at (5, 185) in the view: 9 stars of 21px, 19px apart. */
 const STAR = 21;
 const STAR_STEP = 19;
@@ -88,6 +94,7 @@ interface Config {
   unlimited: boolean;
   /** Index into PIECES_NO_PUTTY, or 12 for any piece. */
   speedLetter: number;
+  look: Look;
 }
 
 const DEFAULT_CONFIG: Config = {
@@ -99,6 +106,7 @@ const DEFAULT_CONFIG: Config = {
   speedSize: 3,
   unlimited: false,
   speedLetter: 3,
+  look: 'vampire',
 };
 
 /** Keys from the simulator's keybinds.yaml: flip, rotate anticlockwise, clockwise, toolbox 1-3, place. */
@@ -159,6 +167,31 @@ function traced(img: CanvasImageSource, sx: number, w: number, h: number, colour
   return canvas;
 }
 
+/**
+ * The red blink outline of a hole: Graphics.draw(Area) with a 1px pen, which runs along the
+ * top and left pixels of the shape and just outside its right and bottom (carpentry/p.a).
+ */
+function holeOutline(black: HTMLCanvasElement): HTMLCanvasElement {
+  const w = black.width;
+  const h = black.height;
+  const src = black.getContext('2d')!.getImageData(0, 0, w, h).data;
+  const opaque = (x: number, y: number) => x >= 0 && y >= 0 && x < w && y < h && src[(y * w + x) * 4 + 3] > 0;
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d')!;
+  ctx.fillStyle = '#ff0000';
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      if (!opaque(x, y)) continue;
+      if (!opaque(x, y - 1) || !opaque(x - 1, y)) ctx.fillRect(x, y, 1, 1);
+      if (!opaque(x + 1, y)) ctx.fillRect(x + 1, y, 1, 1);
+      if (!opaque(x, y + 1)) ctx.fillRect(x, y + 1, 1, 1);
+    }
+  }
+  return canvas;
+}
+
 const hexRgb = (hex: string): [number, number, number] => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16)) as [number, number, number];
 
 export default (async ({ screen, input, panel, store, ticks }) => {
@@ -167,10 +200,18 @@ export default (async ({ screen, input, panel, store, ticks }) => {
   const sounds = new SoundBank(soundUrls);
   const ctx = screen.ctx;
 
-  // The putty bucket by state: upright for 0-1, pouring for 2-3, traced in the state's colour.
-  const puttyImages = [0, 1, 2, 3].map((s) => traced(img('putty_vampirate'), s < 2 ? 0 : PUTTY_W, PUTTY_W, PUTTY_H, hexRgb(PIECE_OUTLINES[s])));
+  // The putty bucket by state, for each look: upright for 0-1, pouring for 2-3, traced in the state's colour.
+  const puttyImages = Object.fromEntries(
+    (Object.keys(LOOKS) as Look[]).map((look) => [
+      look,
+      [0, 1, 2, 3].map((s) => traced(img(`putty${LOOKS[look].suffix}`), s < 2 ? 0 : PUTTY_W, PUTTY_W, PUTTY_H, hexRgb(LOOKS[look].outlines[s]))),
+    ]),
+  ) as Record<Look, HTMLCanvasElement[]>;
 
   const config: Config = { ...DEFAULT_CONFIG, ...store.get<Partial<Config>>('config', {}) };
+  const look = () => LOOKS[config.look] ?? LOOKS.vampire;
+  /** The art for the chosen look, e.g. art('toolbox') is toolbox_vampirate.png in the vampire look. */
+  const art = (name: string) => img(`${name}${look().suffix}`);
   const saveConfig = () => store.set('config', config);
   const bestScores = store.get<Record<string, number>>('bestScores', {});
   sounds.setVolume(config.volume / 6);
@@ -318,7 +359,11 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     lastMouse = [mx, my];
     for (const event of events) {
       if (event.type === 'mousedown') {
-        if (inView(event.pos[0], event.pos[1])) game.pointerDown(event.button, event.pos[0], event.pos[1]);
+        if (inView(event.pos[0], event.pos[1])) {
+          // Several clicks can arrive in one frame; each acts where it happened.
+          game.pointerMove(event.pos[0], event.pos[1]);
+          game.pointerDown(event.button, event.pos[0], event.pos[1]);
+        }
       } else if (event.type === 'mouseup') {
         game.pointerUp(event.button);
       } else if (event.type === 'keydown') {
@@ -339,7 +384,7 @@ export default (async ({ screen, input, panel, store, ticks }) => {
   const sy = (wy: number) => VIEW_Y + wy - game!.view[1];
 
   function drawDeck(view: Cell): void {
-    const sheet = img('wood_background_vampirate');
+    const sheet = art('wood_background');
     const [vx, vy] = view;
     const r0 = Math.floor(vy / PLANK_H);
     const r1 = Math.floor((vy + VIEW_H) / PLANK_H);
@@ -371,10 +416,7 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     hs.cells.forEach((col, x) => col.forEach((open, y) => open && b.fillRect(x * CELL, y * CELL, CELL, CELL)));
     for (const [x, y, gw, gh] of hs.grown) b.fillRect(x, y, gw, gh);
     for (const [x, y, rw] of hs.ragged) b.clearRect(x, y, rw, 1);
-    const red = traced(black, 0, w, h, [255, 0, 0]);
-    const rc = red.getContext('2d')!;
-    rc.globalCompositeOperation = 'destination-out';
-    rc.drawImage(black, 0, 0);
+    const red = holeOutline(black);
     const entry = { version, black, red };
     holeCache.set(hs, entry);
     return entry;
@@ -398,7 +440,7 @@ export default (async ({ screen, input, panel, store, ticks }) => {
         return;
       }
       const at: Cell = sprite.held ? [x, y - PUTTY_SPOUT] : [x - PUTTY_W / 2, y - PUTTY_H / 2];
-      screen.blit(puttyImages[Math.min(3, sprite.state)], at[0], at[1], sprite.held ? { alpha: 204 } : {});
+      screen.blit(puttyImages[config.look][Math.min(3, sprite.state)], at[0], at[1], sprite.held ? { alpha: 204 } : {});
       return;
     }
     const cells = piece.cells();
@@ -408,7 +450,7 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     const m = orientMatrix(piece.orient);
     const b = orientMatrix(sprite.look.baseOrient);
     const t = compose(m, [b[0], b[2], b[1], b[3]]);
-    const texture = img('wood_pieces_vampirate');
+    const texture = art('wood_pieces');
     ctx.save();
     if (sprite.held) ctx.globalAlpha = 0.6;
     cells.forEach(([cx, cy], k) => {
@@ -418,7 +460,7 @@ export default (async ({ screen, input, panel, store, ticks }) => {
       ctx.drawImage(texture, tx, ty, CELL, CELL, -CELL / 2, -CELL / 2, CELL, CELL);
     });
     ctx.restore();
-    outline(cells, x, y, PIECE_OUTLINES[sprite.state]);
+    outline(cells, x, y, look().outlines[sprite.state]);
     // The little pin at the piece's first cell (carpentry/r.e).
     const px = Math.trunc(x) + CELL / 2 - 1;
     const py = Math.trunc(y) + CELL / 2 - 1;
@@ -451,10 +493,10 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     ctx.beginPath();
     ctx.arc(Math.trunc(x) + CELL / 2, Math.trunc(y) + CELL / 2, Math.max(0, r), 0, Math.PI * 2);
     ctx.clip();
-    ctx.fillStyle = BLOOD;
+    ctx.fillStyle = look().putty;
     for (const [cx, cy] of sprite.piece.cells()) ctx.fillRect(Math.trunc(x) + cx * CELL, Math.trunc(y) + cy * CELL, CELL, CELL);
     ctx.restore();
-    outline(sprite.piece.cells(), x, y, PIECE_OUTLINES[5]);
+    outline(sprite.piece.cells(), x, y, look().outlines[5]);
   }
 
   function floatText(text: string, cx: number, cy: number, size: number, fill: string, stroke: string, alpha: number): void {
@@ -490,7 +532,7 @@ export default (async ({ screen, input, panel, store, ticks }) => {
         }
       }
     }
-    screen.blit(img('toolbox_vampirate'), VIEW_X + TOOLBOX_AT[0], VIEW_Y + TOOLBOX_AT[1]);
+    screen.blit(art('toolbox'), VIEW_X + TOOLBOX_AT[0], VIEW_Y + TOOLBOX_AT[1]);
     g.tools.forEach((tool, slot) => {
       if (!tool || tool === g.held) return;
       const [cx, cy] = Game.toolCell(slot);
@@ -801,6 +843,17 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     cheats.append(line);
   }
 
+  panel.group('Look').select(
+    'Graphics',
+    [
+      { value: 'vampire', label: 'Vampire Lair' },
+      { value: 'normal', label: 'Normal carpentry' },
+    ],
+    () => config.look,
+    (v) => changed(() => (config.look = v))(),
+    { title: 'The Vampire Lair’s dark art, or normal carpentry’s' },
+  );
+
   panel.group('Sound').select(
     'Volume',
     [
@@ -839,8 +892,8 @@ export default (async ({ screen, input, panel, store, ticks }) => {
       warningPlayed = true;
     }
 
-    screen.blit(img('background_vampirate'), 0, 0);
-    const title = img('title_vampirate');
+    screen.blit(art('background'), 0, 0);
+    const title = art('title');
     screen.blit(title, Math.round((450 - title.width) / 2), Math.round((VIEW_Y - title.height) / 2));
     if (game) drawBoard();
     else {
@@ -849,7 +902,7 @@ export default (async ({ screen, input, panel, store, ticks }) => {
       ctx.rect(VIEW_X, VIEW_Y, VIEW_W, VIEW_H);
       ctx.clip();
       drawDeck([0, 0]);
-      screen.blit(img('toolbox_vampirate'), VIEW_X + TOOLBOX_AT[0], VIEW_Y + TOOLBOX_AT[1]);
+      screen.blit(art('toolbox'), VIEW_X + TOOLBOX_AT[0], VIEW_Y + TOOLBOX_AT[1]);
       ctx.restore();
     }
     drawStars();

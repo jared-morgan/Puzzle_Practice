@@ -97,14 +97,12 @@ export interface Look {
   baseOrient: number;
 }
 
-/**
- * Piece sprite states and their outline colours (carpentry/r.l): 0 in the toolbox, 1 picked or
- * over the toolbox, 2 fits, 3 doesn't fit, 4 placed but can still be moved, 5 nailed in.
- */
-export const PIECE_OUTLINES = ['#7c6200', '#ebd7aa', '#c273ff', '#ff0000', '#8750b2', '#030303'];
-
 export interface PieceSprite {
   piece: Piece;
+  /**
+   * Outline colour by state (index.ts LOOKS): 0 in the toolbox, 1 picked or over the toolbox,
+   * 2 fits, 3 doesn't fit, 4 placed but can still be moved, 5 nailed in.
+   */
   state: number;
   /** Held pieces are drawn at 60% (putty at 80%). */
   held: boolean;
