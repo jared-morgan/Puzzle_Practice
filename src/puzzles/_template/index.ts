@@ -36,7 +36,8 @@ export default (async ({ screen, panel, store }) => {
   const solved = () => lights.every((row) => row.every((on) => !on));
   deal();
 
-  // Settings, buttons and scores go in the panel; the host keeps it in step after every frame.
+  // Buttons and scores go on the panel's Play tab, options on its Settings tab (panel.settings);
+  // a timed puzzle adds panel.clock first. The host keeps it in step after every frame.
   panel.group().button('New board', deal, { variant: 'primary' });
   panel.group('Score').stats(['', 'Now', 'Best'], () => [['Moves', String(moves), best === null ? '-' : String(best)]]);
 

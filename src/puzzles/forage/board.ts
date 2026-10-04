@@ -325,8 +325,10 @@ export class ForageBoard {
   }
 
   /** Counts a crate in; the client warns and doesn't count past 3. */
+  unlimitedCrates = false;
+
   increaseCrates(): void {
-    if (this.crates < MAX_CRATES) this.crates++;
+    if (this.unlimitedCrates || this.crates < MAX_CRATES) this.crates++;
   }
 
   decreaseCrates(): void {
@@ -334,7 +336,7 @@ export class ForageBoard {
   }
 
   increaseCrateArea(area: number): void {
-    if (this.crateArea + area <= MAX_CRATE_AREA) this.crateArea += area;
+    if (this.unlimitedCrates || this.crateArea + area <= MAX_CRATE_AREA) this.crateArea += area;
   }
 
   decreaseCrateArea(area: number): void {

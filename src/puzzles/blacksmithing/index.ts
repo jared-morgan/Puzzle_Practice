@@ -13,6 +13,8 @@
 import { Images } from '../../core/assets';
 import { SoundBank } from '../../core/audio';
 import { loadFont } from '../../core/fonts';
+import { historyGroup } from '../../core/history';
+import { keyMatches } from '../../core/controls';
 import type { InputEvent, Point } from '../../core/input';
 import type { Option } from '../../core/panel';
 import type { PuzzleFactory } from '../../core/puzzle';
@@ -22,7 +24,6 @@ import {
   BOARD_DONE,
   boardDifficulty,
   CHAIN_OF_KIND,
-  doneLevelFor,
   FINISHED,
   IronBoard,
   LONG_CHAIN,
@@ -118,8 +119,6 @@ const KEY_MOVES: Record<string, Point> = {
   end: [-1, 1],
   pagedown: [1, 1],
 };
-const HIT_KEYS = new Set(['space', 'enter', '5', 'clear']);
-
 interface Anim {
   layer: number;
   /** Draws the animation; returns false once it's finished. */
@@ -203,10 +202,6 @@ export default (async ({ screen, input, panel, store, ticks }) => {
   /** A perfect-board run: boards dealt one after another, with the points they've scored. */
   const run = { active: false, start: 0, end: 0, points: 0, boards: 0, timeUp: false };
   const timeLeft = () => (timerMs ? Math.max(0, timerMs - ((run.active ? ticks() : run.end) - run.start)) : null);
-  const clock = (ms: number) => {
-    const secs = Math.ceil(ms / 1000);
-    return `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`;
-  };
 
   let board: IronBoard | null = null;
   /** Each square as drawn: it changes when the hammer lands, a little after the strike. */
@@ -396,7 +391,7 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     const hit = board.hit(x, y);
     if (!hit) return;
     hammerable = false;
-    announce(hit);
+    if (mode === 'classic') announce(hit);
     if (hit.finished && mode === 'classic') {
       const level = board.doneLevel();
       if (level === 0) sayDone();
@@ -558,6 +553,7 @@ export default (async ({ screen, input, panel, store, ticks }) => {
       return;
     }
     const key = String(difficulty);
+    if (board) store.addHistory(`classic:${key}`, { score: board.numHits });
     if (board && board.numHits > (bests[key] ?? 0)) {
       bests[key] = board.numHits;
       store.set('bestStrikes', bests);
@@ -592,6 +588,7 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     if (!timeUp) return;
     say("Time's up!", 4, 2500);
     const key = perfectKey();
+    store.addHistory(`run:${key}`, { score: run.points, boards: run.boards });
     if (run.points > (timedBests[key] ?? -1)) {
       timedBests[key] = run.points;
       store.set('perfectTimedBests', timedBests);
@@ -617,7 +614,7 @@ export default (async ({ screen, input, panel, store, ticks }) => {
   /** The anvil's combo readout (IronBoardView.g): a chain as piece x count, or the set so far with a tally of sets. */
   function drawChain(): void {
     const chain = board?.chain;
-    if (!chain || !chain.size()) return;
+    if (mode === 'perfect' || !chain || !chain.size()) return;
     const bx = 10;
     const by = 450;
     const bonus = img('bonus');
@@ -722,9 +719,14 @@ export default (async ({ screen, input, panel, store, ticks }) => {
         if (square && pressed && square[0] === pressed[0] && square[1] === pressed[1]) strike(square[0], square[1]);
         pressed = null;
       } else if (event.type === 'keydown') {
-        const move = KEY_MOVES[event.key];
+        const directions: Array<[string, string]> = [
+          ['up', 'arrowup'], ['down', 'arrowdown'], ['left', 'arrowleft'], ['right', 'arrowright'],
+          ['upLeft', 'home'], ['upRight', 'pageup'], ['downLeft', 'end'], ['downRight', 'pagedown'],
+        ];
+        const direction = directions.find(([id, key]) => keyMatches(event.key, 'blacksmithing', id, key));
+        const move = direction ? KEY_MOVES[direction[1]] : ['8','2','4','6','7','9','1','3'].includes(event.key) ? KEY_MOVES[event.key] : undefined;
         if (move) moveCursor(move[0], move[1]);
-        else if (HIT_KEYS.has(event.key) && cursor) strike(cursor[0], cursor[1]);
+        else if (keyMatches(event.key, 'blacksmithing', 'strike', 'space', ['enter','5','clear']) && cursor) strike(cursor[0], cursor[1]);
       }
     }
     // The cursor follows the mouse while the board can be struck (client/e).
@@ -789,19 +791,6 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     if (ended.size) anims = anims.filter((a) => !ended.has(a));
     drawMessages(now);
 
-    const left = timeLeft();
-    if (mode === 'perfect' && left !== null && (run.active || run.timeUp)) {
-      ctx.save();
-      ctx.font = `36px "${FONT}"`;
-      ctx.textAlign = 'center';
-      ctx.lineWidth = 3;
-      ctx.strokeStyle = '#000';
-      ctx.fillStyle = left < 10000 ? '#ff8060' : '#fff';
-      ctx.strokeText(clock(left), WIDTH / 2, 40);
-      ctx.fillText(clock(left), WIDTH / 2, 40);
-      ctx.restore();
-    }
-
     if (!running && !finished) {
       ctx.save();
       ctx.font = `30px "${FONT}"`;
@@ -819,30 +808,33 @@ export default (async ({ screen, input, panel, store, ticks }) => {
 
   /** Settings are locked while a sword or a run is going. */
   const busy = () => running || run.active;
-  const game = panel.group('Game');
-  game.select('Mode', MODES, () => mode, (m) => {
+  panel.clock(() => {
+    const left = mode === 'perfect' ? timeLeft() : null;
+    return left === null ? null : { label: 'Time left', ms: left, countdown: true, warn: run.active && left < 10000 };
+  });
+
+  panel.controls('blacksmithing', [
+    { id: 'up', label: 'Move up', defaultKey: 'ArrowUp' },
+    { id: 'down', label: 'Move down', defaultKey: 'ArrowDown' },
+    { id: 'left', label: 'Move left', defaultKey: 'ArrowLeft' },
+    { id: 'right', label: 'Move right', defaultKey: 'ArrowRight' },
+    { id: 'upLeft', label: 'Move up-left', defaultKey: 'Home' },
+    { id: 'upRight', label: 'Move up-right', defaultKey: 'PageUp' },
+    { id: 'downLeft', label: 'Move down-left', defaultKey: 'End' },
+    { id: 'downRight', label: 'Move down-right', defaultKey: 'PageDown' },
+    { id: 'strike', label: 'Strike', defaultKey: 'Space' },
+  ]);
+  const session = panel.session();
+  session.select('Mode', MODES, () => mode, (m) => {
     mode = m;
     store.set('mode', m);
   }, { disabled: busy });
-  game.number('Board size', () => perfectSize, (n) => {
-    perfectSize = Math.max(MIN_PERFECT_SIZE, Math.min(MAX_PERFECT_SIZE, Math.round(n) || 3));
-    store.set('perfectSize', perfectSize);
-  }, {
-    min: MIN_PERFECT_SIZE,
-    max: MAX_PERFECT_SIZE,
-    disabled: busy,
-    hidden: () => mode !== 'perfect',
-    title: 'Squares along each side; every square can be struck once',
+  const actions = panel.group();
+  actions.note(() => {
+    const level = `Difficulty ${difficulty}`;
+    return mode === 'perfect' ? `${perfectSize}x${perfectSize} board · ${level}` : level;
   });
-  game.select('Timer', TIMERS, () => timerMs, (ms) => {
-    timerMs = ms;
-    store.set('perfectTimer', ms);
-  }, { disabled: busy, hidden: () => mode !== 'perfect', title: 'Boards keep coming until Stop, or until the time runs out' });
-  game.select('Difficulty', DIFFICULTIES, () => difficulty, (d) => {
-    difficulty = d;
-    store.set('difficulty', d);
-  }, { disabled: busy, title: 'Which pieces appear (YPPedia: Blacksmithing, Difficulty levels)' });
-  panel.group().button('Start', () => {
+  actions.button('Start', () => {
     if (mode === 'perfect') {
       if (run.active) endRun(false);
       else startRun();
@@ -852,17 +844,14 @@ export default (async ({ screen, input, panel, store, ticks }) => {
 
   const best = () => bests[String(difficulty)];
   const perfectRecord = () => perfectRecords[perfectKey()];
-  panel.group('Run', { hidden: () => mode !== 'perfect' }).stats(['', 'This run', 'Best'], () => {
-    const left = timeLeft();
+  panel.score('Run', { hidden: () => mode !== 'perfect' }).stats(['', 'This run', 'Best'], () => {
     const best = timerMs ? timedBests[perfectKey()] : undefined;
     return [
-      ...(left !== null ? [['Time left', clock(left), '']] : []),
       ['Points', String(run.points), best !== undefined ? String(best) : ''],
-      ['Boards', String(run.boards), ''],
     ];
   }).note(() => (timerMs ? 'Best is the most points in 2 minutes.' : 'Boards keep coming until you press Stop.'));
 
-  panel.group('Perfect board', { hidden: () => mode !== 'perfect' }).stats(['', 'Now', 'Total'], () => {
+  panel.tab('History').group('Perfect board totals', { hidden: () => mode !== 'perfect' }).stats(['', 'Now', 'Total'], () => {
     const record = perfectRecord();
     return [
       ['Squares left', board?.strikesPerSquare === 1 ? `${board.remaining()} / ${board.size * board.size}` : '-', ''],
@@ -878,16 +867,22 @@ export default (async ({ screen, input, panel, store, ticks }) => {
       store.set('perfectRecords', perfectRecords);
     }, { disabled: () => busy() || !perfectRecord() });
 
-  panel.group('Sword', { hidden: () => mode !== 'classic' }).stats(['', 'Now', 'Best'], () => {
+  panel.score('Sword', { hidden: () => mode !== 'classic' }).stats(['', 'Now', 'Best'], () => {
     const hits = board?.numHits ?? 0;
     return [
       ['Strikes', board ? `${hits} / ${totalStrikes()}` : '-', best() ? String(best()) : '-'],
-      ['Blade', board && hits ? BLADE_NAMES[board.doneLevel()] : '-', best() ? BLADE_NAMES[doneLevelFor(best())] : '-'],
-      ['Score', 'not yet', ''],
     ];
-  }).note(() => "Points come from the game's server, so they aren't worked out here yet.");
+  });
 
-  panel.group('Combos').stats(['', 'This sword'], () => [
+  historyGroup(panel, () => (mode === 'classic' ? store.history(`classic:${difficulty}`) : null), [
+    { label: 'Strikes', value: (g) => String(g.score) },
+  ]);
+  historyGroup(panel, () => (mode === 'perfect' && timerMs ? store.history(`run:${perfectKey()}`) : null), [
+    { label: 'Points', value: (g) => String(g.score) },
+    { label: 'Boards', value: (g) => String(g.boards) },
+  ]);
+
+  panel.tab('History').group('Combos', { hidden: () => mode !== 'classic' || running || !finished }).stats(['', 'This sword'], () => [
     ['Double', String(tally.chains[2] ?? 0)],
     ['Triple', String(tally.chains[3] ?? 0)],
     ['Bingo', String(tally.chains[4] ?? 0)],
@@ -900,6 +895,42 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     ['Longest set run', String(tally.longestRun)],
     ['Rum jugs', String(tally.jugs)],
   ]);
+
+  panel.results(() => finished && !busy() ? {
+    title: mode === 'perfect' ? 'Perfect board results' : 'Sword results',
+    rows: mode === 'perfect' ? [
+      ['Points', String(run.points)], ['Boards', String(run.boards)],
+      ['Time', `${(Math.max(0, run.end - run.start) / 1000).toFixed(2)}s`],
+    ] : [
+      ['Strikes', String(board?.numHits ?? 0)],
+      ['Blade', board ? BLADE_NAMES[board.doneLevel()] : '—'],
+      ['Best strikes', String(best() ?? 0)],
+      ['Longest chain', String(tally.longestChain)],
+      ['Double / Triple / Bingo / Donkey / Vegas', [2, 3, 4, 5, 6].map((n) => tally.chains[n] ?? 0).join(' / ')],
+      ['Number / ordered / chess sets', `${tally.numberSets} / ${tally.orderedSets} / ${tally.chessSets}`],
+      ['Longest set run', String(tally.longestRun)], ['Rum jugs', String(tally.jugs)],
+    ],
+  } : null);
+
+  const settings = panel.settings.group('Game');
+  settings.select('Difficulty', DIFFICULTIES, () => difficulty, (d) => {
+    difficulty = d;
+    store.set('difficulty', d);
+  }, { disabled: busy, title: 'Which pieces appear (YPPedia: Blacksmithing, Difficulty levels)' });
+  settings.number('Board size', () => perfectSize, (n) => {
+    perfectSize = Math.max(MIN_PERFECT_SIZE, Math.min(MAX_PERFECT_SIZE, Math.round(n) || 3));
+    store.set('perfectSize', perfectSize);
+  }, {
+    min: MIN_PERFECT_SIZE,
+    max: MAX_PERFECT_SIZE,
+    disabled: busy,
+    hidden: () => mode !== 'perfect',
+    title: 'Squares along each side; every square can be struck once',
+  });
+  settings.select('Timer', TIMERS, () => timerMs, (ms) => {
+    timerMs = ms;
+    store.set('perfectTimer', ms);
+  }, { disabled: busy, hidden: () => mode !== 'perfect', title: 'Boards keep coming until Stop, or until the time runs out' });
 
   return { frame, dispose: () => sounds.dispose() };
 }) satisfies PuzzleFactory;

@@ -35,16 +35,24 @@ export type Cell = [number, number];
 /** Cells are 45px (ForageBoardView). */
 export const CELL = 45;
 
+/**
+ * Randomness that only changes how moves look (slide lengths, wobble, the monkey's side). The
+ * view points it at a seeded source so a replayed session animates exactly as it was played.
+ */
+export const looks = { random: Math.random };
+
 /** Animation timings in milliseconds, from the client. */
 export const TIMING = {
   /** A 2x2 turn: each piece slides straight to its new cell (client/o, 250L). */
   turn: 250,
   /** Gravity: 45px x rows at 0.35 x 1.5 px/ms, truncated per piece (client/w). */
   fall: (rows: number) => Math.trunc((CELL * rows) / Math.fround(Math.fround(0.35) * 1.5)),
+  /** New practice chests enter at the base piece speed, before accelerated settling. */
+  chestEntry: (rows: number) => Math.trunc((CELL * rows) / Math.fround(0.35)),
   /** Earthquake: 45px x columns at 0.1 px/ms, plus up to 20% more at random (client/s). */
   slide: (columns: number) => {
     const t = Math.trunc((CELL * columns) / Math.fround(0.1));
-    return Math.trunc(t + Math.floor(Math.random() * Math.trunc(t * 0.2)) - 0.1);
+    return Math.trunc(t + Math.floor(looks.random() * Math.trunc(t * 0.2)) - 0.1);
   },
   /** The earthquake's pieces bob up and down 9px (a fifth of a cell) at 0.03 rad/ms (client/l). */
   wobblePx: CELL / 5,
@@ -152,6 +160,8 @@ const TURN: Cell[] = [
 ];
 
 export class Forage {
+  /** Older replay files used accelerated entry for chests. */
+  legacyChestTiming = false;
   board: ForageBoard;
   steps: Step[] = [];
   /** Crates collected this game (ForageController's e). */
@@ -217,7 +227,9 @@ export class Forage {
 
   /** A falling piece (client/w): pieces from above the board are made there and drop in. */
   private fall = (piece: number, x: number, sy: number, tx: number, ty: number) => {
-    this.current?.sprites.push({ piece, from: [x, sy], to: [tx, ty], delay: 0, duration: TIMING.fall(Math.abs(ty - sy)), path: 'line' });
+    const rows = Math.abs(ty - sy);
+    const duration = sy < 0 && isCrate(piece) && !this.legacyChestTiming ? TIMING.chestEntry(rows) : TIMING.fall(rows);
+    this.current?.sprites.push({ piece, from: [x, sy], to: [tx, ty], delay: 0, duration, path: 'line' });
   };
 
   /** Clears a cell (client/A): it fades after `ripple` cells' delay, with a pop and one destroy sound per kind of piece and delay. */
@@ -328,7 +340,7 @@ export class Forage {
         delay: 0,
         duration: TIMING.slide(Math.abs(tx - sx)),
         path: 'wobble',
-        phase: Math.random() * Math.PI * 2,
+        phase: looks.random() * Math.PI * 2,
       });
     });
     this.end();
@@ -342,7 +354,7 @@ export class Forage {
    */
   private monkey(x: number, y: number): void {
     const b = this.board;
-    const facing = x < Math.trunc(WIDTH / 2) ? 1 : x > Math.trunc(WIDTH / 2) ? 0 : Math.random() < 0.5 ? 0 : 1;
+    const facing = x < Math.trunc(WIDTH / 2) ? 1 : x > Math.trunc(WIDTH / 2) ? 0 : looks.random() < 0.5 ? 0 : 1;
     const box: Cell = [Math.min(Math.max(0, x - 1), WIDTH - 3), Math.min(Math.max(0, y - 1), HEIGHT - 3)];
     const travel = (box[1] + 3) * CELL;
     let step = this.begin();

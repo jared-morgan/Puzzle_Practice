@@ -70,6 +70,7 @@ export class GauntletChests implements CrateSource {
     /** Relative chances of a bone box, fetish jar and cursed chest (0 for those turned off). */
     private readonly weights: readonly [number, number, number],
     budget: number,
+    private readonly chaos = false,
   ) {
     this.budget = budget;
     this.pick();
@@ -103,19 +104,20 @@ export class GauntletChests implements CrateSource {
   }
 
   afterMove(game: Forage): boolean {
-    if (!this.enabled || this.budget <= 0) return false;
+    game.board.unlimitedCrates = this.chaos;
+    if (!this.enabled || (!this.chaos && this.budget <= 0)) return false;
     const onBoard = [0, 0, 0];
     for (const p of game.board.cells) if (isCrateAnchor(p)) onBoard[crateSize(p)]++;
     const total = onBoard[0] + onBoard[1] + onBoard[2];
     this.movesSinceLast++;
     let placed = false;
-    if (this.movesSinceLast >= 2 && total < 3) {
+    if (this.movesSinceLast >= 2 && (this.chaos || total < 3)) {
       const fits =
         (this.next === 3 && onBoard[1] === 0 && onBoard[2] < 1) || (this.next === 2 && onBoard[2] === 0 && onBoard[1] < 2) || this.next === 1;
-      if (fits) placed = this.trySpawn(game);
+      if (this.chaos || fits) placed = this.trySpawn(game);
     }
     // Python checks the count from before the spawn.
-    if (total === 3) this.movesSinceLast = -1;
+    if (!this.chaos && total === 3) this.movesSinceLast = -1;
     return placed;
   }
 
@@ -125,6 +127,7 @@ export class GauntletChests implements CrateSource {
       for (const x of this.rng.shuffle(Array.from({ length: WIDTH + 1 - this.next }, (_, i) => i))) {
         this.column = x;
         blocked = this.blocked(game, x);
+        if (this.chaos && !blocked) break;
       }
     }
     if (blocked) return false;

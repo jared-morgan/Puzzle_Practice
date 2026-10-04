@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { PyRandom } from '../../core/pyrandom';
 import { CRATE_SIZES, crateSize, HEIGHT, isCrate, isCrateAnchor, isTool, WIDTH } from './board';
 import { GauntletChests, ServerRequests } from './crates';
-import { Forage } from './engine';
+import { Forage, TIMING } from './engine';
 
 /** Plays random clicks, favouring tools, and checks the board stays whole. */
 function play(game: Forage, moves: number, seed: number): void {
@@ -30,6 +30,39 @@ function play(game: Forage, moves: number, seed: number): void {
 }
 
 describe('crate sources', () => {
+  it('Chaos keeps normal move spacing but allows more than three chests and more than nine per board', () => {
+    const source = new GauntletChests(new PyRandom(12), [1, 0, 0], 9, true);
+    const game = new Forage(22n, source);
+    game.load(Array.from({ length: WIDTH * HEIGHT }, (_, i) => (i % WIDTH + Math.floor(i / WIDTH)) % 5));
+    let spawned = 0;
+    for (let move = 0; move < 26; move++) {
+      // Leave room at the top while accumulating crates lower down.
+      if (source.afterMove(game)) {
+        spawned++;
+        expect(move % 2).toBe(0);
+        const anchor = game.cells.findIndex((p, i) => i < WIDTH && isCrateAnchor(p));
+        expect(anchor).toBeGreaterThanOrEqual(0);
+        const piece = game.board.getPiece(anchor, 0);
+        game.board.setPiece(anchor, 0, 0);
+        game.board.setPiece(spawned % WIDTH, 3 + Math.floor(spawned / WIDTH), piece);
+      }
+    }
+    expect(spawned).toBeGreaterThan(9);
+    expect(game.board.crates).toBeGreaterThan(3);
+    expect(game.board.crates).toBe(game.cells.filter(isCrateAnchor).length);
+    expect(game.board.crateArea).toBeGreaterThan(9);
+  });
+
+  it('new chests use the base fall speed; older replay timing remains available', () => {
+    const game = new Forage(42n);
+    game.dropCrate(1, 2, 1);
+    expect(game.steps[0].duration).toBe(TIMING.chestEntry(2));
+    expect(game.steps[0].duration).toBeGreaterThan(TIMING.fall(2));
+    const older = new Forage(42n);
+    older.legacyChestTiming = true;
+    older.dropCrate(1, 2, 1);
+    expect(older.steps[0].duration).toBe(TIMING.fall(2));
+  });
   it('normal foraging asks for at most one crate per banana, and never more than 3 at once', () => {
     const source = new ServerRequests(new PyRandom(3), [0.6, 0.35, 0.05], 9);
     const game = new Forage(11n, source);
