@@ -1,581 +1,1032 @@
-// Port of the main loop in Distilling_Sim.pyw. The shell queues browser input and hands it
-// over once per frame, in the same order pygame's event loop handled it.
+// Distilling, rebuilt from the Puzzle Pirates client (crafting/brew, build 20260909165753): the rules
+// are in logic.ts, and this file is BrewBoardView, BrewPanel and BrewIndicator with their helper
+// classes (client/a-j): the pieces with their lit corners, swaps, the furnace filling with heat,
+// columns rising into the jug or dropping into the furnace, burnt whites rolling back along the pipe,
+// the vial filling up, and the floating messages, with the client's art, sounds and timings.
+// The canvas is the 450x600 puzzle panel; settings and scores are in the side panel.
+//
+// The client works out each column's points and sends them to the server, so the panel shows those,
+// but the duty rating (Poor ... Incredible) is decided on the server, so there's no rating yet.
+//
+// On top of the client's game are the Distilling Simulator's practice modes (boards.ts, practice.ts):
+// Standard with your own spawn rates, Seeded, Create (paint a board) and Practice (set drills),
+// plus a burn timer you can change or turn off, and pause.
+import { Images } from '../../core/assets';
 import { SoundBank } from '../../core/audio';
 import { copyText, pasteText } from '../../core/clipboard';
-import type { InputEvent } from '../../core/input';
+import { loadFont } from '../../core/fonts';
+import type { InputEvent, Point } from '../../core/input';
 import type { PuzzleFactory } from '../../core/puzzle';
-import { loadAssets } from './assets';
 import {
-  activate_furnace,
-  adjust_settings_mode,
-  board_length,
-  calc_swaps,
-  calculate_moving,
-  check_for_burn,
-  check_for_burn_warning,
   convert_seed,
-  cursor_location,
   emptyBoard,
-  emptySwapRules,
-  find_skipped_coordinatees,
   generate_board,
+  generate_column,
   generate_seed,
+  generate_seeded_column,
   get_create_seed,
   get_practice_board,
   get_practice_settings,
-  get_valid_swaps,
   import_board,
-  is_paste_legal,
-  modify_piece,
   next_random_seed,
-  perform_swap,
-  pixel_value_of_piece,
-  play_sound,
-  random,
-  type SoundName,
-  score_column,
-  setSoundPlayer,
-  swap_check,
-  type Board,
-  type BurnColumn,
-  type ColumnsUp,
-  type Location,
-  type Mode,
+  random as simRandom,
   type Seed,
-  type Settings,
-  type SwappingBoard,
-  type SwapRules,
-} from './game';
+  fromColumns,
+  toClientPiece,
+  toColumns,
+} from './boards';
 import { practiceAvailable, practiceGroupNames, practiceNames } from './practice';
-import { at, deepcopy, floatStr, pyRound, range } from '../../core/py';
-import * as gui from './render';
+import {
+  BrewBoard,
+  BrewGame,
+  BURNT,
+  type GameOptions,
+  TICK_MS,
+  type ColumnResult,
+  type FurnaceEvent,
+  HEIGHT,
+  LIGHT,
+  MEDIUM,
+  HEAVY,
+  SPICE,
+  vialLiquid,
+  WIDTH as COLUMNS,
+} from './logic';
+import delarobbUrl from './delarobb.ttf?url';
 
-type PasteEvent = { type: 'paste'; target: 'Create' | 'Seeded'; text: string };
-
-const black = 'rgb(31, 31, 31)';
+const imageUrls = import.meta.glob<string>('./media/*.png', { eager: true, query: '?url', import: 'default' });
 const soundUrls = import.meta.glob<string>('./sounds/*.mp3', { eager: true, query: '?url', import: 'default' });
+type Sound =
+  | 'swap_up'
+  | 'swap_down'
+  | 'burn_warning'
+  | 'burn'
+  | 'burnt'
+  | 'smooth'
+  | 'blecch'
+  | 'blecch2'
+  | 'crystal_clear'
+  | 'crystal_clear2'
+  | 'spicy'
+  | 'finished';
 
-/** pygame key codes for the keys the game listens to. */
-function keyCode(key: string): number | null {
-  if (key === 'escape') return 27;
-  return /^[0-9]$/.test(key) ? 48 + Number(key) : null;
-}
+/** The board view sits at (25, 135) in the panel, 425x465 (BrewPanel.b). */
+const VIEW_X = 25;
+const VIEW_Y = 135;
+const VIEW_W = 425;
+const VIEW_H = 465;
+/** Pieces are 40px; the top row is 23px down, and short columns sit half a piece lower (BrewBoardView.a, b). */
+const CELL = 40;
+const TOP = 23;
+/** The furnace art in view coordinates (BrewBoardView.d, e, f, g). */
+const FURNACE_X = 316;
+const FURNACE_Y = 399;
+const FURNACE_W = 109;
+const FURNACE_H = 66;
+/** Where a column leaves: up off the top, or down into the furnace, at the right column's x. */
+const EXIT_X = 9 * CELL;
+const EXIT_UP = -CELL;
+const EXIT_DOWN = 416;
+/** Leaving pieces move at 0.4 px/ms; swaps take 150 ms and the board's slide 900 ms. */
+const EXIT_SPEED = 0.4;
+const SWAP_MS = 150;
+const SLIDE_MS = 900;
+/** The vial (BrewIndicator) at (235, 55), 42x75. */
+const VIAL_X = 235;
+const VIAL_Y = 55;
+const VIAL_W = 42;
+const VIAL_H = 75;
+/** Message fonts (roister/client/a): size 1 for most, 0 for spice and burnt. */
+const FONT_SIZES = [24, 30];
+const FONT = 'Delarobb';
+/** Floating messages drift 30px over 1.5 s, fading in the second half (nenya FloatingTextAnimation). */
+const FLOAT_MS = 1500;
+const FLOAT_PX = 30;
 
-export default (async (ctx) => {
-await loadAssets();
-gui.initRenderer(ctx.screen.ctx);
-const sounds = new SoundBank<SoundName>(soundUrls);
-const get_ticks = ctx.ticks;
-
-/* Variables preloaded */
-let board_active = false;
-let mouse_last_location: Location = [false, [-100, -100], [-1, -1]];
-let location_selected: Location = [false, [-100, -100], [-1, -1]];
-let burn_duration = 1000;
-let burn_column: BurnColumn = [false, false, get_ticks(), []];
-
-let start_time = get_ticks();
-let time_of_last_burn = start_time;
-let mouse_new_co: number[] = [];
-let mouse_old_co: number[] = [];
-let burn_waiting = false;
-let score = 0;
-let cc_chain = 0;
-let columns_up: ColumnsUp = [0, { [-1]: 0, 0: 0, 1: 0, 2: 0, 3: 0, 4: 0 }];
-let whites_burnt = 0;
-let burns_in_chamber = 0;
-let warning_played = false;
-let session_paused: [boolean, number, number] = [false, 0, 0];
-let is_create_seeded = false;
-let time_passed = get_ticks() - start_time;
-
-let settings: Settings = {
-  Standard: true,
-  Seeded: false,
-  Create: false,
-  Practice: false,
-  'Furnace Interval': 15000,
-  'Spawn Rates': [10, 10, 0, 1, 10],
-  Difficulty: 50,
-  'Practice Num': [0, 0],
-  Volume: 3,
+/** Cursor directions (BrewBoardView.b): 0 down-left, 2 up-left, 3 up, 4 up-right, 6 down-right, 7 down. */
+const SW = 0;
+const NW = 2;
+const N = 3;
+const NE = 4;
+const SE = 6;
+const S = 7;
+/** Keys from the client's key map for Distilling (puzzle/client/w, case 14), with the number pad both ways. */
+const KEY_MOVES: Record<string, number> = {
+  arrowleft: SW,
+  '1': SW,
+  '4': SW,
+  end: SW,
+  arrowright: NE,
+  '9': NE,
+  '6': NE,
+  pageup: NE,
+  arrowdown: S,
+  '2': S,
+  arrowup: N,
+  '8': N,
+  '3': SE,
+  pagedown: SE,
+  '7': NW,
+  home: NW,
 };
-const spawn_rates_default = [10, 10, 0, 1, 10];
-let seed: Seed = ['', ''];
-let original_seed: Seed = ['', ''];
+const SWAP_KEYS = new Set(['space', '5', 'clear']);
+const BURN_KEY = 'x';
 
-let board: Board = emptyBoard();
-let swap_rules: SwapRules = emptySwapRules();
-let swapping_board: SwappingBoard = [deepcopy(board), []];
-let valid_swaps: number[][] = [];
-let session_over = false;
-let create_piece = 0;
-let using_random_seed = true;
-let paint_with: [boolean, number] = [false, -1];
-let mouse_pos: [number, number] = [0, 0];
-let current_mouse: [number, number] = [0, 0];
-
-// I need a random number selected before the user sets the seed so that they can escape the loop of non randomness if desired.
-let random_seed = generate_seed();
-
-const pasted: PasteEvent[] = [];
-const sound_volumes = (volume: number) => sounds.setVolume(volume);
-
-sound_volumes(settings.Volume / 6);
-setSoundPlayer((name) => sounds.play(name));
-
-function copyToClipboard(value: string): void {
-  // pyperclip.copy in the desktop version.
-  copyText(value, 'Copy this seed:');
-}
-
-function requestPaste(target: 'Create' | 'Seeded'): void {
-  // pyperclip.paste in the desktop version. Reading the clipboard is asynchronous in a
-  // browser, so the result is queued and handled on a later frame.
-  void pasteText('Paste a seed:').then((text) => {
-    if (text !== null) pasted.push({ type: 'paste', target, text });
-  });
-}
-
-function start_procedure(): void {
-  seed = deepcopy(original_seed);
-  session_over = false;
-  let spawn_rates = settings['Spawn Rates'];
-  let furnace_interval = settings['Furnace Interval'];
-  let difficulty = settings.Difficulty;
-
-  if (settings.Standard) {
-    original_seed = ['', random_seed.slice(1)];
-    seed = deepcopy(original_seed);
-    random_seed = next_random_seed(random_seed);
-    random.seed(seed[1]);
-    [board, swap_rules, seed] = generate_board(board, settings['Spawn Rates'], 8, settings.Difficulty, seed);
-  } else if (settings.Seeded) {
-    if (using_random_seed) {
-      seed[1] = random_seed.slice(1);
-      original_seed[1] = seed[1];
-      random_seed = next_random_seed(random_seed);
-    }
-    random.seed(seed[1]);
-    if (original_seed[0] !== '') {
-      [board, swap_rules, seed] = import_board(seed);
-    } else {
-      [board, swap_rules, seed] = generate_board(board, settings['Spawn Rates'], 8, settings.Difficulty, seed);
-      original_seed = ['', seed[1]];
-    }
-  } else if (settings.Create) {
-    if (is_create_seeded) {
-      // Is it using a set board
-      if (using_random_seed) {
-        // Is it using a set rng generator
-        seed[1] = random_seed.slice(1);
-        random_seed = next_random_seed(random_seed);
-      }
-      random.seed(seed[1]);
-      [board, swap_rules, seed] = import_board(seed);
-    } else {
-      original_seed = ['', random_seed.slice(1)];
-      seed = deepcopy(original_seed);
-      random_seed = next_random_seed(random_seed);
-      random.seed(seed[1]);
-      [board, swap_rules, seed] = generate_board(board, settings['Spawn Rates'], 8, settings.Difficulty, seed);
-    }
-  } else if (settings.Practice) {
-    original_seed = ['', random_seed.slice(1)];
-    seed = deepcopy(original_seed);
-    random_seed = next_random_seed(random_seed);
-    random.seed(seed[1]);
-    [spawn_rates, furnace_interval, difficulty] = get_practice_settings(settings['Practice Num']);
-    [board, swap_rules, seed] = get_practice_board(board, settings['Practice Num'], spawn_rates, difficulty, seed);
-  }
-
-  swapping_board = [deepcopy(board), []];
-  session_paused = [false, 0, 0];
-  whites_burnt = 0;
-  burns_in_chamber = 0;
-  warning_played = false;
-  cc_chain = 0;
-  score = 0;
-  burn_waiting = false;
-  start_time = get_ticks();
-  time_of_last_burn = 0;
-  mouse_new_co = [];
-  mouse_old_co = [];
-  mouse_last_location = [false, [-100, -100], [-1, -1]];
-  location_selected = [false, [-100, -100], [-1, -1]];
-  burn_column = [false, false, get_ticks() - start_time, []];
-  time_passed = get_ticks() - start_time - session_paused[2];
-  columns_up = [0, { [-1]: 0, 0: 0, 1: 0, 2: 0, 3: 0, 4: 0 }];
-  settings['Furnace Interval'] = furnace_interval;
-  settings['Spawn Rates'] = spawn_rates;
-  settings.Difficulty = difficulty;
-}
-
-function handlePaste(target: 'Create' | 'Seeded', text: string): void {
-  original_seed = is_paste_legal(text, seed);
-  using_random_seed = original_seed[1] === '';
-  if (target === 'Create') {
-    is_create_seeded = true;
-    if (board_active) start_procedure();
-  }
-}
-
-function handleMouseDown(button: number, pos: [number, number]): void {
-  mouse_pos = pos;
-
-  if (board_active && settings.Create) {
-    if (20 < mouse_pos[0] && mouse_pos[0] < 245 && 90 < mouse_pos[1] && mouse_pos[1] < 130) {
-      if (button === 1) {
-        // Does nothing useful, remnant of old code
-        create_piece = Math.floor((mouse_pos[0] - 20) / 45);
-      } else if (button === 2) {
-        // Change the entire board to the piece when middle clicked
-        const furnace_height = board_length(board);
-        let piece_code = Math.floor((mouse_pos[0] - 20) / 45);
-        if (piece_code === 2) piece_code = 4;
-        else if (piece_code === 4) piece_code = 2;
-        board = range(10).map(() => range(9).map(() => piece_code));
-        for (const d of range((furnace_height + 1) % 2, 10, 2)) board[d][8] = -1;
-        swapping_board[0] = deepcopy(board);
-        swap_rules = calc_swaps(board, board_length(board));
-      }
-    }
-  }
-
-  if (board_active && !session_paused[0] && !burn_column[0]) {
-    if (button === 1) {
-      if (25 < mouse_pos[0] && mouse_pos[0] < 425 && 157 < mouse_pos[1] && mouse_pos[1] < 517) {
-        // A click has been made on the board
-        const new_location_selected = cursor_location(board, mouse_pos[0], mouse_pos[1], location_selected);
-        if (at(at(board, new_location_selected[2][0]), new_location_selected[2][1]) !== 3) {
-          location_selected = new_location_selected;
-          valid_swaps = get_valid_swaps(location_selected, board, swap_rules);
-        }
-      }
-    } else if (button === 3) {
-      // Player wants to burn a column
-      if (!burn_column[0]) burn_waiting = true;
-    } else if (settings.Create && 3 < button && button < 6) {
-      if (25 < mouse_pos[0] && mouse_pos[0] < 425 && 157 < mouse_pos[1] && mouse_pos[1] < 517) {
-        // Change piece using scroll wheel in create mode
-        [board, swap_rules, swapping_board] = modify_piece(mouse_pos, board, swapping_board, 'Scroll', button, swap_rules);
-      }
-    }
-  }
-}
-
-function handleKey(type: 'keydown' | 'keyup', key: number): void {
-  if (settings.Create) {
-    if (48 < key && key < 54) {
-      if (type === 'keydown') paint_with = [true, key - 49];
-      else if (paint_with[1] === key - 49) paint_with = [false, -1];
-    }
-  }
-  if (board_active && type === 'keydown' && key === 27) toggle_pause();
-}
-
-function toggle_pause(): void {
-  if (session_paused[0]) {
-    session_paused[0] = false;
-    session_paused[2] += time_passed - session_paused[1];
-    time_passed = time_passed - session_paused[2];
-  } else {
-    session_paused = [true, time_passed, session_paused[2]];
-  }
-}
-
-// ---- Panel ----
-// The settings column gui.py drew right of the board, with the same rules for when each part
-// could be changed.
-
-const modes: { value: Mode; label: string }[] = [
+/**
+ * The Distilling Simulator's modes: Standard (your spawn rates and timer), Seeded (replay a seed or a
+ * recorded piece sequence), Create (paint any board; never ends) and Practice (set boards from practice.ts).
+ */
+type Mode = 'Standard' | 'Seeded' | 'Create' | 'Practice';
+const MODES: { value: Mode; label: string }[] = [
   { value: 'Standard', label: 'Standard' },
   { value: 'Seeded', label: 'Seeded' },
   { value: 'Create', label: 'Create' },
   { value: 'Practice', label: 'Practice' },
 ];
-const current_mode = (): Mode => modes.find((m) => settings[m.value])!.value;
-// Spawn rates are listed in the order gui.py drew them, not their order in settings.
-const spawn_columns: [number, string][] = [
+/** The simulator's spawn weights, in its piece order: black, brown, burnt, spice, white. */
+const DEFAULT_SPAWN = [10, 10, 0, 1, 10];
+/** The simulator's spawn rate boxes, in the order it showed them. */
+const SPAWN_BOXES: [number, string][] = [
   [0, 'Black'],
   [1, 'Brown'],
   [4, 'White'],
   [3, 'Spice'],
   [2, 'Burnt'],
 ];
-const timerless = 15000000;
-/** The settings column only took clicks while stopped, or at any time in Create mode. */
-const settings_locked = () => !((!board_active && !session_paused[0]) || settings.Create);
-const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
+/** Practice drills with a furnace interval this long have no timer. */
+const TIMERLESS = 15000000;
+/** Create mode paints with keys 1-5: black, brown, white, spice, burnt; the wheel cycles in that order. */
+const PAINT_ORDER = [HEAVY, MEDIUM, LIGHT, SPICE, BURNT];
 
-function set_mode(mode: Mode): void {
-  if (settings[mode]) return;
-  settings = adjust_settings_mode(settings, mode);
-  if (mode === 'Create') {
-    is_create_seeded = false;
-    settings['Furnace Interval'] = timerless;
-    burn_duration = 100;
-    return;
-  }
-  if (mode !== 'Practice') settings['Furnace Interval'] = 15000;
-  board_active = false;
-  burn_duration = 1000;
+const MESSAGES = {
+  clear: 'Crystal clear!',
+  smooth: 'Smooooooth',
+  blecch: 'Blecch!',
+  burnt: 'Burnt!',
+  spicy: 'Spicy!',
+  wasted_spice: 'Wasted Spice',
+  jug_filled: 'Finished!',
+};
+
+interface Path {
+  points: Point[];
+  /** Time each point is reached. */
+  times: number[];
+  /** Called as each point after the first is reached, with its index. */
+  onNode?: (i: number) => void;
+  onEnd?: () => void;
+  /** Called if another path replaces this one before it ends (nenya's pathCancelled). */
+  onCancel?: () => void;
+  reached: number;
 }
 
-function toggle_running(): void {
-  board_active = !board_active;
-  if (board_active) start_procedure();
-  else session_paused[0] = false;
+interface Piece {
+  type: number;
+  col: number;
+  row: number;
+  /** Corners lit for the directions it can swap (client/j.g). */
+  mask: number;
+  x: number;
+  y: number;
+  selected: boolean;
+  path: Path | null;
 }
 
-const game_group = ctx.panel.group('Game');
-game_group.select('Mode', modes, current_mode, set_mode, { disabled: settings_locked });
-game_group.number(
-  'Practice group',
-  () => settings['Practice Num'][0],
-  (n) => {
-    const practice_num = settings['Practice Num'];
-    if (n !== practice_num[0]) {
-      practice_num[0] = n;
-      practice_num[1] = 0;
+interface Message {
+  text: string;
+  px: number;
+  colour: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  start: number;
+  down: boolean;
+}
+
+export default (async ({ screen, input, panel, store, ticks }) => {
+  const [images] = await Promise.all([Images.load(imageUrls), loadFont(FONT, delarobbUrl)]);
+  const img = (name: string) => images.get(name);
+  const sounds = new SoundBank<Sound>(soundUrls);
+  const ctx = screen.ctx;
+
+  const PIECE_SHEETS: Record<number, string> = { [LIGHT]: 'piece_white', [MEDIUM]: 'piece_mid', [HEAVY]: 'piece_dark', [BURNT]: 'piece_white_burnt' };
+  /** Each piece type with each mask of lit corners, built from the two frames by quarters (BrewBoardView.b(byte, byte)). */
+  const pieceCache = new Map<number, HTMLCanvasElement>();
+  function pieceImage(type: number, mask: number): CanvasImageSource {
+    if (type === SPICE) return img('piece_spice');
+    const key = (type << 4) | mask;
+    let canvas = pieceCache.get(key);
+    if (!canvas) {
+      canvas = document.createElement('canvas');
+      canvas.width = canvas.height = CELL;
+      const c = canvas.getContext('2d')!;
+      const sheet = img(PIECE_SHEETS[type]);
+      const h = CELL / 2;
+      // Quarter d lights when the piece can swap in direction d: top-right, top-left, bottom-left, bottom-right.
+      const qx = [h, 0, 0, h];
+      const qy = [0, 0, h, h];
+      for (let q = 0; q < 4; q++) {
+        const frame = mask & (1 << q) ? 1 : 0;
+        c.drawImage(sheet, frame * CELL + qx[q], qy[q], h, h, qx[q], qy[q], h, h);
+      }
+      pieceCache.set(key, canvas);
     }
-  },
-  { min: 0, max: 9, hidden: () => !settings.Practice },
-);
-game_group.number(
-  'Practice board',
-  () => settings['Practice Num'][1],
-  (n) => {
-    const practice_num = settings['Practice Num'];
-    practice_num[1] = clamp(n, 0, Math.max(...practiceAvailable[practice_num[0]]));
-  },
-  { min: 0, hidden: () => !settings.Practice },
-);
-game_group.note(() => {
-  if (!settings.Practice) return '';
-  const [group, num] = settings['Practice Num'];
-  return `${practiceGroupNames[group]} ${practiceNames[group][num]}`;
-});
-
-// Start and the score sit near the top, since the settings below run past the canvas.
-ctx.panel
-  .group()
-  .button('Start', toggle_running, { variant: 'primary', label: () => (board_active ? 'Stop' : 'Start') })
-  .button('Pause', toggle_pause, { disabled: () => !board_active, label: () => (session_paused[0] ? 'Resume' : 'Pause'), title: 'Esc' });
-
-ctx.panel.group('Score').stats([], () => [
-  ['Score', floatStr(pyRound(score / Math.max(columns_up[0], 1), 2))],
-  ['Chain', String(cc_chain)],
-]);
-
-const board_group = ctx.panel.group('Settings');
-board_group.toggle(
-  'Burn timer',
-  () => settings['Furnace Interval'] !== timerless,
-  (on) => (settings['Furnace Interval'] = on ? 15000 : timerless),
-  { disabled: settings_locked },
-);
-board_group.number(
-  'Burn timer (s)',
-  () => settings['Furnace Interval'] / 1000,
-  (seconds) => (settings['Furnace Interval'] = clamp(Math.round(seconds * 2) * 500, 1000, 120000)),
-  { min: 1, max: 120, step: 0.5, disabled: settings_locked, hidden: () => settings['Furnace Interval'] === timerless },
-);
-board_group.number('Difficulty', () => settings.Difficulty, (n) => (settings.Difficulty = Math.round(n)), {
-  min: 0,
-  max: 100,
-  disabled: settings_locked,
-});
-
-const spawn_group = ctx.panel.group('Spawn rates', { columns: 5 });
-for (const [index, label] of spawn_columns) {
-  spawn_group.number(label, () => settings['Spawn Rates'][index], (n) => (settings['Spawn Rates'][index] = Math.round(n)), {
-    min: 0,
-    max: 999,
-    disabled: settings_locked,
-  });
-}
-const default_spawn_rates = () => settings['Spawn Rates'].every((v, i) => v === spawn_rates_default[i]);
-spawn_group.button(
-  'Defaults',
-  () => (settings['Spawn Rates'] = default_spawn_rates() ? [0, 0, 0, 0, 1] : [...spawn_rates_default]),
-  {
-    label: () => (default_spawn_rates() ? 'Whites only' : 'Defaults'),
-    disabled: settings_locked,
-    title: 'Switch between the default spawn rates and a board of only whites',
-  },
-);
-
-// The board's seed can be copied in any mode, and pasted or dealt anew while playing in Create.
-const create_seed_group = ctx.panel.group('Board');
-create_seed_group.button('Copy', () => {
-  play_sound('options_change');
-  copyToClipboard(get_create_seed(board));
-}, { title: "Copy the board's seed" });
-create_seed_group.button(
-  'Paste',
-  () => {
-    play_sound('options_change');
-    requestPaste('Create');
-  },
-  { hidden: () => !settings.Create, disabled: () => !board_active, title: 'Play a board from a pasted seed' },
-);
-create_seed_group.button(
-  'Generate',
-  () => {
-    // Generates a seed in Create mode
-    play_sound('options_change');
-    is_create_seeded = false;
-    start_procedure();
-    copyToClipboard(get_create_seed(board));
-  },
-  { hidden: () => !settings.Create, disabled: () => !board_active, title: 'Deal a new board and copy its seed' },
-);
-
-const seed_group = ctx.panel.group('Seed', { hidden: () => !settings.Seeded });
-seed_group.button(
-  'Copy',
-  () => {
-    play_sound('options_change');
-    let copy_seed = original_seed[0];
-    if (original_seed[1] !== '') copy_seed += '7' + original_seed[1];
-    copyToClipboard(copy_seed);
-  },
-  { disabled: settings_locked, title: 'Copy the seed of the last start' },
-);
-seed_group.button(
-  'Paste',
-  () => {
-    play_sound('options_change');
-    requestPaste('Seeded');
-  },
-  { disabled: settings_locked, title: 'Use a pasted seed for the next start' },
-);
-seed_group.button(
-  'New',
-  () => {
-    // Generate and copy a seed in Seeded mode
-    play_sound('options_change');
-    const generated = generate_seed();
-    copyToClipboard(generated);
-    original_seed = convert_seed(generated);
-    using_random_seed = false;
-  },
-  { disabled: settings_locked, title: 'Make a new seed, copy it and use it for the next start' },
-);
-
-const volumes = [
-  { value: 0, label: 'Off' },
-  { value: 1, label: 'Low' },
-  { value: 2, label: 'Medium' },
-  { value: 3, label: 'High' },
-];
-ctx.panel.group('Sound').select('Volume', volumes, () => settings.Volume, (volume) => {
-  settings.Volume = volume;
-  sound_volumes(settings.Volume / 6);
-});
-
-function frame(events: InputEvent[]): void {
-  current_mouse = ctx.input.mouse;
-  gui.fill(black);
-  gui.background_two(0, 0);
-  time_passed = get_ticks() - start_time - session_paused[2];
-
-  for (const event of [...events, ...pasted.splice(0)]) {
-    if (event.type === 'mousedown') handleMouseDown(event.button, event.pos);
-    else if (event.type === 'keydown' || event.type === 'keyup') {
-      const key = keyCode(event.key);
-      if (key !== null) handleKey(event.type, key);
-    } else if (event.type === 'paste') handlePaste(event.target, event.text);
-
-    if (board_active && event.type === 'mouseup' && event.button === 1) {
-      location_selected[0] = false;
-      for (const piece of swapping_board[1]) piece[5] = false;
-    }
+    return canvas;
   }
 
-  if (board_active && !session_paused[0]) {
-    if (burn_column[0]) gui.display_burn_column(board, burn_column, time_passed, burn_duration);
-    let moving_pieces;
-    [swapping_board, moving_pieces] = calculate_moving(swapping_board, time_passed);
-    gui.display_board(board, swapping_board[0], burn_column, time_passed, burn_duration);
-    gui.display_moving_pieces(moving_pieces);
-    gui.display_swaps(board, swapping_board[0], swap_rules, burn_column, time_passed, burn_duration);
-    mouse_pos = current_mouse;
+  let volume = store.get<number>('volume', 3);
+  sounds.setVolume(volume / 6);
+  let mode = store.get<Mode>('mode', 'Standard');
+  if (!MODES.some((m) => m.value === mode)) mode = 'Standard';
+  let timerOn = store.get<boolean>('timerOn', true);
+  /** Create mode starts without a timer, as in the simulator. */
+  let createTimerOn = store.get<boolean>('createTimerOn', false);
+  let timerSeconds = store.get<number>('timerSeconds', (TICK_MS * 50) / 1000);
+  let difficulty = store.get<number>('difficulty', 50);
+  let spawnRates = store.get<number[]>('spawnRates', [...DEFAULT_SPAWN]);
+  let practiceNum = store.get<number[]>('practiceNum', [0, 0]);
+  /** The pasted seed: a simulator seed (Seeded) or a board seed (Create); blank for a random one. */
+  let seedText = '';
+  /** The seed to replay the last start, in the same form. */
+  let lastSeed = '';
+  /** The simulator's piece sequence and rng decider, used up as columns are made (boards.ts Seed). */
+  let simSeed: Seed = ['', ''];
+  /** The simulator's next random rng decider ("7" + 20 digits), counted up each start. */
+  let randomSeed = generate_seed();
+  let paused = false;
+  let startedMode: Mode = mode;
+  /** A piece key (1-5) held down in Create mode paints the piece under the mouse. */
+  let paintWith: number | null = null;
 
-    if (25 < mouse_pos[0] && mouse_pos[0] < 425 && 157 < mouse_pos[1] && mouse_pos[1] < 517) {
-      if (paint_with[0] && settings.Create) {
-        [board, swap_rules, swapping_board] = modify_piece(mouse_pos, board, swapping_board, 'Number', paint_with[1], swap_rules);
-      }
-      let coords_to_check: number[][] = [];
-      const mouse_new_location = cursor_location(board, mouse_pos[0], mouse_pos[1], mouse_last_location);
+  let game: BrewGame | null = null;
+  let active = false;
+  let running = false;
+  let pieces: Piece[][] = [];
+  let leaving: Piece[] = [];
+  let selected: Piece | null = null;
+  let cursor = { col: 0, row: 0 };
+  let dragMode = false;
+  let dragSwapped = false;
+  let mouseHeld = false;
+  let lastMouse: Point = [-1, -1];
+  /** Things the board waits on before taking input (BrewBoardView._waitCount). */
+  let waitCount = 0;
+  let swapCount = 0;
+  let messages: Message[] = [];
+  let timers: { at: number; run: () => void }[] = [];
 
-      if (mouse_new_co.length) mouse_old_co = deepcopy(mouse_new_co);
-      mouse_new_co = [mouse_pos[0], mouse_pos[1]];
-      if (mouse_old_co.length) {
-        const mouse_change = [mouse_new_co[0] - mouse_old_co[0], mouse_new_co[1] - mouse_old_co[1]];
-        coords_to_check = find_skipped_coordinatees(mouse_change, mouse_old_co, board);
-      }
+  const later = (ms: number, run: () => void) => timers.push({ at: ticks() + ms, run });
 
-      if (location_selected[0] && !burn_column[0] && coords_to_check.length && !burn_waiting) {
-        for (const potential_swap of coords_to_check) {
-          mouse_last_location[1] = pixel_value_of_piece(potential_swap, board);
-          const swap_with = swap_check(potential_swap, valid_swaps, location_selected, board);
-          if (swap_with) {
-            mouse_last_location[1] = pixel_value_of_piece(swap_with, board);
-            [board, swap_rules, location_selected, swapping_board] = perform_swap(board, swap_with, location_selected, time_passed, swapping_board);
-            valid_swaps = get_valid_swaps(location_selected, board, swap_rules);
-          }
-        }
+  /** A piece's spot in view coordinates (BrewBoardView.c). */
+  function spot(col: number, row: number): Point {
+    const tall = game!.board.isTallColumn(col);
+    return [col * CELL, TOP + row * CELL + (tall ? 0 : CELL / 2)];
+  }
+
+  function linePath(from: Point, to: Point, duration: number, onEnd?: () => void): Path {
+    const now = ticks();
+    return { points: [from, to], times: [now, now + duration], onEnd, reached: 0 };
+  }
+
+  /** A path through points at a steady speed (media/util/o with a velocity). */
+  function speedPath(points: Point[], speed: number, onNode?: (i: number) => void, onEnd?: () => void): Path {
+    const times = [ticks()];
+    for (let i = 1; i < points.length; i++) {
+      const d = Math.hypot(points[i][0] - points[i - 1][0], points[i][1] - points[i - 1][1]);
+      times.push(times[i - 1] + d / speed);
+    }
+    return { points, times, onNode, onEnd, reached: 0 };
+  }
+
+  /** Starts a piece on a new path, cancelling any it was still on. */
+  function setPath(p: Piece, path: Path): void {
+    const old = p.path;
+    p.path = path;
+    old?.onCancel?.();
+  }
+
+  function stepPiece(p: Piece, now: number): void {
+    const path = p.path;
+    if (!path) return;
+    while (path.reached < path.points.length - 1 && now >= path.times[path.reached + 1]) {
+      path.reached++;
+      if (path.reached < path.points.length - 1) path.onNode?.(path.reached);
+    }
+    if (path.reached >= path.points.length - 1) {
+      [p.x, p.y] = path.points[path.points.length - 1];
+      p.path = null;
+      path.onEnd?.();
+      return;
+    }
+    const i = path.reached;
+    const t = (now - path.times[i]) / (path.times[i + 1] - path.times[i] || 1);
+    p.x = Math.trunc(path.points[i][0] + (path.points[i + 1][0] - path.points[i][0]) * t);
+    p.y = Math.trunc(path.points[i][1] + (path.points[i + 1][1] - path.points[i][1]) * t);
+  }
+
+  function makePiece(col: number, row: number, offscreen: boolean): Piece {
+    const [x, y] = spot(col, row);
+    return { type: game!.board.getPiece(col, row), col, row, mask: game!.board.swapMask(col, row), x: offscreen ? x - CELL : x, y, selected: false, path: null };
+  }
+
+  function makeColumn(col: number, offscreen: boolean): Piece[] {
+    return game!.board.columns[col].map((_, row) => makePiece(col, row, offscreen));
+  }
+
+  const refreshMask = (p: Piece) => (p.mask = game!.board.swapMask(p.col, p.row));
+
+  function waitFor(): () => void {
+    waitCount++;
+    return () => waitCount--;
+  }
+
+  // ---- Floating messages ----
+
+  function measure(text: string, px: number): number {
+    ctx.save();
+    ctx.font = `${px}px "${FONT}"`;
+    const w = ctx.measureText(text).width * 1.1;
+    ctx.restore();
+    return Math.ceil(w) + 4;
+  }
+
+  /** A message centred on the board, moved clear of others still showing (BrewBoardView.a(String, ...)). */
+  function say(text: string, opts: { orange?: boolean; down?: boolean; wait?: boolean } = {}): Message {
+    const px = FONT_SIZES[opts.orange || opts.down ? 0 : 1];
+    const w = measure(text, px);
+    const h = Math.round(px * 1.2);
+    let y = (VIEW_H - h) / 2;
+    const now = ticks();
+    for (const m of messages) {
+      const my = messageY(m, now);
+      if (y < my + m.h && my < y + h) y = my + m.h;
+    }
+    const message: Message = { text, px, colour: opts.orange ? '#ffc800' : '#fff', x: (VIEW_W - w) / 2, y, w, h, start: now, down: !!opts.down };
+    messages.push(message);
+    if (opts.wait) later(FLOAT_MS, waitFor());
+    return message;
+  }
+
+  /** The Crystal Clear streak number, at the message's top-right corner (BrewBoardView.a(String, Animation)). */
+  function sayBeside(text: string, beside: Message): void {
+    const px = FONT_SIZES[0];
+    messages.push({ text, px, colour: '#fff', x: beside.x + beside.w, y: beside.y - 6, w: measure(text, px), h: Math.round(px * 1.2), start: ticks(), down: false });
+  }
+
+  function messageY(m: Message, now: number): number {
+    const t = Math.min(1, (now - m.start) / FLOAT_MS);
+    return m.y + (m.down ? 1 : -1) * Math.trunc(FLOAT_PX * t);
+  }
+
+  function drawMessages(now: number): void {
+    messages = messages.filter((m) => now < m.start + FLOAT_MS);
+    for (const m of messages) {
+      const t = (now - m.start) / FLOAT_MS;
+      ctx.save();
+      ctx.globalAlpha = t < 0.5 ? 1 : Math.max(0, 1 - (t - 0.5) * 2);
+      ctx.translate(VIEW_X + m.x + m.w / 2, VIEW_Y + messageY(m, now) + m.px);
+      ctx.scale(1.1, 1);
+      ctx.font = `${m.px}px "${FONT}"`;
+      ctx.textAlign = 'center';
+      ctx.lineJoin = 'round';
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = '#000';
+      ctx.strokeText(m.text, 0, 0);
+      ctx.fillStyle = m.colour;
+      ctx.fillText(m.text, 0, 0);
+      ctx.restore();
+    }
+  }
+
+  const playLater = (name: Sound, ms: number) => later(ms, () => sounds.play(name));
+  const pick = <T,>(a: T, b: T) => (Math.random() < 0.5 ? a : b);
+
+  // ---- The game ----
+
+  /** The settings this start runs with: Practice brings its own (practice.ts). */
+  function runSettings(): { spawn: number[]; difficulty: number; interval: number | null } {
+    if (mode === 'Practice') {
+      const [spawn, interval, diff] = get_practice_settings(practiceNum);
+      return { spawn, difficulty: diff, interval: interval >= TIMERLESS ? null : interval };
+    }
+    const timed = mode === 'Create' ? createTimerOn : timerOn;
+    return { spawn: [...spawnRates], difficulty, interval: timed ? Math.round(timerSeconds * 1000) : null };
+  }
+
+  /** A new game on a simulator board, played on the client's rules. */
+  function newGame(): BrewGame {
+    const run = runSettings();
+    const options: GameOptions = { tickMs: run.interval ? run.interval / 50 : TICK_MS, timerless: run.interval === null, endless: mode === 'Create' };
+    const clientSeed = BigInt.asIntN(64, BigInt(Math.floor(Math.random() * 2 ** 48)));
+    const text = seedText.trim();
+    // The simulator's modes. A seed is [piece sequence, rng decider] (boards.ts convert_seed).
+    let board;
+    if (mode === 'Seeded' || mode === 'Create') {
+      simSeed = /^[0-9]+$/.test(text) ? convert_seed(text) : ['', ''];
+      if (simSeed[1] === '') {
+        simSeed[1] = randomSeed.slice(1);
+        randomSeed = next_random_seed(randomSeed);
       }
-      if (!location_selected[0]) mouse_last_location = deepcopy(mouse_new_location);
-      gui.display_cursor(mouse_last_location[1][0], mouse_last_location[1][1]);
+      const sequence = simSeed[0];
+      lastSeed = sequence + '7' + simSeed[1];
+      simRandom.seed(simSeed[1]);
+      if (sequence !== '') [board, simSeed] = import_board(simSeed);
+      else [board, simSeed] = generate_board(emptyBoard(), run.spawn, 8, run.difficulty, simSeed);
     } else {
-      mouse_new_co = [];
+      simSeed = ['', randomSeed.slice(1)];
+      randomSeed = next_random_seed(randomSeed);
+      lastSeed = '7' + simSeed[1];
+      simRandom.seed(simSeed[1]);
+      if (mode === 'Practice') [board, simSeed] = get_practice_board(emptyBoard(), practiceNum, run.spawn, run.difficulty, simSeed);
+      else [board, simSeed] = generate_board(emptyBoard(), run.spawn, 8, run.difficulty, simSeed);
     }
-    if (!burn_column[0]) {
-      if (!warning_played) warning_played = check_for_burn_warning(time_passed, time_of_last_burn, settings['Furnace Interval']);
-      if (check_for_burn(time_passed, time_of_last_burn, settings['Furnace Interval'])) burn_waiting = true;
-      if (location_selected[0]) gui.display_selected(location_selected[1][0], location_selected[1][1], swapping_board[1]);
-    }
+    const brew = BrewBoard.withColumns(toColumns(board), clientSeed);
+    // New columns: the rest of a seeded piece sequence, then the spawn rates (activate_furnace).
+    const seeded = mode === 'Seeded';
+    brew.makeColumn = (tall) => {
+      const height = tall ? HEIGHT : HEIGHT - 1;
+      let column: number[];
+      if (seeded) [column, simSeed] = generate_seeded_column(run.spawn, run.difficulty, simSeed, height);
+      else [column, simSeed] = generate_column(run.spawn, run.difficulty, simSeed);
+      return column.filter((p) => p !== -1).slice(0, height).map(toClientPiece);
+    };
+    return new BrewGame(brew, ticks(), options);
+  }
 
-    if (burn_waiting && swapping_board[1].length === 0) {
-      // Initiates a burn if one is ready and no pieces are swapping.
-      [board, location_selected, valid_swaps, swap_rules, burn_column, burns_in_chamber, whites_burnt, seed] = activate_furnace(
-        board,
-        location_selected,
-        time_passed,
-        burns_in_chamber,
-        whites_burnt,
-        settings,
-        seed,
+  function start(): void {
+    game = newGame();
+    startedMode = mode;
+    paused = false;
+    paintWith = null;
+    pieces = [];
+    for (let col = 0; col < COLUMNS; col++) pieces.push(makeColumn(col, false));
+    leaving = [];
+    selected = null;
+    cursor = { col: 0, row: 0 };
+    dragMode = dragSwapped = false;
+    waitCount = swapCount = 0;
+    messages = [];
+    timers = [];
+    active = true;
+    running = true;
+  }
+
+  function stop(): void {
+    running = false;
+    active = false;
+    game = null;
+    pieces = [];
+    leaving = [];
+    selected = null;
+    messages = [];
+    timers = [];
+  }
+
+  /** The player's turn is live: the session's on and nothing is sliding (PuzzleController.S, view.s). */
+  const playing = () => running && !!game && !game.finished && !paused;
+
+  function togglePause(): void {
+    if (!running || !game) return;
+    paused = !paused;
+    if (paused) game.pause(ticks());
+    else game.resume(ticks());
+  }
+
+  /** Create mode: change the piece under the mouse (the simulator's modify_piece). */
+  function paint(pos: Point, type: number | ((old: number) => number)): void {
+    if (!game || !running || !inView(pos) || waitCount) return;
+    hover(pos);
+    const p = pieces[cursor.col]?.[cursor.row];
+    if (!p || p.path) return;
+    const next = typeof type === 'number' ? type : type(p.type);
+    if (next === p.type) return;
+    game.board.columns[p.col][p.row] = next;
+    p.type = next;
+    refreshMask(p);
+    for (let dir = 0; dir < 4; dir++) {
+      const n = game.board.neighbour(p.col, p.row, dir);
+      if (n) refreshMask(pieces[n[0]][n[1]]);
+    }
+  }
+
+  /** Create mode: the whole board one piece (the simulator's middle-click on its palette). */
+  function fillBoard(type: number): void {
+    if (!game || !running || waitCount) return;
+    game.board.columns = game.board.columns.map((c) => c.map(() => type));
+    for (const p of pieces.flat()) p.type = type;
+    for (const p of pieces.flat()) refreshMask(p);
+  }
+  const settled = () => waitCount === 0;
+
+  function setSelected(p: Piece | null): void {
+    if (selected) selected.selected = false;
+    selected = p;
+    if (p) p.selected = true;
+  }
+
+  /** Select a piece, or swap the selected one with the piece under the cursor (BrewBoardView.t). */
+  function selOrSwap(): void {
+    if (!playing() || !settled()) return;
+    const piece = pieces[cursor.col]?.[cursor.row];
+    if (!piece) return;
+    if (!selected) {
+      if (!dragMode && piece.mask) setSelected(piece);
+    } else if (selected === piece) {
+      if (!dragMode) setSelected(null);
+    } else if (game!.board.swap(piece.col, piece.row, selected.col, selected.row)) {
+      animateSwap(piece, selected);
+      if (dragMode) dragSwapped = true;
+      else setSelected(null);
+    } else if (!dragMode && piece.mask) setSelected(piece);
+  }
+
+  /** Two pieces trade places over 150 ms (BrewBoardView.a(j, j)). */
+  function animateSwap(a: Piece, b: Piece): void {
+    const pa = spot(a.col, a.row);
+    const pb = spot(b.col, b.row);
+    sounds.play(pa[1] > pb[1] ? 'swap_down' : 'swap_up');
+    const done = dragMode ? null : waitFor();
+    // A piece dragged on before its last swap landed changes course: the old move is cancelled,
+    // which counts it off without settling the board (client/f's pathCancelled).
+    const swapPath = (p: Piece, to: Point, onEnd: () => void): Path => ({
+      ...linePath([p.x, p.y], to, SWAP_MS, onEnd),
+      onCancel: () => {
+        if (p === a) done?.();
+        swapCount--;
+      },
+    });
+    setPath(a, swapPath(a, pb, () => {
+      done?.();
+      swapEnded(a);
+    }));
+    setPath(b, swapPath(b, pa, () => swapEnded(b)));
+    beginSwap(a);
+    beginSwap(b);
+    const [ac, ar] = [a.col, a.row];
+    pieces[ac][ar] = b;
+    pieces[b.col][b.row] = a;
+    a.col = b.col;
+    a.row = b.row;
+    b.col = ac;
+    b.row = ar;
+  }
+
+  /** A piece starts moving: its corners go dark, and so do its neighbours' corners facing it. */
+  function beginSwap(p: Piece): void {
+    game!.setSettled(false);
+    swapCount++;
+    p.mask = 0;
+    for (let dir = 0; dir < 4; dir++) {
+      const n = game!.board.neighbour(p.col, p.row, dir);
+      if (n) pieces[n[0]][n[1]].mask &= ~(1 << ((dir + 2) % 4));
+    }
+  }
+
+  /** A swap lands: relight it and its resting neighbours, and let a due burn go once all swaps are done (client/f). */
+  function swapEnded(p: Piece): void {
+    refreshMask(p);
+    for (let dir = 0; dir < 4; dir++) {
+      const n = game!.board.neighbour(p.col, p.row, dir);
+      if (n && !pieces[n[0]][n[1]].path) refreshMask(pieces[n[0]][n[1]]);
+    }
+    swapCount--;
+    if (swapCount === 0) handle(game!.setSettled(true));
+  }
+
+  function handle(events: FurnaceEvent[]): void {
+    for (const event of events) {
+      if (event.type === 'warning') sounds.play('burn_warning');
+      else burn(event.result, event.finished);
+    }
+  }
+
+  /** The right column leaves and the board slides right (BrewBoardView.d, e), then the messages (BrewController.a(boolean, int[])). */
+  function burn(result: ColumnResult, finished: boolean): void {
+    // The column leaves: up into the jug, or down into the furnace, where whites burn and roll back left.
+    for (const p of pieces[COLUMNS - 1]) {
+      p.mask = 0;
+      if (p === selected) setSelected(null);
+      const burning = !result.distilled && p.type === LIGHT;
+      const exitY = result.distilled ? EXIT_UP : EXIT_DOWN;
+      const points: Point[] = [[p.x, p.y], [EXIT_X, exitY]];
+      if (burning) points.push([-CELL, exitY]);
+      p.path = speedPath(
+        points,
+        EXIT_SPEED,
+        () => {
+          if (!burning) return;
+          sounds.play('burnt');
+          p.type = BURNT;
+        },
+        () => (leaving = leaving.filter((q) => q !== p)),
       );
-      swapping_board = [deepcopy(board), []];
-      [score, cc_chain, columns_up, session_over] = score_column(burn_column, cc_chain, score, columns_up);
-      burn_waiting = false;
-    } else if (burn_column[0]) {
-      if (time_passed > burn_column[2] + burn_duration) {
-        // If burn finished reset things
-        burn_column[0] = false;
-        time_of_last_burn = time_passed - burn_duration;
-        warning_played = false;
-        if (session_over && !settings.Create) board_active = false;
+      leaving.push(p);
+    }
+    pieces.pop();
+    pieces.unshift(makeColumn(0, true));
+    for (let col = 0; col < COLUMNS; col++) {
+      for (const p of pieces[col]) {
+        p.col = col;
+        p.path = linePath([p.x, p.y], spot(col, p.row), SLIDE_MS);
+        if (col === 1 || col === COLUMNS - 1) refreshMask(p);
       }
     }
+    const slid = waitFor();
+    const first = pieces[0][0];
+    const prevEnd = first.path!.onEnd;
+    first.path!.onEnd = () => {
+      prevEnd?.();
+      slid();
+    };
+    cursor.row++;
+    moveCursor(N);
+
+    // Sounds and messages.
+    sounds.play('burn');
+    let delay = 1350;
+    if (result.verdict === 'clear') {
+      playLater(pick('crystal_clear', 'crystal_clear2'), delay);
+      delay += 1070;
+      const m = say(MESSAGES.clear);
+      if (result.bonus) sayBeside(String(1 + result.bonus / 4), m);
+    } else if (result.verdict === 'smooth') {
+      playLater('smooth', delay);
+      delay += 1750;
+      say(MESSAGES.smooth);
+    } else if (result.verdict === 'blecch') {
+      playLater(pick('blecch', 'blecch2'), delay);
+      delay += 600;
+      say(MESSAGES.blecch);
+    } else if (result.verdict === 'burnt') say(MESSAGES.burnt, { down: true });
+    if (result.spice === 'spicy') {
+      playLater('spicy', delay);
+      say(MESSAGES.spicy, { orange: true });
+    } else if (result.spice === 'wasted_spice') say(MESSAGES.wasted_spice, { orange: true, down: true });
+
+    if (finished) finish();
   }
 
-  gui.background(0, 0);
-  if (board_active) {
-    if (session_paused[0]) {
-      gui.display_furnace(time_passed, burn_column[2] - session_paused[1] + time_passed, settings['Furnace Interval']);
-    } else {
-      gui.display_furnace(time_passed, burn_column[2], settings['Furnace Interval']);
+  /** The jug is full (BrewController.s): "Finished!" holds the board, then it clears. */
+  function finish(): void {
+    say(MESSAGES.jug_filled, { wait: true });
+    sounds.play('finished');
+    running = false;
+    later(FLOAT_MS, () => (active = false));
+  }
+
+  function burnNow(): void {
+    // BrewController "endCol": only while nothing is sliding.
+    if (!playing() || !settled()) return;
+    handle(game!.burnNow(ticks()));
+  }
+
+  /** Moves the cursor one hex (BrewBoardView.b). */
+  function moveCursor(dir: number): void {
+    if (!game) return;
+    const tall = game.board.isTallColumn(cursor.col);
+    let dx = 0;
+    let dy = 0;
+    switch (dir) {
+      case SW:
+        dx = -1;
+        dy = tall && cursor.col !== 0 ? 0 : 1;
+        break;
+      case NW:
+        dx = -1;
+        dy = !tall && cursor.col !== 0 ? 0 : -1;
+        break;
+      case N:
+        dy = -1;
+        break;
+      case NE:
+        dx = 1;
+        dy = !tall && cursor.col !== COLUMNS - 1 ? 0 : -1;
+        break;
+      case SE:
+        dx = 1;
+        dy = tall && cursor.col !== COLUMNS - 1 ? 0 : 1;
+        break;
+      case S:
+        dy = 1;
+        break;
+      default:
+        return;
     }
+    const col = Math.max(0, Math.min(COLUMNS - 1, cursor.col + dx));
+    const maxRow = HEIGHT - (game.board.isTallColumn(col) ? 1 : 2);
+    cursor = { col, row: Math.max(0, Math.min(maxRow, cursor.row + dy)) };
   }
-  gui.display_vial(score, columns_up);
-  if (settings.Create) gui.display_create(create_piece);
-}
 
-return { frame, dispose: () => sounds.dispose() };
+  /** The cursor follows the mouse; while dragging, only near a piece's centre (BrewBoardView.a(Point)). */
+  function hover(pos: Point): void {
+    if (!game) return;
+    const vx = pos[0] - VIEW_X;
+    const vy = pos[1] - VIEW_Y;
+    const col = Math.max(0, Math.min(COLUMNS - 1, Math.trunc(vx / CELL)));
+    const tall = game.board.isTallColumn(col);
+    const row = Math.min(HEIGHT - (tall ? 1 : 2), Math.trunc(Math.max(0, vy - TOP - (tall ? 0 : CELL / 2)) / CELL));
+    if (dragMode) {
+      const [sx, sy] = spot(col, row);
+      if (Math.hypot(vx - (sx + CELL / 2), vy - (sy + CELL / 2)) > CELL / 2 - 1) return;
+    }
+    cursor = { col, row };
+  }
+
+  const inView = (pos: Point) => pos[0] >= VIEW_X && pos[0] < VIEW_X + VIEW_W && pos[1] >= VIEW_Y && pos[1] < VIEW_Y + VIEW_H;
+  const isBurnButton = (button: number) => button === 3;
+
+  // ---- Drawing ----
+
+  function drawFurnace(): void {
+    const level = game ? game.furnaceLevel() : 59;
+    const x = VIEW_X + FURNACE_X;
+    const y = VIEW_Y + FURNACE_Y;
+    ctx.drawImage(img('furnace'), 0, 0, FURNACE_W, level, x, y, FURNACE_W, level);
+    ctx.drawImage(img('furnace_hot'), 0, level, FURNACE_W, FURNACE_H - level, x, y + level, FURNACE_W, FURNACE_H - level);
+  }
+
+  function drawVial(): void {
+    screen.blit(img('vial_back_dark'), VIAL_X, VIAL_Y);
+    if (game && game.distilled > 0) {
+      const liquid = vialLiquid(game.distilled, game.jugLights, game.jugHeavies);
+      const top = VIAL_H - Math.round(liquid.level * VIAL_H);
+      ctx.save();
+      ctx.globalAlpha = liquid.alpha;
+      ctx.fillStyle = hsb(liquid.hue, liquid.sat, liquid.bri);
+      ctx.fillRect(VIAL_X, VIAL_Y + top, VIAL_W, VIAL_H - top);
+      ctx.restore();
+      ctx.fillStyle = '#fff';
+      if (top === 0) ctx.fillRect(VIAL_X, VIAL_Y, VIAL_W, 1);
+      else ctx.fillRect(VIAL_X, VIAL_Y + top - 1, VIAL_W, 2);
+    }
+    screen.blit(img('glass'), VIAL_X, VIAL_Y);
+  }
+
+  function drawPieces(): void {
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(VIEW_X, VIEW_Y, VIEW_W, VIEW_H);
+    ctx.clip();
+    for (const p of [...pieces.flat(), ...leaving]) {
+      if (p.selected) ctx.drawImage(img('selected_glow'), VIEW_X + p.x, VIEW_Y + p.y);
+      ctx.drawImage(pieceImage(p.type, p.mask), VIEW_X + p.x, VIEW_Y + p.y);
+    }
+    ctx.restore();
+  }
+
+  function frame(events: InputEvent[]): void {
+    const now = ticks();
+    const creating = running && startedMode === 'Create';
+    for (const event of events) {
+      if (event.type === 'mousedown' && event.button <= 3) {
+        if (!inView(event.pos)) continue;
+        hover(event.pos);
+        if (isBurnButton(event.button)) burnNow();
+        else {
+          selOrSwap();
+          dragMode = true;
+          mouseHeld = true;
+        }
+      } else if (event.type === 'mousedown' && creating) {
+        // The wheel changes the piece under the mouse in Create mode.
+        const step = event.button === 4 ? 1 : -1;
+        paint(event.pos, (old) => PAINT_ORDER[(PAINT_ORDER.indexOf(old) + step + PAINT_ORDER.length) % PAINT_ORDER.length]);
+      } else if (event.type === 'mouseup' && event.button <= 3) {
+        if (isBurnButton(event.button)) continue;
+        if (dragSwapped && selected) setSelected(null);
+        dragMode = dragSwapped = mouseHeld = false;
+      } else if (event.type === 'keydown') {
+        const paintKey = creating ? ['1', '2', '3', '4', '5'].indexOf(event.key) : -1;
+        const move = KEY_MOVES[event.key];
+        if (paintKey >= 0) paintWith = PAINT_ORDER[paintKey];
+        else if (event.key === 'escape') togglePause();
+        else if (move !== undefined) moveCursor(move);
+        else if (SWAP_KEYS.has(event.key)) selOrSwap();
+        else if (event.key === BURN_KEY) burnNow();
+      } else if (event.type === 'keyup' && paintWith !== null && PAINT_ORDER[['1', '2', '3', '4', '5'].indexOf(event.key)] === paintWith) {
+        paintWith = null;
+      }
+    }
+    if (input.mouse[0] !== lastMouse[0] || input.mouse[1] !== lastMouse[1]) {
+      // The client gets every mouse move; a frame here can cover several, so step along the line
+      // between them, a few pixels at a time, so a quick drag doesn't skip pieces.
+      const [x0, y0] = lastMouse[0] < 0 ? input.mouse : lastMouse;
+      const steps = mouseHeld ? Math.max(1, Math.ceil(Math.hypot(input.mouse[0] - x0, input.mouse[1] - y0) / 4)) : 1;
+      for (let i = 1; i <= steps; i++) {
+        const pos: Point = [x0 + ((input.mouse[0] - x0) * i) / steps, y0 + ((input.mouse[1] - y0) * i) / steps];
+        if (!inView(pos)) continue;
+        hover(pos);
+        if (mouseHeld) selOrSwap();
+      }
+      lastMouse = input.mouse;
+    }
+    if (paintWith !== null && creating) paint(input.mouse, paintWith);
+
+    for (const timer of timers.filter((t) => now >= t.at)) {
+      timers.splice(timers.indexOf(timer), 1);
+      timer.run();
+    }
+    for (const p of [...pieces.flat(), ...leaving]) stepPiece(p, now);
+    if (running && game) handle(game.update(now));
+
+    screen.fill('#000');
+    screen.blit(img('background'), 0, 0);
+    drawVial();
+    // Pieces go behind the furnace, so burning columns drop into it (they draw on the board's back layer).
+    if (active) drawPieces();
+    drawFurnace();
+    if (active) {
+      const [cx, cy] = game ? spot(cursor.col, cursor.row) : [0, 0];
+      ctx.drawImage(img('cursor'), VIEW_X + cx, VIEW_Y + cy);
+    }
+    drawMessages(now);
+
+    if (!active) banner(game ? 'Press Start to distil again' : 'Press Start to distil');
+    else if (paused) banner('Paused');
+  }
+
+  function banner(text: string): void {
+    ctx.save();
+    ctx.font = `30px "${FONT}"`;
+    ctx.textAlign = 'center';
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = '#000';
+    ctx.fillStyle = '#fff';
+    ctx.strokeText(text, VIEW_X + VIEW_W / 2, 360);
+    ctx.fillText(text, VIEW_X + VIEW_W / 2, 360);
+    ctx.restore();
+  }
+
+  // ---- Panel ----
+  // The simulator's settings column, as HTML controls: the same modes, settings, seed buttons and
+  // the same two stats, Score and Chain.
+
+  const save = <T,>(name: string, value: T): T => {
+    store.set(name, value);
+    return value;
+  };
+
+  /** pyperclip.paste in the simulator: a seed of digits only, else nothing changes (is_paste_legal). */
+  async function pasteSeed(): Promise<boolean> {
+    const text = await pasteText('Paste a seed:');
+    if (text === null || !/^[0-9]+$/.test(text)) return false;
+    seedText = text;
+    return true;
+  }
+
+  const gameGroup = panel.group('Game');
+  gameGroup.select('Mode', MODES, () => mode, (m) => {
+    mode = save('mode', m);
+    seedText = '';
+    lastSeed = '';
+  }, { disabled: () => running });
+  gameGroup.select(
+    'Practice group',
+    practiceAvailable.map((_, i) => ({ value: i, label: practiceGroupNames[i].replace(/:$/, '') })),
+    () => practiceNum[0],
+    (group) => (practiceNum = save('practiceNum', [group, 0])),
+    { hidden: () => mode !== 'Practice', disabled: () => running },
+  );
+  // One board list per group, since a select's options are fixed.
+  practiceAvailable.forEach((levels, group) => {
+    gameGroup.select(
+      'Practice board',
+      levels.map((level) => ({ value: level, label: `${level}. ${practiceNames[group][level]}` })),
+      () => practiceNum[1],
+      (level) => (practiceNum = save('practiceNum', [group, level])),
+      { hidden: () => mode !== 'Practice' || practiceNum[0] !== group, disabled: () => running },
+    );
+  });
+
+  panel
+    .group()
+    .button('Start', () => (running ? stop() : start()), { variant: 'primary', label: () => (running ? 'Stop' : 'Start') })
+    .button('Pause', togglePause, { disabled: () => !running, label: () => (paused ? 'Resume' : 'Pause'), title: 'Esc' });
+
+  panel.group('Score').stats([], () => {
+    const up = game ? game.columns.filter((c) => c.distilled).length : 0;
+    return [
+      ['Score', game ? (game.points / Math.max(up, 1)).toFixed(2) : '0.00'],
+      ['Chain', String(game?.board.consecCrystal ?? 0)],
+    ];
+  });
+
+  const settingsGroup = panel.group('Settings', { hidden: () => mode === 'Practice' });
+  const timerShown = () => (mode === 'Create' ? createTimerOn : timerOn);
+  settingsGroup.toggle('Burn timer', timerShown, (on) => {
+    if (mode === 'Create') createTimerOn = save('createTimerOn', on);
+    else timerOn = save('timerOn', on);
+  }, { disabled: () => running });
+  settingsGroup.number('Burn timer (s)', () => timerSeconds, (v) => (timerSeconds = save('timerSeconds', Math.max(1, Math.min(120, v)))), {
+    min: 1,
+    max: 120,
+    step: 0.1,
+    disabled: () => running,
+    hidden: () => !timerShown(),
+  });
+  settingsGroup.number('Difficulty', () => difficulty, (n) => (difficulty = save('difficulty', Math.max(0, Math.min(100, Math.round(n))))), {
+    min: 0,
+    max: 100,
+    disabled: () => running,
+  });
+
+  const spawnGroup = panel.group('Spawn rates', { columns: 5, hidden: () => mode === 'Practice' });
+  for (const [index, label] of SPAWN_BOXES) {
+    spawnGroup.number(label, () => spawnRates[index], (n) => {
+      spawnRates[index] = Math.max(0, Math.round(n));
+      save('spawnRates', spawnRates);
+    }, { min: 0, max: 999, disabled: () => running });
+  }
+  const defaultRates = () => spawnRates.every((v, i) => v === DEFAULT_SPAWN[i]);
+  spawnGroup.button('Defaults', () => (spawnRates = save('spawnRates', defaultRates() ? [0, 0, 0, 0, 1] : [...DEFAULT_SPAWN])), {
+    label: () => (defaultRates() ? 'Whites only' : 'Defaults'),
+    disabled: () => running,
+    title: 'Switch between the default spawn rates and a board of only whites',
+  });
+
+  // The board's seed can be copied in any mode, and pasted or dealt anew while playing in Create.
+  const boardGroup = panel.group('Board');
+  boardGroup.button('Copy', () => game && copyText(get_create_seed(fromColumns(game.board.columns)), 'Copy this seed:'), {
+    disabled: () => !game,
+    title: "Copy the board's seed",
+  });
+  boardGroup.button('Paste', () => void pasteSeed().then((ok) => ok && running && start()), {
+    hidden: () => mode !== 'Create',
+    disabled: () => !running,
+    title: 'Play a board from a pasted seed',
+  });
+  boardGroup.button('Generate', () => {
+    seedText = '';
+    start();
+    copyText(get_create_seed(fromColumns(game!.board.columns)), 'Copy this seed:');
+  }, { hidden: () => mode !== 'Create', disabled: () => !running, title: 'Deal a new board and copy its seed' });
+  for (const [i, name] of ['Black', 'Brown', 'White', 'Spice', 'Burnt'].entries()) {
+    boardGroup.button(name, () => fillBoard(PAINT_ORDER[i]), {
+      hidden: () => mode !== 'Create',
+      disabled: () => !running,
+      title: `Change the entire board to ${name.toLowerCase()} (middle-click on the simulator's palette)`,
+    });
+  }
+
+  const seedGroup = panel.group('Seed', { hidden: () => mode !== 'Seeded' });
+  seedGroup.button('Copy', () => lastSeed && copyText(lastSeed, 'Copy this seed:'), {
+    disabled: () => running || !lastSeed,
+    title: 'Copy the seed of the last start',
+  });
+  seedGroup.button('Paste', () => void pasteSeed(), { disabled: () => running, title: 'Use a pasted seed for the next start' });
+  seedGroup.button('New', () => {
+    seedText = generate_seed();
+    copyText(seedText, 'Copy this seed:');
+  }, { disabled: () => running, title: 'Make a new seed, copy it and use it for the next start' });
+
+  panel.group('Sound').select(
+    'Volume',
+    [
+      { value: 0, label: 'Off' },
+      { value: 1, label: 'Low' },
+      { value: 2, label: 'Medium' },
+      { value: 3, label: 'High' },
+    ],
+    () => volume,
+    (v) => {
+      volume = save('volume', v);
+      sounds.setVolume(v / 6);
+    },
+  );
+
+  if (import.meta.env.DEV) {
+    (window as unknown as Record<string, unknown>).__brew = {
+      get game() {
+        return game;
+      },
+      get pieces() {
+        return pieces;
+      },
+      start,
+      burnNow,
+      setCursor: (col: number, row: number) => (cursor = { col, row }),
+      selOrSwap,
+    };
+  }
+
+  return { frame, dispose: () => sounds.dispose() };
 }) satisfies PuzzleFactory;
 
+/** java.awt.Color.getHSBColor as a CSS colour. */
+function hsb(h: number, s: number, b: number): string {
+  const hh = (h - Math.floor(h)) * 6;
+  const f = hh - Math.floor(hh);
+  const p = b * (1 - s);
+  const q = b * (1 - s * f);
+  const t = b * (1 - s * (1 - f));
+  const [r, g, bl] = [
+    [b, t, p],
+    [q, b, p],
+    [p, b, t],
+    [p, q, b],
+    [t, p, b],
+    [b, p, q],
+  ][Math.floor(hh)];
+  return `rgb(${Math.round(r * 255)}, ${Math.round(g * 255)}, ${Math.round(bl * 255)})`;
+}
