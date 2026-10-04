@@ -4,11 +4,8 @@ Practice versions of Puzzle Pirates puzzles that run in the browser:
 
 - **Distilling**: swap pieces so whites go into the jug and blacks into the furnace, rebuilt from the
   game client's own rules, with the Distilling Simulator's practice modes and drills on top.
-- **Forage Simulator**: rotate 2×2 blocks to drop boxes, jars and chests.
-- **Distilling Simulator**: swap pieces to build columns before the furnace burns them.
 - **Forage Simulator**: rotate 2×2 blocks to drop crates off the bottom, rebuilt from the game client's rules, art and
   sounds, with the Forage Simulator's puzzles, CI and Infinite (cursed isle) modes on top.
-- **Vampire Carp**: patch coffin holes with pentomino planks.
 - **Blacksmithing**: strike squares to forge a sword, each piece deciding where you strike next.
 - **Vampire Carp**: patch coffin holes with pentomino planks (the Vampire Lair's carpentry, rebuilt from the game client).
 
