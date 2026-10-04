@@ -157,10 +157,6 @@ const SPAWN_BOXES: [number, string][] = [
 const TIMERLESS = 15000000;
 /** Create mode paints with keys 1-5: black, brown, white, spice, burnt; the wheel cycles in that order. */
 const PAINT_ORDER = [HEAVY, MEDIUM, LIGHT, SPICE, BURNT];
-/** Create mode's palette above the board (the simulator's display_create): one piece per key, 1-5. */
-const PALETTE_X = 12;
-const PALETTE_Y = 88;
-const PALETTE_STEP = 42;
 
 const MESSAGES = {
   clear: 'Crystal clear!',
@@ -787,12 +783,7 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     const now = ticks();
     const creating = running && startedMode === 'Create';
     for (const event of events) {
-      const slot = creating && event.type === 'mousedown' ? paletteSlot(event.pos) : -1;
-      if (event.type === 'mousedown' && slot >= 0 && (event.button === 1 || event.button === 2)) {
-        // Left click picks (or drops) a piece to place; middle click fills the board with it.
-        if (event.button === 2) fillBoard(PAINT_ORDER[slot]);
-        else placeWith = placeWith === PAINT_ORDER[slot] ? null : PAINT_ORDER[slot];
-      } else if (event.type === 'mousedown' && event.button === 1 && creating && placeWith !== null && inView(event.pos)) {
+      if (event.type === 'mousedown' && event.button === 1 && creating && placeWith !== null && inView(event.pos)) {
         paint(event.pos, placeWith);
         placing = true;
       } else if (event.type === 'mousedown' && event.button <= 3) {
@@ -858,44 +849,10 @@ export default (async ({ screen, input, panel, store, ticks }) => {
       const [cx, cy] = game ? spot(cursor.col, cursor.row) : [0, 0];
       ctx.drawImage(img('cursor'), VIEW_X + cx, VIEW_Y + cy);
     }
-    if (running && startedMode === 'Create') drawPalette();
     drawMessages(now);
 
     if (!active) banner(game ? 'Press Start to distil again' : 'Press Start to distil');
     else if (paused) banner('Paused');
-  }
-
-  /** Which palette piece is at a point, or -1. */
-  function paletteSlot(pos: Point): number {
-    if (pos[1] < PALETTE_Y || pos[1] >= PALETTE_Y + CELL) return -1;
-    const i = Math.floor((pos[0] - PALETTE_X) / PALETTE_STEP);
-    return i >= 0 && i < PAINT_ORDER.length && pos[0] - PALETTE_X - i * PALETTE_STEP < CELL ? i : -1;
-  }
-
-  /** The Create palette: each piece with the key that paints it; the picked one glows. */
-  function drawPalette(): void {
-    ctx.save();
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.55)';
-    ctx.beginPath();
-    ctx.roundRect(PALETTE_X - 6, PALETTE_Y - 6, PALETTE_STEP * (PAINT_ORDER.length - 1) + CELL + 12, CELL + 12, 8);
-    ctx.fill();
-    ctx.font = `18px "${FONT}"`;
-    ctx.textAlign = 'right';
-    ctx.lineWidth = 3;
-    ctx.strokeStyle = '#000';
-    PAINT_ORDER.forEach((type, i) => {
-      const x = PALETTE_X + i * PALETTE_STEP;
-      ctx.drawImage(pieceImage(type, 0), x, PALETTE_Y);
-      if (type === placeWith) {
-        ctx.strokeStyle = '#ffc800';
-        ctx.strokeRect(x - 1, PALETTE_Y - 1, CELL + 2, CELL + 2);
-        ctx.strokeStyle = '#000';
-      }
-      ctx.fillStyle = type === placeWith || type === paintWith ? '#ffc800' : '#fff';
-      ctx.strokeText(String(i + 1), x + CELL + 2, PALETTE_Y + CELL + 2);
-      ctx.fillText(String(i + 1), x + CELL + 2, PALETTE_Y + CELL + 2);
-    });
-    ctx.restore();
   }
 
   function banner(text: string): void {
@@ -955,6 +912,46 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     .group()
     .button('Start', () => (running ? stop() : start()), { variant: 'primary', label: () => (running ? 'Stop' : 'Start') })
     .button('Pause', togglePause, { disabled: () => !running, label: () => (paused ? 'Resume' : 'Pause'), title: 'Esc' });
+
+  // Create mode's pieces in a row of their own (the simulator's display_create), each showing the
+  // key that paints it. Click one to place it with left clicks until it's clicked again; middle-click
+  // fills the board with it.
+  const paletteRow = document.createElement('div');
+  paletteRow.style.cssText = 'display:flex;gap:6px;justify-content:center;';
+  const paletteButtons = PAINT_ORDER.map((type, i) => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.title = `${['Black', 'Brown', 'White', 'Spice', 'Burnt white'][i]} (key ${i + 1})`;
+    button.style.cssText = 'padding:2px;border:2px solid transparent;border-radius:8px;background:none;cursor:pointer;line-height:0;';
+    const canvas = document.createElement('canvas');
+    canvas.width = canvas.height = CELL;
+    const c = canvas.getContext('2d')!;
+    c.drawImage(pieceImage(type, 0), 0, 0);
+    c.font = `bold 20px "${FONT}"`;
+    c.textAlign = 'center';
+    c.textBaseline = 'middle';
+    c.lineWidth = 3;
+    c.strokeStyle = '#000';
+    c.fillStyle = '#fff';
+    c.strokeText(String(i + 1), CELL / 2, CELL / 2 + 1);
+    c.fillText(String(i + 1), CELL / 2, CELL / 2 + 1);
+    button.append(canvas);
+    button.addEventListener('click', () => (placeWith = placeWith === type ? null : type));
+    button.addEventListener('auxclick', (e) => {
+      if (e.button === 1) fillBoard(type);
+    });
+    paletteRow.append(button);
+    return button;
+  });
+  panel.group('Pieces', { hidden: () => mode !== 'Create' }).append(paletteRow);
+  panel.addSync(() => {
+    paletteButtons.forEach((button, i) => {
+      const on = PAINT_ORDER[i] === placeWith || PAINT_ORDER[i] === paintWith;
+      button.style.borderColor = on ? '#ffc800' : 'transparent';
+      button.disabled = !running;
+      button.style.opacity = running ? '1' : '0.5';
+    });
+  });
 
   panel.group('Score').stats([], () => {
     const up = game ? game.columns.filter((c) => c.distilled).length : 0;
