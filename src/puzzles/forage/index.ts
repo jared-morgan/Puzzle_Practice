@@ -11,6 +11,7 @@
 import { Images } from '../../core/assets';
 import { SoundBank } from '../../core/audio';
 import { loadFont } from '../../core/fonts';
+import { historyGroup } from '../../core/history';
 import type { InputEvent, Point } from '../../core/input';
 import type { Option } from '../../core/panel';
 import type { PuzzleFactory } from '../../core/puzzle';
@@ -32,9 +33,11 @@ import {
   WIDTH,
 } from './board';
 import { GauntletChests, ServerRequests, CURSED_TILES } from './crates';
-import { type Cell, CELL, type Effect, Forage, type SoundName, type Sprite, type Step, TIMING } from './engine';
+import { keyMatches } from '../../core/controls';
+import { type Cell, CELL, type Effect, Forage, looks, type SoundName, type Sprite, type Step, TIMING } from './engine';
 import { CHEST_WEIGHTINGS, fillPuzzle, type Mode, parseBoard, randomizeColours, scramblePuzzle, type Settings } from './logic';
 import { PUZZLES } from './puzzles';
+import { isReplay, KEPT_REPLAYS, type Replay, type ReplayEvent, replayLabel, replayBytes } from './replay';
 import delarobbUrl from './delarobb.ttf?url';
 
 const soundUrls = import.meta.glob<string>('./sounds/*.mp3', { eager: true, query: '?url', import: 'default' });
@@ -66,7 +69,6 @@ const ANT_NUMBER_AT: Cell[] = [
   [13, 0],
 ];
 
-const CI_DURATION = 120000;
 /** Every board brings a full meter of nine. */
 const BANANAS = 9;
 /** Puzzles the random pick chooses between (the desktop version drew from 1–14). */
@@ -82,12 +84,12 @@ const RANDOM_POOL = Object.keys(PUZZLES)
  */
 const MODES: Option<Mode>[] = [
   { value: 'puzzle', label: 'Puzzle' },
-  { value: 'ci', label: 'CI (Gauntlet, 2 min)' },
-  { value: 'infinite', label: 'Infinite (Gauntlet)' },
+  { value: 'ci', label: 'Gauntlet' },
+  { value: 'chaos', label: 'Chaos' },
   { value: 'normal', label: 'Normal' },
 ];
 /** Modes that end and keep a best score. */
-const SCORED = new Set<Mode>(['ci', 'normal']);
+const SCORED = new Set<Mode>(['ci', 'infinite', 'normal', 'chaos']);
 
 /**
  * Normal mode's default chest mix: observed rates of 0.65, 0.345 and 0.0047 for 1x1, 2x2 and
@@ -108,6 +110,7 @@ const DEFAULT_SETTINGS: Settings = {
   scramble: true,
   forageLevel: 6,
   normalRatios: [...NORMAL_RATIOS],
+  chestRatios: undefined,
 };
 
 interface PuzzleRecord {
@@ -149,9 +152,17 @@ export default (async ({ screen, input, panel, store, ticks }) => {
   const [images] = await Promise.all([Images.load(imageUrls), loadFont(FONT, delarobbUrl)]);
   const img = (name: string) => images.get(name);
   const rng = new PyRandom();
+  /** The pieces' flight paths in and out, seeded per session so a replay's intros last as long. */
+  const flights = new PyRandom();
+  looks.random = () => flights.random();
   const sounds = new SoundBank<SoundName>(soundUrls);
 
   const settings: Settings = { ...DEFAULT_SETTINGS, ...store.get<Partial<Settings>>('settings', {}) };
+  if (settings.mode === 'infinite') {
+    settings.mode = 'ci';
+    settings.roundSeconds ??= 0;
+  }
+  settings.roundSeconds ??= settings.mode === 'ci' ? 120 : 0;
   const saveSettings = () => store.set('settings', settings);
   const puzzleRecords = store.get<Record<string, PuzzleRecord>>('puzzleRecords', {});
   const ciBest = store.get<Record<string, number>>('ciBest', {});
@@ -162,9 +173,12 @@ export default (async ({ screen, input, panel, store, ticks }) => {
   /** Normal foraging looks like the fruit jungle; the rest are cursed isle boards. */
   const cursed = () => settings.mode !== 'normal';
 
-  let game = newGame();
+  /** Dealt once the replay state below exists, since dealing checks for a replay. */
+  let game: Forage;
   let boardActive = false;
   let ended = false;
+  let pendingNextBoard = false;
+  let seeking = false;
   let movesUsed = 0;
   let score = 0;
   /** The banana meter: crates collected on this board, and how full it's drawn (0-100%). */
@@ -188,28 +202,77 @@ export default (async ({ screen, input, panel, store, ticks }) => {
   let puzzleId = '0';
   let pickedRandomly = false;
 
-  const ciKey = () =>
-    (['bb', 'fj', 'cc', 'eq', 'machete', 'shovel', 'monkey'] as const).map((k) => (settings[k] ? 'b' : 'a')).join('') +
-    (settings.mode === 'normal' ? settings.normalRatios.join('-') : settings.forageLevel) +
-    // Older bests were all without ants, so those keep their keys.
-    (settings.ants ? 'ants' : '');
+  // ---- Recording and replays ----
+
+  /** The session being recorded, from Start until it ends. */
+  let recording: Replay | null = null;
+  let replays = store.get<Replay[]>('replays', []).filter(isReplay);
+  /** The replay being watched: its clock runs at `speed` from the session's start. */
+  let replay: {
+    data: Replay;
+    now: number;
+    lastReal: number;
+    speed: number;
+    paused: boolean;
+    board: number;
+    mouseAt: number;
+    eventAt: number;
+    mouse: Point;
+    clicks: { t: number; x: number; y: number; b: number }[];
+    /** What the player had set before watching, put back afterwards. */
+    saved: { settings: Settings; puzzleId: string; pickedRandomly: boolean };
+  } | null = null;
+  let replaySpeed = 1;
+  /** Set while a replayed event is applied, so it happens at the time it was recorded. */
+  let clockAt: number | null = null;
+  /** When the session started: replays count from 0. */
+  let sessionStart = 0;
+  /** Game time: real time, or the replay's clock while watching. */
+  const clock = () => clockAt ?? (replay ? replay.now : ticks());
+  const sinceStart = () => Math.round(clock() - sessionStart);
+  let lastMouse: Point = [-1, -1];
+  game = newGame();
+
+  const ciKey = () => {
+    const base = (['bb', 'fj', 'cc', 'eq', 'machete', 'shovel', 'monkey'] as const).map((k) => (settings[k] ? 'b' : 'a')).join('') +
+      (settings.mode === 'normal' ? settings.normalRatios.join('-') : settings.chestRatios?.join('-') ?? settings.forageLevel) +
+      (settings.ants ? 'ants' : '');
+    // Preserve existing scores for the original Gauntlet and Normal round lengths.
+    const original = settings.mode === 'normal' ? 0 : 120;
+    return base + (roundSeconds() === original ? '' : `:timer:${roundSeconds()}`);
+  };
+
+  const roundSeconds = () => settings.roundSeconds ?? (settings.mode === 'ci' ? 120 : 0);
+  const roundDuration = () => roundSeconds() * 1000;
+
+  /** Where this game's history is kept: per settings for CI and Normal, per puzzle (unscrambled) for Puzzle. */
+  const historyKey = (): string | null =>
+    settings.mode === 'puzzle'
+      ? settings.scramble || puzzleId === '0'
+        ? null
+        : `puzzle:${puzzleId}`
+      : SCORED.has(settings.mode)
+        ? `${settings.mode}:${ciKey()}`
+        : null;
 
   /** Crate weights for the mode, with turned-off crates at 0. */
   function crateWeights(): [number, number, number] {
-    const w = settings.mode === 'normal' ? settings.normalRatios : CHEST_WEIGHTINGS[settings.forageLevel];
+    const w = settings.mode === 'normal' ? settings.normalRatios : settings.chestRatios ?? CHEST_WEIGHTINGS[settings.forageLevel];
     return [settings.bb ? w[0] : 0, settings.fj ? w[1] : 0, settings.cc ? w[2] : 0];
   }
 
   /** A fresh client board from a random seed, with the mode's crates and the chosen specials. */
   function newGame(): Forage {
-    const seed = BigInt(Math.floor(Math.random() * 2 ** 48));
+    const seed = replay ? BigInt(replay.data.boards[replay.board++] ?? 0) : BigInt(Math.floor(Math.random() * 2 ** 48));
+    recording?.boards.push(String(seed));
     const source =
       settings.mode === 'normal'
         ? new ServerRequests(rng, crateWeights(), BANANAS)
         : settings.mode === 'puzzle'
           ? {}
-          : new GauntletChests(rng, crateWeights(), BANANAS);
+          : new GauntletChests(rng, crateWeights(), BANANAS, settings.mode === 'chaos');
     const g = new Forage(seed, source);
+    g.legacyChestTiming = replay?.data.v === 1;
     // Shovel, machete, monkey, earthquake, ants.
     g.board.allowed = [settings.shovel, settings.machete, settings.monkey, settings.eq, settings.ants];
     if (settings.mode !== 'normal') g.crateArt = [...CURSED_TILES];
@@ -218,6 +281,7 @@ export default (async ({ screen, input, panel, store, ticks }) => {
 
   /** Deals a board; New board keeps the clock running. */
   function newBoard(restartClock = false): void {
+    pendingNextBoard = false;
     playing = [];
     timed = [];
     game = newGame();
@@ -228,7 +292,11 @@ export default (async ({ screen, input, panel, store, ticks }) => {
 
   function start(): void {
     movesUsed = 0;
+    pendingNextBoard = false;
     ended = false;
+    const [gameSeed, flightSeed] = (replay?.data ?? recording)!.seeds;
+    rng.seed(gameSeed);
+    flights.seed(flightSeed);
     if (settings.mode === 'puzzle') {
       if (puzzleId === '0' || pickedRandomly) {
         puzzleId = String(rng.choice(RANDOM_POOL));
@@ -253,15 +321,15 @@ export default (async ({ screen, input, panel, store, ticks }) => {
 
   /** Pieces fly in from beyond the nearest corner, 1 ms a pixel along an arc (client/j). */
   function intro(restartClock: boolean): void {
-    sounds.play(cursed() ? 'cursed_intro' : 'intro');
-    flight = { pieces: flyingPieces(), start: ticks(), out: false };
+    if (!seeking) sounds.play(cursed() ? 'cursed_intro' : 'intro');
+    flight = { pieces: flyingPieces(), start: clock(), out: false };
     // The clock starts once the pieces are in.
-    if (restartClock) startTime = ticks() + flightLength();
+    if (restartClock) startTime = clock() + flightLength();
   }
 
   function outro(delay = 0): void {
-    flight = { pieces: flyingPieces(), start: ticks() + delay, out: true };
-    window.setTimeout(() => sounds.play('outro'), delay);
+    flight = { pieces: flyingPieces(), start: clock() + delay, out: true };
+    if (!seeking && !replay?.paused) window.setTimeout(() => { if (!seeking) sounds.play('outro'); }, delay);
   }
 
   function flyingPieces() {
@@ -270,8 +338,8 @@ export default (async ({ screen, input, panel, store, ticks }) => {
       if (piece === EMPTY || (isCrate(piece) && !isCrateAnchor(piece))) return;
       const at: Cell = [i % WIDTH, Math.floor(i / WIDTH)];
       const [px, py] = pieceTopLeft(piece, at);
-      const fx = px < VIEW_W / 2 ? -(Math.random() * 90 + 45) : VIEW_W + Math.random() * 90;
-      const fy = py < VIEW_H / 2 ? -(Math.random() * 90 + 45) : VIEW_H + Math.random() * 90;
+      const fx = px < VIEW_W / 2 ? -(flights.random() * 90 + 45) : VIEW_W + flights.random() * 90;
+      const fy = py < VIEW_H / 2 ? -(flights.random() * 90 + 45) : VIEW_H + flights.random() * 90;
       out.push({ piece, at, from: [fx, fy], duration: (Math.abs(fx - px) + Math.abs(fy - py)) * TIMING.introPerPx });
     });
     return out;
@@ -282,7 +350,9 @@ export default (async ({ screen, input, panel, store, ticks }) => {
   function finishPuzzle(): void {
     ended = true;
     boardActive = false;
-    if (settings.scramble) return;
+    endRecording(`Puzzle ${puzzleId}, ${movesUsed} moves`);
+    if (settings.scramble || replay) return;
+    store.addHistory(historyKey()!, { score: movesUsed, moves: movesUsed, time: timePassed });
     const best = record ?? { moves: movesUsed, time: timePassed };
     record = { moves: Math.min(best.moves, movesUsed), time: Math.min(best.time, timePassed) };
     puzzleRecords[puzzleId] = record;
@@ -301,27 +371,32 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     const key = ciKey();
     const best = bests();
     const final = shownScore();
-    if (final > (best[key] ?? 0)) {
-      best[key] = final;
-      store.set(settings.mode === 'normal' ? 'normalBestPerMove' : 'ciBest', best);
+    endRecording(settings.mode === 'normal' ? `${scoreText(final)} a move` : `Score ${final}`);
+    if (!replay) {
+      if (final > (best[key] ?? 0)) {
+        best[key] = final;
+        store.set(settings.mode === 'normal' ? 'normalBestPerMove' : 'ciBest', best);
+      }
+      store.addHistory(historyKey()!, settings.mode === 'normal' ? { score: Number(final.toFixed(2)), points: score, moves: movesUsed } : { score: final });
     }
     bestScore = Math.max(bestScore ?? 0, final);
     // A full meter is "Great work!" in the client, and the pieces fly off a second later.
     if (settings.mode === 'normal' && boardDone()) {
-      timed.push({ effect: { kind: 'text', text: 'Great work!', size: 32, delay: 0 }, start: ticks() });
+      timed.push({ effect: { kind: 'text', text: 'Great work!', size: 32, delay: 0 }, start: clock() });
       outro(TIMING.outroDelay);
     } else outro();
   }
 
   /** The board can take a click: playing, not mid-cascade, not flying in or out. */
-  const inPlay = () => boardActive && !playing.length && !flight;
+  const inPlay = () => boardActive && !playing.length && !flight && (isPuzzle() || !roundSeconds() || clock() - startTime < roundDuration());
 
   /** A turn or tool with the cursor's top-left at `cell`; clicks during a cascade are dropped, as in the client. */
-  function act(cell: Cell, ccw: boolean): void {
-    if (!inPlay()) return;
+  function act(cell: Cell, ccw: boolean, replayed = false): void {
+    if (!replayed && !inPlay()) return;
     game.steps = [];
     const outcome = game.act(cell[0], cell[1], ccw);
     if (outcome === 'illegal') return;
+    recording?.events.push({ t: sinceStart(), k: 'act', x: cell[0], y: cell[1], ccw });
     if (outcome === 'moved') {
       movesUsed++;
       const result = game.lastResult;
@@ -336,7 +411,7 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     }
     playing = game.steps;
     game.steps = [];
-    stepStart = ticks();
+    stepStart = clock();
     startStep();
   }
 
@@ -345,12 +420,12 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     const step = playing[0];
     if (!step) return;
     const heard = new Set<string>();
-    for (const s of step.sounds) {
+    for (const s of seeking || replay?.paused ? [] : step.sounds) {
       const key = `${s.name}@${s.delay}`;
       if (heard.has(key)) continue;
       heard.add(key);
       if (s.delay <= 0) sounds.play(s.name);
-      else window.setTimeout(() => sounds.play(s.name), s.delay);
+      else window.setTimeout(() => { if (!seeking && !replay?.paused) sounds.play(s.name); }, s.delay);
     }
     for (const effect of step.effects) timed.push({ effect, start: stepStart + effect.delay });
   }
@@ -360,11 +435,217 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     if (boardActive && settings.mode === 'normal') {
       boardActive = false;
       ended = true;
-    } else if (boardActive) boardActive = false;
-    else {
+      endRecording(`Dismissed, ${movesUsed} moves`);
+    } else if (boardActive) {
+      boardActive = false;
+      ended = true;
+      endRecording(settings.mode === 'puzzle' ? `Puzzle ${puzzleId}, stopped` : `Stopped, ${movesUsed} moves`);
+    } else {
+      const seed = () => Math.floor(Math.random() * 2 ** 32);
+      recording = {
+        v: 2,
+        at: Date.now(),
+        settings: structuredClone(settings),
+        puzzleId,
+        pickedRandomly,
+        seeds: [seed(), seed()],
+        boards: [],
+        mouse: [],
+        events: [],
+        end: 0,
+        result: '',
+      };
+      sessionStart = clock();
+      lastMouse = [-1, -1];
       boardActive = true;
       start();
     }
+  }
+
+  /** Keeps the session just played with the recent replays, if a move was made in it. */
+  function endRecording(result: string): void {
+    const r = recording;
+    recording = null;
+    if (!r || !r.events.some((e) => e.k === 'act')) return;
+    r.end = sinceStart();
+    r.result = result;
+    replays = [r, ...replays].slice(0, KEPT_REPLAYS);
+    // A full browser store drops the oldest replays until the rest fit.
+    while (!store.set('replays', replays) && replays.length > 1) replays.pop();
+    chosenReplay = 0;
+  }
+
+  /** While recording: where the mouse moved to, and buttons pressed on the canvas. */
+  function recordInput(events: InputEvent[]): void {
+    if (!recording || !boardActive) return;
+    const t = sinceStart();
+    const mx = Math.round(input.mouse[0]);
+    const my = Math.round(input.mouse[1]);
+    if (mx !== lastMouse[0] || my !== lastMouse[1]) {
+      recording.mouse.push(t, mx, my);
+      lastMouse = [mx, my];
+    }
+    for (const e of events) {
+      if (e.type === 'mousedown') recording.events.push({ t, k: 'click', b: e.button, x: Math.round(e.pos[0]), y: Math.round(e.pos[1]) });
+    }
+  }
+
+  /** Watches a replay: its settings and seeds deal the same boards, and its moves play at their times. */
+  function watch(data: Replay): void {
+    if (boardActive && !replay) return;
+    if (replay) stopReplay();
+    replay = {
+      data,
+      now: 0,
+      lastReal: ticks(),
+      speed: replaySpeed,
+      paused: false,
+      board: 0,
+      mouseAt: 0,
+      eventAt: 0,
+      mouse: [-1, -1],
+      clicks: [],
+      saved: { settings: structuredClone(settings), puzzleId, pickedRandomly },
+    };
+    Object.assign(settings, DEFAULT_SETTINGS, structuredClone(data.settings));
+    settings.roundSeconds = data.settings.roundSeconds ?? (data.settings.mode === 'ci' ? 120 : 0);
+    puzzleId = data.puzzleId;
+    pickedRandomly = data.pickedRandomly;
+    sessionStart = 0;
+    meterAt = 0;
+    boardActive = true;
+    start();
+  }
+
+  /** Stops watching and puts the player's own settings back. */
+  function stopReplay(): void {
+    if (!replay) return;
+    const { saved } = replay;
+    replay = null;
+    Object.assign(settings, saved.settings);
+    puzzleId = saved.puzzleId;
+    pickedRandomly = saved.pickedRandomly;
+    boardActive = false;
+    ended = false;
+    playing = [];
+    flight = null;
+    timed = [];
+    game = newGame();
+    crates = 0;
+    meterShown = 0;
+    movesUsed = 0;
+    score = 0;
+    timePassed = 0;
+    meterAt = ticks();
+    bestScore = SCORED.has(settings.mode) ? (bests()[ciKey()] ?? 0) : null;
+  }
+
+  /** Rebuild from seeds when seeking backwards; step the same lifecycle as live play. */
+  function seekReplay(ms: number): void {
+    if (!replay) return;
+    const data = replay.data;
+    const paused = replay.paused;
+    seeking = true;
+    try {
+      watch(data);
+      const r = replay!;
+      advanceReplayTo(Math.max(0, Math.min(data.end + 3000, ms)));
+      r.paused = paused;
+      r.lastReal = ticks();
+    } finally { seeking = false; }
+  }
+
+  function advanceReplayTo(target: number): void {
+    const r = replay!;
+    const { mouse, events } = r.data;
+    while (r.now < target) {
+      const next = Math.min(target, r.now + 1000 / 60);
+      for (;;) {
+        const mouseT = r.mouseAt < mouse.length ? mouse[r.mouseAt] : Infinity;
+        const eventT = r.eventAt < events.length ? events[r.eventAt].t : Infinity;
+        const at = Math.min(mouseT, eventT);
+        if (at > next) break;
+        r.now = at;
+        advanceGame(at);
+        if (mouseT <= eventT) {
+          r.mouse = [mouse[r.mouseAt + 1], mouse[r.mouseAt + 2]];
+          r.mouseAt += 3;
+        } else applyReplayed(events[r.eventAt++]);
+      }
+      r.now = next;
+      advanceGame(next);
+      if (next >= r.data.end && boardActive && !pendingNextBoard) {
+        boardActive = false;
+        ended = true;
+      }
+    }
+  }
+
+  function advanceReplay(): void {
+    const r = replay!;
+    const real = ticks();
+    if (!r.paused) advanceReplayTo(Math.min(r.data.end + 3000, r.now + (real - r.lastReal) * r.speed));
+    r.lastReal = real;
+    if (r.now >= r.data.end + 3000) r.paused = true;
+  }
+
+  function applyReplayed(e: ReplayEvent): void {
+    clockAt = e.t;
+    if (e.k === 'act') {
+      // Anything still animating finishes where it had by the time of the move.
+      if (flight && !flight.out && e.t - flight.start >= flightLength()) flight = null;
+      currentStep(e.t);
+      cursor = [e.x, e.y];
+      act([e.x, e.y], e.ccw, true);
+    } else if (e.k === 'click') replay!.clicks.push({ t: e.t, x: e.x, y: e.y, b: e.b });
+    else if (e.k === 'cursor') cursor = [e.x, e.y];
+    else if (e.k === 'newboard') newBoard();
+    clockAt = null;
+  }
+
+  /** While watching: the recorded mouse pointer, a ring where each click landed, and the speed. */
+  function drawReplayOverlay(now: number): void {
+    const r = replay!;
+    const ctx = screen.ctx;
+    ctx.save();
+    r.clicks = r.clicks.filter((c) => now - c.t < 400);
+    for (const c of r.clicks) {
+      const age = (now - c.t) / 400;
+      ctx.globalAlpha = 1 - age;
+      ctx.strokeStyle = c.b === 3 ? '#ffb347' : '#7fd4ff';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(c.x, c.y, 6 + age * 14, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+    const [mx, my] = r.mouse;
+    if (mx >= 0) {
+      ctx.beginPath();
+      ctx.moveTo(mx, my);
+      ctx.lineTo(mx, my + 17);
+      ctx.lineTo(mx + 4.5, my + 13);
+      ctx.lineTo(mx + 7.5, my + 19.5);
+      ctx.lineTo(mx + 10, my + 18.5);
+      ctx.lineTo(mx + 7, my + 12);
+      ctx.lineTo(mx + 12, my + 12);
+      ctx.closePath();
+      ctx.fillStyle = '#fff';
+      ctx.strokeStyle = '#000';
+      ctx.lineWidth = 1.5;
+      ctx.fill();
+      ctx.stroke();
+    }
+    ctx.font = `20px "${FONT}"`;
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'top';
+    ctx.lineWidth = 4;
+    ctx.strokeStyle = '#1a1020';
+    ctx.fillStyle = '#ffffff';
+    const label = `Replay ${r.speed}x`;
+    ctx.strokeText(label, 444, 6);
+    ctx.fillText(label, 444, 6);
+    ctx.restore();
   }
 
   // ---- Cursor (ForageBoardView.d, w, e; client/o.a(int)) ----
@@ -410,17 +691,21 @@ export default (async ({ screen, input, panel, store, ticks }) => {
   function key(name: string): void {
     if (!boardActive) return;
     // X turns anticlockwise and C clockwise, as in the game; the arrows move the cursor.
-    if (name === 'x' || name === 'c') act(cursor, name === 'x');
-    else if (name === 'arrowleft') moveCursor(-1, 0);
-    else if (name === 'arrowright') moveCursor(1, 0);
-    else if (name === 'arrowup') moveCursor(0, -1);
-    else if (name === 'arrowdown') moveCursor(0, 1);
+    if (keyMatches(name, 'forage', 'rotateLeft', 'x')) act(cursor, true);
+    else if (keyMatches(name, 'forage', 'rotateRight', 'c')) act(cursor, false);
+    else if (name.startsWith('arrow') || ['arrowleft','arrowright','arrowup','arrowdown'].some((key, i) => keyMatches(name, 'forage', ['left','right','up','down'][i], key))) {
+      if (keyMatches(name, 'forage', 'left', 'arrowleft')) moveCursor(-1, 0);
+      else if (keyMatches(name, 'forage', 'right', 'arrowright')) moveCursor(1, 0);
+      else if (keyMatches(name, 'forage', 'up', 'arrowup')) moveCursor(0, -1);
+      else if (keyMatches(name, 'forage', 'down', 'arrowdown')) moveCursor(0, 1);
+      recording?.events.push({ t: sinceStart(), k: 'cursor', x: cursor[0], y: cursor[1] });
+    }
   }
 
   // ---- Panel ----
 
   const isPuzzle = () => settings.mode === 'puzzle';
-  const locked = () => boardActive;
+  const locked = () => boardActive || !!replay;
   const setting = <K extends keyof Settings>(k: K) => ({
     get: () => settings[k],
     set: (value: Settings[K]) => {
@@ -438,14 +723,21 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     group.toggle(label, get, set, { disabled: locked, hidden });
   };
 
-  const isCi = () => settings.mode === 'ci';
   panel.clock(() => {
-    if (isCi()) return { label: 'Time left', ms: CI_DURATION - timePassed, countdown: true, warn: boardActive && CI_DURATION - timePassed < 10000 };
+    if (!isPuzzle() && roundSeconds() > 0) return { label: 'Time left', ms: roundDuration() - timePassed, countdown: true, warn: boardActive && roundDuration() - timePassed < 10000 };
     const puzzleBest = isPuzzle() && !settings.scramble && record;
     return { label: 'Time', ms: timePassed, best: puzzleBest ? record!.time : null };
   });
 
-  const session = panel.group();
+  panel.controls('forage', [
+    { id: 'left', label: 'Move left', defaultKey: 'ArrowLeft' },
+    { id: 'right', label: 'Move right', defaultKey: 'ArrowRight' },
+    { id: 'up', label: 'Move up', defaultKey: 'ArrowUp' },
+    { id: 'down', label: 'Move down', defaultKey: 'ArrowDown' },
+    { id: 'rotateLeft', label: 'Rotate anticlockwise', defaultKey: 'X' },
+    { id: 'rotateRight', label: 'Rotate clockwise', defaultKey: 'C' },
+  ]);
+  const session = panel.session();
   session.select('Mode', MODES, setting('mode').get, setting('mode').set, { disabled: locked });
   session.number(
     'Puzzle',
@@ -456,43 +748,165 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     },
     { min: 0, disabled: locked, hidden: () => !isPuzzle(), title: '0 picks a puzzle at random' },
   );
-  session.note(() => {
-    const on = (list: [string, boolean][]) => list.filter(([, b]) => b).map(([name]) => name);
-    const parts: string[] = [];
-    if (isPuzzle()) {
-      if (settings.scramble) parts.push('Scrambled');
-    } else if (settings.mode !== 'normal') parts.push(`Forage level ${settings.forageLevel}`);
-    const crates = on([['Bone box', settings.bb], ['Fetish jar', settings.fj], ['Cursed chest', settings.cc]]);
-    const specials = on([['Earthquake', settings.eq], ['Machete', settings.machete], ['Shovel', settings.shovel], ['Monkey', settings.monkey], ['Ants', settings.ants]]);
-    parts.push(crates.length ? crates.join(', ') : 'No special crates');
-    if (specials.length) parts.push(specials.join(', '));
-    return parts.join(' · ');
-  });
-  session
-    .button('Start', toggleRunning, { variant: 'primary', label: () => (!boardActive ? 'Start' : settings.mode === 'normal' ? 'Dismiss' : 'Stop') })
-    .button('New board', () => newBoard(), {
-      disabled: () => isPuzzle() || settings.mode === 'normal' || !boardActive,
+  const actions = panel.group();
+  actions.note(() => isPuzzle() ? settings.scramble ? 'Scrambled' : '' : roundSeconds() ? `${roundSeconds()} second round` : 'No timer');
+  actions
+    .button('Start', toggleRunning, {
+      variant: 'primary',
+      label: () => (!boardActive ? 'Start' : settings.mode === 'normal' ? 'Dismiss' : 'Stop'),
+      disabled: () => !!replay,
+    })
+    .button('New board', () => {
+      recording?.events.push({ t: sinceStart(), k: 'newboard' });
+      newBoard();
+    }, {
+      disabled: () => isPuzzle() || settings.mode === 'normal' || !boardActive || !!replay,
       title: 'Deal a fresh board and bananas without restarting the clock; crates from a move still playing out still count',
     });
 
-  panel
-    .group('Score')
-    .stats(['', 'Now', 'Best'], () => {
-      const puzzleBest = isPuzzle() && !settings.scramble && record;
-      return [
-        ['Moves', movesUsed > 9999 ? 'Lots!' : String(movesUsed), puzzleBest ? String(record!.moves) : ''],
-        ...(settings.mode === 'normal' ? [['Points', String(score), '']] : []),
-        [settings.mode === 'normal' ? 'Points / move' : 'Score', scoreText(shownScore()), SCORED.has(settings.mode) && bestScore !== null ? scoreText(bestScore) : ''],
-      ];
-    });
+  panel.score().stats(['', 'Now', 'Best'], () => [[
+    isPuzzle() ? 'Moves' : settings.mode === 'normal' ? 'Points / move' : 'Score',
+    isPuzzle() ? String(movesUsed) : scoreText(shownScore()),
+    isPuzzle() ? !settings.scramble && record ? String(record.moves) : '' : bestScore !== null ? scoreText(bestScore) : '',
+  ]]);
+  panel.results(() => ended && !flight ? {
+    title: 'Forage results',
+    rows: [
+      [isPuzzle() ? 'Moves' : 'Score', isPuzzle() ? String(movesUsed) : scoreText(shownScore())],
+      ['Time', `${(timePassed / 1000).toFixed(2)}s`], ['Moves', String(movesUsed)],
+      ['Points', String(score)], ['Crates collected on last board', String(crates)],
+    ],
+  } : null);
 
-  const setup = panel.settings.group('Game', { hidden: () => settings.mode === 'normal' });
-  setup.number('Forage level', setting('forageLevel').get, setting('forageLevel').set, {
+  // Every scored game, kept per settings key as the desktop version's score lists were.
+  const historyFor = (mode: Mode) => () => (settings.mode === mode && historyKey() ? store.history(historyKey()!) : null);
+  historyGroup(panel, historyFor('ci'), [{ label: 'Score', value: (g) => String(g.score) }]);
+  historyGroup(panel, historyFor('chaos'), [{ label: 'Score', value: (g) => String(g.score) }]);
+  historyGroup(panel, historyFor('normal'), [
+    { label: 'Pts / move', value: (g) => Number(g.score).toFixed(2) },
+    { label: 'Points', value: (g) => String(g.points) },
+    { label: 'Moves', value: (g) => String(g.moves) },
+  ]);
+  historyGroup(panel, historyFor('puzzle'), [
+    { label: 'Moves', value: (g) => String(g.moves) },
+    { label: 'Time', value: (g) => `${(Number(g.time) / 1000).toFixed(2)}s` },
+  ]);
+
+  // ---- Replays panel ----
+
+  let chosenReplay = 0;
+  const modeName = (mode: Mode) => MODES.find((m) => m.value === mode)?.label.replace(/ \(.*/, '') ?? mode;
+  const replayList = document.createElement('select');
+  replayList.className = 'panel-select';
+  replayList.addEventListener('change', () => {
+    chosenReplay = Number(replayList.value);
+    panel.used();
+  });
+  const replayField = document.createElement('label');
+  replayField.className = 'panel-field';
+  const replayLabelSpan = document.createElement('span');
+  replayLabelSpan.className = 'panel-label';
+  replayLabelSpan.textContent = 'Session';
+  replayField.append(replayLabelSpan, replayList);
+  let listed = '';
+  panel.addSync(() => {
+    const labels = replays.map((r) => replayLabel(r, modeName(r.settings.mode)));
+    const signature = labels.join('\n');
+    if (signature !== listed) {
+      listed = signature;
+      replayList.replaceChildren(
+        ...labels.map((label, i) => {
+          const option = document.createElement('option');
+          option.value = String(i);
+          option.textContent = label;
+          return option;
+        }),
+      );
+    }
+    chosenReplay = Math.min(chosenReplay, Math.max(0, replays.length - 1));
+    if (replayList.value !== String(chosenReplay)) replayList.value = String(chosenReplay);
+    replayList.disabled = !replays.length || !!replay;
+  });
+
+  function saveReplayFile(): void {
+    const r = replays[chosenReplay];
+    if (!r) return;
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(new Blob([JSON.stringify(r)], { type: 'application/json' }));
+    link.download = `forage-replay-${new Date(r.at).toISOString().slice(0, 16).replace(/[:T]/g, '-')}.json`;
+    link.click();
+    URL.revokeObjectURL(link.href);
+  }
+
+  const replayFile = document.createElement('input');
+  replayFile.type = 'file';
+  replayFile.accept = '.json,application/json';
+  replayFile.hidden = true;
+  replayFile.addEventListener('change', async () => {
+    const chosen = replayFile.files?.[0];
+    replayFile.value = '';
+    if (!chosen) return;
+    let data: unknown = null;
+    try {
+      data = JSON.parse(await chosen.text());
+    } catch {
+      // Reported below.
+    }
+    if (!isReplay(data)) {
+      window.alert("That file isn't a Forage replay.");
+      return;
+    }
+    watch(data);
+    panel.used();
+  });
+
+  // Replays sit on the History tab, under the scores.
+  panel
+    .tab('History')
+    .group('Replays', { title: 'Your last sessions, played back as they happened' })
+    .append(replayField)
+    .select(
+      'Speed',
+      [1, 2, 4].map((n) => ({ value: n, label: `${n}x` })),
+      () => replaySpeed,
+      (n) => {
+        replaySpeed = n;
+        if (replay) replay.speed = n;
+      },
+    )
+    .button('Play', () => {
+      if (replay) {
+        if (replay.now >= replay.data.end + 3000) seekReplay(0);
+        replay.paused = !replay.paused; replay.lastReal = ticks();
+      }
+      else if (replays[chosenReplay]) watch(replays[chosenReplay]);
+    }, {
+      variant: 'primary',
+      label: () => (replay && !replay.paused ? 'Pause' : 'Play'),
+      disabled: () => !replay && (boardActive || !replays.length),
+    })
+    .button('Stop', stopReplay, { disabled: () => !replay })
+    .range('Replay time (s)', () => Number(((replay?.now ?? 0) / 1000).toFixed(1)), (seconds) => seekReplay(seconds * 1000), { min: 0, maxValue: () => (replay?.data.end ?? 0) / 1000 + 3, step: 0.1, disabled: () => !replay })
+    .number('Jump to (s)', () => Number(((replay?.now ?? 0) / 1000).toFixed(1)), (seconds) => seekReplay(seconds * 1000), { min: 0, step: 0.1, disabled: () => !replay })
+    .note(() => {
+      const r = replay?.data ?? replays[chosenReplay];
+      if (!r) return 'No replays recorded yet.';
+      const size = replayBytes(r);
+      const total = replays.reduce((sum, item) => sum + replayBytes(item), 0);
+      return `${(r.end / 1000).toFixed(1)}s · ${(size / 1024).toFixed(1)} KB · ${(total / 1024).toFixed(1)} KB saved in this browser (${replays.length} replays)`;
+    })
+    .button('Save file', saveReplayFile, { disabled: () => !replays.length, title: 'Download this replay to keep it or share it' })
+    .button('Open file', () => replayFile.click(), { disabled: () => boardActive && !replay, title: 'Watch a replay saved to a file' })
+    .append(replayFile);
+
+  const setup = panel.settings.group('Game');
+  setup.select('Timer', [0, 30, 120, 300].map((value) => ({ value, label: value ? `${value} seconds` : 'No timer' })), roundSeconds, (value) => { settings.roundSeconds = value; saveSettings(); }, { disabled: locked, hidden: isPuzzle });
+  setup.number('Chest mix preset', setting('forageLevel').get, (level) => { settings.forageLevel = Math.round(level); settings.chestRatios = undefined; saveSettings(); }, {
     min: 0,
     max: 15,
     disabled: locked,
-    hidden: () => isPuzzle(),
-    title: 'Sets which crate sizes are likely',
+    hidden: () => isPuzzle() || settings.mode === 'normal',
+    title: 'Changes chest spawn rates only',
   });
   bind(setup, 'Scramble', 'scramble', () => !isPuzzle());
 
@@ -501,13 +915,14 @@ export default (async ({ screen, input, panel, store, ticks }) => {
   bind(crateGroup, 'Fetish jar', 'fj');
   bind(crateGroup, 'Cursed chest', 'cc');
 
-  const ratios = panel.settings.group('Chest ratios', { columns: 3, hidden: () => settings.mode !== 'normal' });
+  const ratios = panel.settings.group('Chest ratios', { columns: 3, hidden: isPuzzle });
   (['1x1', '2x2', '3x2'] as const).forEach((label, i) =>
     ratios.number(
       label,
-      () => settings.normalRatios[i],
+      () => settings.mode === 'normal' ? settings.normalRatios[i] : (settings.chestRatios ?? CHEST_WEIGHTINGS[settings.forageLevel])[i],
       (value) => {
-        settings.normalRatios[i] = value;
+        if (settings.mode === 'normal') settings.normalRatios[i] = value;
+        else { settings.chestRatios ??= [...CHEST_WEIGHTINGS[settings.forageLevel]]; settings.chestRatios[i] = value; }
         saveSettings();
       },
       { min: 0, step: 0.0001, disabled: locked },
@@ -516,7 +931,8 @@ export default (async ({ screen, input, panel, store, ticks }) => {
   ratios.button(
     'Defaults',
     () => {
-      settings.normalRatios = [...NORMAL_RATIOS];
+      if (settings.mode === 'normal') settings.normalRatios = [...NORMAL_RATIOS];
+      else settings.chestRatios = undefined;
       saveSettings();
     },
     { disabled: locked, title: 'Rates of 0.65, 0.345 and 0.0047 as ratios, with the 3x2 doubled' },
@@ -590,7 +1006,7 @@ export default (async ({ screen, input, panel, store, ticks }) => {
   }
 
   /** Draws a piece with its image's top-left at view pixel (x, y). */
-  function drawPiece(piece: number, x: number, y: number, alpha = 1, frame = 0, now = ticks()): void {
+  function drawPiece(piece: number, x: number, y: number, alpha = 1, frame = 0, now = clock()): void {
     if (piece === EMPTY || (isCrate(piece) && !isCrateAnchor(piece))) return;
     if (isAnts(piece)) return drawAnts(piece, x, y, alpha, frame);
     if (isCrate(piece)) return drawCrate(piece, x, y, alpha, now);
@@ -806,14 +1222,40 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     ctx.restore();
   }
 
+  function advanceGame(now: number): void {
+    currentStep(now);
+    if (flight && now >= flight.start + flightLength()) {
+      if (flight.out) game.board.cells.fill(EMPTY);
+      flight = null;
+    }
+    stepMeter(now);
+    if (!boardActive) return;
+    timePassed = Math.max(0, now - startTime);
+    if (playing.length || flight) return;
+    if (!isPuzzle() && roundSeconds() > 0 && timePassed >= roundDuration()) finishScored();
+    else if (pendingNextBoard) newBoard();
+    else if (isPuzzle() && game.crateCount() === 0) { finishPuzzle(); outro(); }
+    else if (settings.mode === 'normal' && boardDone()) finishScored();
+    else if (settings.mode !== 'normal' && settings.mode !== 'puzzle' && settings.mode !== 'chaos' && boardDone()) {
+      if (replay?.data.v === 1) { newBoard(); return; }
+      pendingNextBoard = true;
+      timed.push({ effect: { kind: 'text', text: 'Great work!', size: 32, delay: 0 }, start: now });
+      outro(TIMING.outroDelay);
+    }
+  }
+
   function frame(events: InputEvent[]): void {
-    const now = ticks();
+    if (replay) advanceReplay();
+    const now = clock();
     screen.blit(img(cursed() ? 'background_cursed' : 'background'), 0, 0);
     const title = img(cursed() ? 'title_cursed' : 'title');
     screen.blit(title, Math.round((450 - title.width) / 2), Math.round((TOP - title.height) / 2));
 
-    if (boardActive && overBoard(input.mouse)) cursorFromMouse(input.mouse);
-    for (const event of events) {
+    recordInput(events);
+    const pointer = replay ? replay.mouse : input.mouse;
+    if (boardActive && overBoard(pointer)) cursorFromMouse(pointer);
+    // While watching a replay the player's own clicks and keys don't reach the board.
+    for (const event of replay ? [] : events) {
       // The client acts as the button goes down; left is anticlockwise, right clockwise.
       if (event.type === 'mousedown' && (event.button === 1 || event.button === 3) && boardActive && overBoard(event.pos)) {
         cursorFromMouse(event.pos);
@@ -821,24 +1263,14 @@ export default (async ({ screen, input, panel, store, ticks }) => {
       } else if (event.type === 'keydown') key(event.key);
     }
 
-    if (boardActive) {
-      timePassed = Math.max(0, now - startTime);
-      if (playing.length || flight) {
-        // Wait for the move to finish playing before calling anything over.
-      } else if (settings.mode === 'puzzle' && game.crateCount() === 0) {
-        finishPuzzle();
-        outro();
-      } else if (settings.mode === 'ci' && timePassed >= CI_DURATION) finishScored();
-      else if (settings.mode === 'normal' && boardDone()) finishScored();
-      // A Gauntlet board whose crates are all in makes way for the next one.
-      else if ((settings.mode === 'ci' || settings.mode === 'infinite') && boardDone()) newBoard();
-    }
+    if (!replay) advanceGame(now);
     if (boardActive || ended || flight) drawBoard(now);
     else drawTimed(now, 'text');
     if (!boardActive && !ended && !flight) bigText(['Paused']);
     if (ended && settings.mode === 'puzzle' && !flight) bigText(['Puzzle', 'Cleared']);
     stepMeter(now);
     if (settings.mode !== 'puzzle') drawBananas();
+    if (replay) drawReplayOverlay(now);
   }
 
   return { frame, dispose: () => sounds.dispose() };

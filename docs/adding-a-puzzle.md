@@ -55,7 +55,9 @@ All in `src/core/`:
   4/5 wheel). Keys are lower-case `KeyboardEvent.key` values, with `'space'` for the space bar.
   `input.mouse` is the cursor position. `within(pos, x1, x2, y1, y2)` tests a box.
 - **`store`** (`storage.ts`): `get(name, fallback)` and `set(name, value)` save to this browser,
-  separately for each puzzle.
+  separately for each puzzle. `addHistory(key, { score, ... })` keeps every finished game under a
+  settings key (the desktop games' score lists), and `historyGroup(panel, () => store.history(key), columns)`
+  (`history.ts`) shows the recent ones in the panel. The landing page backs everything up to a file.
 - **`ticks()`**: milliseconds since the puzzle opened, like `pygame.time.get_ticks()`.
 - **`Images.load(glob)`** (`assets.ts`): loads every image from an `import.meta.glob` by file name.
 - **`SoundBank`** (`audio.ts`): plays sounds by file name, with a volume.

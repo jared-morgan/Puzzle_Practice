@@ -25,7 +25,7 @@ const COLOUR_SET = new Set<string>(COLOURS);
 const FALLS_ALONE = new Set(['u', 'v', 'w', 'x', 'y', 'k', 'm', 'n', 'o', 'p', 'q']);
 const MULTI_CELL = new Set(['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j']);
 /** CI is cursed isle (Gauntlet) foraging; Normal plays it with normal foraging's scoring and crates. */
-export type Mode = 'puzzle' | 'ci' | 'infinite' | 'normal';
+export type Mode = 'puzzle' | 'ci' | 'infinite' | 'normal' | 'chaos';
 
 export interface Settings {
   mode: Mode;
@@ -45,6 +45,10 @@ export interface Settings {
   forageLevel: number;
   /** Normal mode's chest mix: relative chances of a 1x1, 2x2 and 3x2. */
   normalRatios: [number, number, number];
+  /** Session timer in seconds; zero plays until stopped. Optional for older replays. */
+  roundSeconds?: number;
+  /** Override the level's mix in Gauntlet and Chaos. */
+  chestRatios?: [number, number, number];
 }
 
 /** [bone boxes, jars, chests] cleared. */

@@ -177,6 +177,10 @@ export class HaulBoard {
   /** Set by a move, so the move's points are paid out once the board settles (haul/client/i.c). */
   moved = false;
 
+  /** Percent chance per new piece; remaining chance is split evenly between coins. */
+  gemRates: [number, number] = [200 / 308, 200 / 308];
+  chestReady: () => boolean = () => true;
+
   constructor(private readonly random: () => number) {}
 
   nextInt(n: number): number {
@@ -213,12 +217,14 @@ export class HaulBoard {
 
   /** A ruby or an emerald each come up 2 times in 308; otherwise one of the four coins (HaulBoard.getNextPiece). */
   nextPiece(): number {
-    let r = this.nextInt(304 + COLOURS - (300 % COLOURS));
-    if (r < 2) return RUBY;
-    r -= 2;
-    if (r < 2) return EMERALD;
-    r -= 2;
-    return r % COLOURS;
+    if (this.gemRates.every((rate) => rate === 200 / 308)) {
+      const draw = this.nextInt(308);
+      return draw < 2 ? RUBY : draw < 4 ? EMERALD : (draw - 4) % COLOURS;
+    }
+    const r = this.random() * 100;
+    if (r < this.gemRates[0]) return RUBY;
+    if (r < this.gemRates[0] + this.gemRates[1]) return EMERALD;
+    return Math.floor(((r - this.gemRates[0] - this.gemRates[1]) / (100 - this.gemRates[0] - this.gemRates[1])) * COLOURS);
   }
 
   /** Empty squares above row y in column x before the next piece (DropBoard.getDropDistance). */
@@ -358,7 +364,7 @@ export class HaulBoard {
       }
     }
     // A waiting chest comes in instead of the coins, if there's a gap wide and deep enough.
-    if (this.chestList.length && Array.from({ length: W }, (_, x) => this.riseDistance(x, -1)).some((d) => d > 0)) {
+    if (this.chestReady() && this.chestList.length && Array.from({ length: W }, (_, x) => this.riseDistance(x, -1)).some((d) => d > 0)) {
       const chest = this.chestList[0];
       const at = this.findChestPosition(chest.size);
       if (at !== -1) {

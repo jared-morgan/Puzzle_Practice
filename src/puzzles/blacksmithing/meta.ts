@@ -8,6 +8,6 @@ export default {
   width: 450,
   height: 600,
   order: 4,
-  credits: 'Rules, art and sounds from the Puzzle Pirates client (Three Rings). Original puzzle design by Aenor.',
+  credits: 'Based on Puzzle Pirates (Three Rings). Original puzzle design by Aenor.',
   thumbnail,
 } satisfies PuzzleMeta;
