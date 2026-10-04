@@ -1,97 +1,88 @@
-// Vampire Carp (Vampire_Carp.pyw and gui_functions.py), rebuilt on the shared core.
+// Vampire Carp: the Vampire Lair's carpentry, rebuilt from the Puzzle Pirates client (duty/carpentry
+// in vampirate mode, build 20260909165753). The rules are in board.ts and game.ts; this file is
+// CarpentryPanel and CarpentryBoardView with their sprites: the client's art, the wood deck that
+// scrolls, holes with splintered ends that blink and grow, pieces cut from the wood textures and
+// outlined by state, the putty bucket and its blood, rattling and flying pieces, the floating
+// ratings and the star meter. The canvas is the 450x600 puzzle panel; settings and scores are in
+// the side panel.
 //
-// The frame runs in the same phases as the desktop loop, and every random draw happens in the
-// same order with the same seeds, so a seed from Seeded mode deals the same holes and pieces in
-// both versions. State that the original kept in parallel lists per hole lives on Hole objects.
-import { SoundBank } from '../../core/audio';
+// On top of the client's game are the Vampire Carp simulator's modes and features: two-minute
+// sessions scored +2 / +1 / -1, Ghost (placed pieces hidden), Speed (small holes, see game.ts),
+// Unlimited, seeds, cheat pieces, pause, Dismiss, best scores, and the end-of-session stats.
 import { Images } from '../../core/assets';
+import { SoundBank } from '../../core/audio';
 import { copyText } from '../../core/clipboard';
-import { pygameFont } from '../../core/fonts';
-import { within, type InputEvent, type Point } from '../../core/input';
+import { loadFont, pygameFont } from '../../core/fonts';
+import type { InputEvent } from '../../core/input';
 import type { PuzzleFactory } from '../../core/puzzle';
 import { floatStr, pyRound } from '../../core/py';
 import { PyRandom } from '../../core/pyrandom';
-import { THREE_PIECE_HOLES, TWO_PIECE_HOLES, TWO_PIECE_HOLES_WITH_X } from './holes';
+import { BoardRandom, type Cell, Piece, PIECE_LETTERS } from './board';
 import {
-  applyPiece,
-  applyPutty,
-  checkPlacement,
-  copyGrid,
-  createHole,
-  createSmallHole,
-  emptyGrid,
-  type Grid,
-  holeComplete,
-  holesWith,
-  type NewHole,
-  type Piece,
-  PIECE_WEIGHTS_NO_PUTTY,
-  PIECES_NO_PUTTY,
-  puttyFill,
-  snap,
-  tearHole,
-} from './shapes';
+  CELL,
+  Game,
+  type HoleSprite,
+  newStats,
+  type PieceSprite,
+  type SoundName,
+  type Stats,
+  TEXT_MS,
+  TOOLBOX_AT,
+  VIEW_H,
+  VIEW_W,
+  VIEW_X,
+  VIEW_Y,
+} from './game';
+import { PIECES_NO_PUTTY } from './shapes';
+import delarobbUrl from './delarobb.ttf?url';
 
 const imageUrls = import.meta.glob<string>('./media/*.png', { eager: true, query: '?url', import: 'default' });
 const soundUrls = import.meta.glob<string>('./sounds/*.mp3', { eager: true, query: '?url', import: 'default' });
 
+const FONT = 'Delarobb';
 const WHITE = '#ffffff';
 const PURPLE = 'rgb(153, 51, 204)';
-const fontLarge = pygameFont(48);
 const statsFont = pygameFont(26);
 const statsFontSmall = pygameFont(14);
 
-const PIECES = ['f', 'i', 'l', 'n', 'p', 't', 'u', 'v', 'w', 'x', 'y', 'z', 'b'];
-const PIECE_WEIGHTS = [14, 2, 8, 8, 22, 7, 4, 4, 4, 3, 14, 4, 1];
-const ASYM_PIECES = ['y', 'n', 'l', 'i'];
-const MAX_HOLES = 17;
+/** The deck's planks: 108x54 tiles, every other row half a plank over (CarpentryBoardView.g). */
+const PLANK_W = 6 * CELL;
+const PLANK_H = 3 * CELL;
+const PLANKS = 7;
+/** A piece texture is 90 wide (wood_pieces), the putty bucket 56x68 (putty), its spout 50px up. */
+const TEXTURE_W = 5 * CELL;
+const PUTTY_W = 56;
+const PUTTY_H = 68;
+const PUTTY_SPOUT = 50;
+/**
+ * The two looks: the Vampire Lair's dark "_vampirate" art, or normal carpentry's. Each has its
+ * own piece outline colours by state (carpentry/r.l and r.k) and its own poured putty (s.H, s.G).
+ */
+type Look = 'vampire' | 'normal';
+const LOOKS: Record<Look, { suffix: string; outlines: string[]; putty: string }> = {
+  vampire: { suffix: '_vampirate', outlines: ['#7c6200', '#ebd7aa', '#c273ff', '#ff0000', '#8750b2', '#030303'], putty: 'rgb(92, 11, 20)' },
+  normal: { suffix: '', outlines: ['#7c6200', '#ffff00', '#00afef', '#ff0000', '#005574', '#030303'], putty: 'rgb(198, 145, 104)' },
+};
+/** The star meter (puzzle/client/d) at (5, 185) in the view: 9 stars of 21px, 19px apart. */
+const STAR = 21;
+const STAR_STEP = 19;
+const STARS = 9;
+const STARS_AT: Cell = [VIEW_X + 5, VIEW_Y + 185];
+/** The meter moves 1% every 45ms (9 stars x 500 / 100). */
+const STAR_MS_PER_PCT = (STARS * 500) / 100;
+/** "Nice work!" (m.level_up), in yellow outlined blue-grey (CarpentryBoardView.b(String)). */
+const LEVEL_TEXT = 'Nice work!';
+
 const SESSION_SHORT = 120000;
 const SESSION_LONG = 999999999999999999;
-const MAX_SEED = 999999999999999;
+/** Board seeds are 48-bit, like java.util.Random's. */
+const MAX_SEED = 2 ** 48 - 1;
 
-/** play_sound numbers from sounds.py. */
-const SOUNDS: Record<number, string> = {
-  1: 'audio_fanfare',
-  2: 'audio_hole_craftsmanship',
-  3: 'audio_hole_masterpiece',
-  4: 'audio_hole_pigs_breakfast',
-  5: 'audio_piece_place_perfect',
-  6: 'audio_putty_use',
-  8: 'audio_piece_rattle_warning_slow',
-  9: 'audio_piece_rattle_warning_fast',
-  10: 'audio_hole_blinky_warning_slow',
-  11: 'audio_hole_blinky_warning_medium',
-  12: 'audio_hole_blinky_warning_fast',
-  13: 'audio_piece_fly_off',
-  14: 'audio_hole_grows',
-  15: 'warning',
-  16: 'audio_piece_place_overlap',
-  17: 'audio_pb_sound',
-  18: 'audio_options_change',
-};
+/** Jared's sounds besides the client's: the 15-second warning, a new best, and option changes. */
+type ExtraSound = 'warning' | 'audio_pb_sound' | 'audio_options_change';
 
-/** Cheat pieces in the layout of the original's cheats_ui.png, with the putty ('b') on a row of its own. */
-const CHEAT_ROWS = [
-  ['p', 'f', 'y', 't'],
-  ['w', 'u', 'n', 'v'],
-  ['l', 'z', 'x', 'i'],
-  ['b'],
-];
-
-/**
- * Where each hole comes from when the board scrolls by [dx, dy]: the hole that was at that
- * position ('h') or a newly made one ('t'), and the index the original used for each.
- */
-const SCROLL_SOURCES: Record<string, ['h' | 't', number][]> = {
-  '198,0': [['t', 1], ['h', 0], ['t', 3], ['h', 2]],
-  '198,342': [['t', 3], ['t', 1], ['t', 2], ['h', 0]],
-  '198,-342': [['t', 0], ['h', 2], ['t', 1], ['t', 3]],
-  '-198,0': [['h', 1], ['t', 0], ['h', 3], ['t', 2]],
-  '-198,342': [['t', 0], ['t', 2], ['h', 1], ['t', 3]],
-  '-198,-342': [['h', 3], ['t', 1], ['t', 2], ['t', 0]],
-  '0,342': [['t', 2], ['t', 3], ['h', 0], ['h', 1]],
-  '0,-342': [['h', 2], ['h', 3], ['t', 0], ['t', 1]],
-};
+/** Cheat pieces in the layout of the simulator's cheats_ui.png, the putty ('b') on a row of its own. */
+const CHEAT_ROWS = [['p', 'f', 'y', 't'], ['w', 'u', 'n', 'v'], ['l', 'z', 'x', 'i'], ['b']];
 
 interface Config {
   volume: number;
@@ -103,6 +94,7 @@ interface Config {
   unlimited: boolean;
   /** Index into PIECES_NO_PUTTY, or 12 for any piece. */
   speedLetter: number;
+  look: Look;
 }
 
 const DEFAULT_CONFIG: Config = {
@@ -114,62 +106,11 @@ const DEFAULT_CONFIG: Config = {
   speedSize: 3,
   unlimited: false,
   speedLetter: 3,
+  look: 'vampire',
 };
 
-/** Default keys from keybinds.yaml: flip, rotate anticlockwise, rotate clockwise, toolbox 1–3, place. */
-const KEYS = ['space', 'x', 'c', '1', '2', '3', 'z'];
-
-interface PlacedPiece extends Piece {
-  x: number;
-  y: number;
-}
-
-class Hole {
-  grid: Grid = emptyGrid();
-  /** The shape as dealt (or after tearing); what's drawn as black cells. */
-  original: Grid = emptyGrid();
-  prob: Grid = emptyGrid();
-  edges: Grid = emptyGrid();
-  pieces: PlacedPiece[] = [];
-  putty: [number, number][][] = [];
-  /** Pieces placed into this hole, counting ones that later flew out (holes_pieces_total). */
-  total = 0;
-  /** Placements elsewhere since this hole was last touched; at 8 a piece flies out or the hole tears. */
-  focus = 0;
-  focusPast = 0;
-  teared = 0;
-  completed = false;
-  generated = false;
-  ready = false;
-  startedAt = 0;
-  needed: string[] = [];
-  code = '';
-
-  /** Starts over with a freshly dealt hole. */
-  deal(hole: NewHole): void {
-    this.grid = hole.grid;
-    this.original = copyGrid(hole.grid);
-    this.prob = hole.prob;
-    this.edges = hole.edges;
-    this.clearPieces();
-  }
-
-  clearPieces(): void {
-    this.pieces = [];
-    this.putty = [];
-    this.total = 0;
-    this.focus = 0;
-    this.teared = 0;
-    this.startedAt = 0;
-  }
-}
-
-interface FlyingPiece {
-  piece: Piece;
-  pos: [number, number];
-  end: [number, number];
-  step: [number, number];
-}
+/** Keys from the simulator's keybinds.yaml: flip, rotate anticlockwise, clockwise, toolbox 1-3, place. */
+const KEYS = { flip: 'space', ccw: 'x', cw: 'c', slots: ['1', '2', '3'], place: 'z' };
 
 interface SessionTable {
   sessions: number;
@@ -186,1100 +127,458 @@ interface SessionTable {
   average_pieces: number;
 }
 
+/** A 2x2 orientation matrix [a, b, c, d] mapping base offsets to the piece's (x' = a x + c y, y' = b x + d y). */
+function orientMatrix(o: number): [number, number, number, number] {
+  let m: [number, number, number, number] = o & 1 ? [0, 1, 1, 0] : [1, 0, 0, 1];
+  if (o & 4) m = [-m[0], m[1], -m[2], m[3]];
+  if (o & 2) m = [m[0], -m[1], m[2], -m[3]];
+  return m;
+}
+
+/** a then b (b after a). */
+function compose(b: number[], a: number[]): [number, number, number, number] {
+  return [b[0] * a[0] + b[2] * a[1], b[1] * a[0] + b[3] * a[1], b[0] * a[2] + b[2] * a[3], b[1] * a[2] + b[3] * a[3]];
+}
+
+/** ImageUtil.createTracedImage: a 1px outline of `colour` around the image's opaque pixels. */
+function traced(img: CanvasImageSource, sx: number, w: number, h: number, colour: [number, number, number]): HTMLCanvasElement {
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d')!;
+  ctx.drawImage(img, sx, 0, w, h, 0, 0, w, h);
+  const data = ctx.getImageData(0, 0, w, h);
+  const px = data.data;
+  const opaque = (x: number, y: number) => x >= 0 && y >= 0 && x < w && y < h && px[(y * w + x) * 4 + 3] > 0;
+  const edge: number[] = [];
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      if (opaque(x, y)) continue;
+      if (opaque(x - 1, y) || opaque(x + 1, y) || opaque(x, y - 1) || opaque(x, y + 1)) edge.push((y * w + x) * 4);
+    }
+  }
+  for (const i of edge) {
+    px[i] = colour[0];
+    px[i + 1] = colour[1];
+    px[i + 2] = colour[2];
+    px[i + 3] = 255;
+  }
+  ctx.putImageData(data, 0, 0);
+  return canvas;
+}
+
+/**
+ * The red blink outline of a hole: Graphics.draw(Area) with a 1px pen, which runs along the
+ * top and left pixels of the shape and just outside its right and bottom (carpentry/p.a).
+ */
+function holeOutline(black: HTMLCanvasElement): HTMLCanvasElement {
+  const w = black.width;
+  const h = black.height;
+  const src = black.getContext('2d')!.getImageData(0, 0, w, h).data;
+  const opaque = (x: number, y: number) => x >= 0 && y >= 0 && x < w && y < h && src[(y * w + x) * 4 + 3] > 0;
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d')!;
+  ctx.fillStyle = '#ff0000';
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      if (!opaque(x, y)) continue;
+      if (!opaque(x, y - 1) || !opaque(x - 1, y)) ctx.fillRect(x, y, 1, 1);
+      if (!opaque(x + 1, y)) ctx.fillRect(x + 1, y, 1, 1);
+      if (!opaque(x, y + 1)) ctx.fillRect(x, y + 1, 1, 1);
+    }
+  }
+  return canvas;
+}
+
+const hexRgb = (hex: string): [number, number, number] => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16)) as [number, number, number];
+
 export default (async ({ screen, input, panel, store, ticks }) => {
-  const images = await Images.load(imageUrls);
+  const [images] = await Promise.all([Images.load(imageUrls), loadFont(FONT, delarobbUrl)]);
   const img = (name: string) => images.get(name);
   const sounds = new SoundBank(soundUrls);
-  const play = (n: number) => SOUNDS[n] && sounds.play(SOUNDS[n]);
-  /** The original's module-level `random`, reseeded exactly where it reseeded. */
-  const rng = new PyRandom();
+  const ctx = screen.ctx;
+
+  // The putty bucket by state, for each look: upright for 0-1, pouring for 2-3, traced in the state's colour.
+  const puttyImages = Object.fromEntries(
+    (Object.keys(LOOKS) as Look[]).map((look) => [
+      look,
+      [0, 1, 2, 3].map((s) => traced(img(`putty${LOOKS[look].suffix}`), s < 2 ? 0 : PUTTY_W, PUTTY_W, PUTTY_H, hexRgb(LOOKS[look].outlines[s]))),
+    ]),
+  ) as Record<Look, HTMLCanvasElement[]>;
 
   const config: Config = { ...DEFAULT_CONFIG, ...store.get<Partial<Config>>('config', {}) };
+  const look = () => LOOKS[config.look] ?? LOOKS.vampire;
+  /** The art for the chosen look, e.g. art('toolbox') is toolbox_vampirate.png in the vampire look. */
+  const art = (name: string) => img(`${name}${look().suffix}`);
   const saveConfig = () => store.set('config', config);
   const bestScores = store.get<Record<string, number>>('bestScores', {});
   sounds.setVolume(config.volume / 6);
 
-  // ---- Game state (names follow the original where that helps cross-reference) ----
-  const holes = [new Hole(), new Hole(), new Hole(), new Hole()];
-  let tempHoles: NewHole[] = [blankHole(), blankHole(), blankHole(), blankHole()];
-  let toolbox: string[] = ['', '', ''];
-  let toolboxRotation = [0, 0, 0];
-  let toolboxFlip = [0, 0, 0];
-  let cursor: Piece = { letter: '', rotation: 0, flip: 0 };
-  let toolboxBlank = 0;
-  let puttyInToolbox = false;
-  /** [hole, x, y] of a piece picked back up for a second chance, or hole -1. */
-  let cursorLocked: [number, number, number] = [-1, 1, 1];
-  let lastHole = -1;
-  let holesOrder = [0, 1, 2, 3];
-  /** [flip, rotate anticlockwise, rotate clockwise, slot 1, slot 2, slot 3]: 1 from the mouse, 2 from the keyboard. */
-  const actions = [0, 0, 0, 0, 0, 0];
-  let soundRefresh = 0;
-  const soundHierarchy = [0, 0, 0, 0];
+  // ---- Session ----
+  let game: Game | null = null;
+  let stats: Stats = newStats();
   let boardActive = false;
-  let boardReset = false;
-  let startProcedure = false;
+  let startTime = 0;
+  let pauseTime = 0;
   let timePassed = 0;
   let warningPlayed = false;
-  let scoreFull = [0, 0, 0];
-  let scoreTotal = 0;
-  let startTime = 0;
-  /** [held, when, held long enough that releasing places the piece]. */
-  let mouseHeld: [boolean, number, boolean] = [false, 0, false];
-  let legalMove = false;
-  let perfectMove = 0;
-  let speedHoleCompleted = false;
-  const jiggleTimer = [0, 0];
-  const jiggleOffset = [
-    [0, 0],
-    [0, 0],
-  ];
-  let holeFlash = [1, 1, 1, 4, 0];
-  let pauseTime = 0;
+  let boardIndex = 0;
+  let seeded = false;
+  let seed = Math.floor(Math.random() * MAX_SEED);
+  let seedAtStart = seed;
+  let speedRng = new PyRandom();
   let cheatsUsed = false;
   let sightUsed = false;
-  let completionText = [
-    [0, 0, 0, 0],
-    [0, 0, 0, 0],
-  ];
-  const COMPLETION_LOCATIONS = [
-    [25, 125],
-    [200, 125],
-    [25, 470],
-    [200, 470],
-  ];
-  let flying: (FlyingPiece | null)[] = [null, null, null];
-  let flyTimer = 0;
-  let backgrounds = [
-    [18, 34],
-    [774, 628],
-    [18, 628],
-    [774, 34],
-  ];
-  let backgroundsBackup = backgrounds.map((p) => [...p]);
-  /** vector, start time, active, duration, current offset */
-  let scroll = { vec: [0, 0], start: 0, active: false, duration: 1000, offset: [0, 0] };
-  let scrollCorner = [1, 1, 1, 1];
-  let startScroll = false;
-  let endScroll: [boolean, number] = [false, 0];
-  let holesCreated = 0;
-  let holesFilled = 0;
-  let holesFilledTotal = 0;
-  let timeAnimating = 0;
   let scoreCounting = true;
-  let holesSeed = rng.randintN(0, MAX_SEED);
-  let piecesSeed = rng.randintN(0, MAX_SEED);
-  let rotationSeed = rng.randintN(0, MAX_SEED);
-  let seedsAtStart = [holesSeed, piecesSeed, rotationSeed];
-  let seeded = false;
-  let piecesUntilRefresh = 0;
-  let codesInUse = ['', '', '', ''];
-  let requiredLetter = '';
-  let numToolbox: number[] = [];
   let endProcedureComplete = false;
   let endProcedureKey = '';
   let sessionScoresComputed = false;
   const sessionScores: Record<string, SessionTable> = {};
-  let finalAverageFocus = 0;
-
-  // Stats for the end-of-session table.
-  let piecesFound: Record<string, number> = {};
-  let keyboardVsMouse: [string, number, number] = ['H', 0, 0];
-  let piecesPlaced = 0;
-  let flipCount = 0;
-  let spinCount = 0;
-  let holeTimers = [0, 999999999];
-  let piecesReplaced = 0;
-  let scrollsCount = [0, 0];
-  let averageFocus: number[] = [0];
-  let pDrought = [0, 0];
-
   let bestScoresKey = '';
   let bestScore = 0;
   let loadBestScore = true;
+  let pendingSounds: { at: number; name: SoundName }[] = [];
+  let meterShown = 0;
+  let meterAt = 0;
+  let lastMouse: Cell = [-1, -1];
   const sessionTime = () => (config.unlimited ? SESSION_LONG : SESSION_SHORT);
+  const score = () => -stats.grades[0] + stats.grades[1] + stats.grades[2] * 2;
 
-  function blankHole(): NewHole {
-    return { grid: emptyGrid(), prob: emptyGrid(), edges: emptyGrid() };
+  function play(name: SoundName | ExtraSound): void {
+    sounds.play(name.startsWith('audio_') || name === 'warning' ? name : `audio_${name}`);
   }
 
-  function smallHoleTable(): ReturnType<typeof holesWith> {
-    if (config.speedSize === 2) return requiredLetter === 'x' ? [...TWO_PIECE_HOLES_WITH_X] : holesWith(TWO_PIECE_HOLES, requiredLetter);
-    return holesWith(THREE_PIECE_HOLES, requiredLetter);
+  /** The board for this point in the session: seeded sessions deal seed, seed + 1, ... */
+  function newBoard(): void {
+    const boardSeed = seeded ? seedAtStart + boardIndex : Math.floor(Math.random() * MAX_SEED);
+    const speed = config.speed ? { holes: config.speedHoles, size: config.speedSize, letter: config.speedLetter } : null;
+    game = new Game(
+      boardSeed,
+      new BoardRandom(BigInt(boardSeed) ^ 0x2545f491n),
+      stats,
+      {
+        sound: (name, delay = 0) => (delay ? pendingSounds.push({ at: timePassed + delay, name }) : play(name)),
+        levelDone: () => {
+          boardIndex++;
+          newBoard();
+        },
+      },
+      speed,
+      speedRng,
+      timePassed,
+    );
+    meterShown = 0;
+    meterAt = timePassed;
   }
 
-  function makeSmallHole(z: number): void {
-    const [small, next] = createSmallHole(rng, config.speedSize, codesInUse, smallHoleTable(), holesSeed);
-    holesSeed = next;
-    const hole = holes[z];
-    hole.grid = small.grid;
-    hole.original = copyGrid(small.grid);
-    hole.prob = small.prob;
-    hole.edges = small.edges;
-    hole.needed = small.needed;
-    codesInUse[z] = small.code;
-  }
-
-  function countFound(letter: string): void {
-    piecesFound[letter] = (piecesFound[letter] ?? 0) + 1;
-    if (letter === 'p') {
-      if (pDrought[1] > pDrought[0]) pDrought[0] = pDrought[1];
-      pDrought[1] = 0;
-    } else {
-      pDrought[1]++;
-    }
-  }
-
-  /** Seeded draw of a new toolbox piece into `slot` (normal mode). */
-  function dealSeededPiece(slot: number): void {
-    rng.seed(piecesSeed);
-    piecesSeed++;
-    if (puttyInToolbox) {
-      toolbox[slot] = rng.choiceWeighted(PIECES_NO_PUTTY, PIECE_WEIGHTS_NO_PUTTY);
-    } else {
-      toolbox[slot] = rng.choiceWeighted(PIECES, PIECE_WEIGHTS);
-      if (toolbox[slot] === 'b') puttyInToolbox = true;
-    }
-    countFound(toolbox[slot]);
-  }
-
-  function randomOrientation(slot: number): void {
-    toolboxRotation[slot] = ASYM_PIECES.includes(toolbox[slot]) ? rng.choicesUniform([0, 180]) : rng.choicesUniform([0, 90, 180, 270]);
-    toolboxFlip[slot] = rng.choicesUniform([0, 1]);
-  }
-
-  /** Called after a piece leaves the toolbox and lands: refills the gap in normal mode. */
-  function refillAfterPlacement(): void {
-    if (toolboxBlank < 0 || config.speed) return;
-    dealSeededPiece(toolboxBlank);
-    rng.seed(rotationSeed);
-    rotationSeed++;
-    randomOrientation(toolboxBlank);
-    toolboxBlank = -1;
-  }
-
-  function recordFocusAverage(): void {
-    let sum = 0;
-    let count = 0;
-    for (const hole of holes) {
-      if (!hole.completed) {
-        sum += hole.total;
-        count++;
-      }
-    }
-    averageFocus.push(sum / count);
-  }
-
-  /** Every other live hole loses a little attention when a piece lands in hole z. */
-  function shiftFocus(z: number): void {
-    holes.forEach((hole, a) => {
-      if (a === z) {
-        hole.focusPast = hole.focus;
-        hole.focus = 0;
-      } else if (!hole.completed && hole.generated) {
-        hole.focusPast = hole.focus;
-        hole.focus++;
-      }
-    });
-  }
-
-  const slotOf = (i: number) => ((i % 3) + 3) % 3;
-
-  /**
-   * The seed as three 15-digit numbers. The desktop version didn't zero-pad, so seeds with
-   * a short part couldn't be pasted back; padded seeds paste into both versions.
-   */
-  function seedString(): string {
-    return seedsAtStart.map((s) => String(s).padStart(15, '0')).join('');
-  }
-
-  // ---- Clicks on the board ----
-
-  function holeBounds(z: number): [number, number, number, number] {
-    return [z === 0 || z === 2 ? 18 : 235, z === 0 || z === 2 ? 234 : 432, z === 0 || z === 1 ? 33 : 411, z === 0 || z === 1 ? 231 : 591];
-  }
-
-  function boardClick(pos: Point, kind: 'D' | 'U' | 'K'): void {
-    if (cursorLocked[0] === -1) {
-      for (let slot = 0; slot < 3; slot++) {
-        if (within(pos, 90 + 91 * slot, 180 + 91 * slot, 288, 379)) {
-          actions[3 + slot] = 1;
-          keyboardVsMouse[1]++;
-          if (kind === 'D') mouseHeld = [true, ticks(), false];
-          break;
-        }
-      }
-    }
-    if (scroll.active) return;
-    for (let z = 0; z < 4; z++) {
-      const [x1, x2, y1, y2] = holeBounds(z);
-      if (!within(pos, x1, x2, y1, y2) || !legalMove) continue;
-      const hole = holes[z];
-      if (cursor.letter !== '' && !hole.completed) {
-        if (cursorLocked[0] === -1 || cursorLocked[0] === z) placePiece(z, pos);
-      } else if (lastHole === z && hole.pieces.length > 0) {
-        // Second chance: pick the piece just placed back up, locked to this hole.
-        if (kind === 'D') mouseHeld = [true, ticks(), false];
-        piecesUntilRefresh++;
-        const last = hole.pieces.pop()!;
-        cursorLocked = [z, last.x, last.y];
-        cursor = { letter: last.letter, rotation: last.rotation, flip: last.flip };
-        hole.edges = applyPiece(hole.grid, cursor, last.x, last.y, z, false);
-        hole.total--;
-      }
-    }
-  }
-
-  function placePiece(z: number, pos: Point): void {
-    const hole = holes[z];
-    let [x, y] = snap(pos);
-    piecesUntilRefresh--;
-    if (cursorLocked[0] === -1) {
-      if (hole.total === 0) hole.startedAt = timePassed;
-      piecesPlaced++;
-    } else {
-      piecesReplaced++;
-    }
-    if (cursor.letter === 'b') {
-      const [works, fills] = puttyFill(hole.grid, x, y, z);
-      if (!works) return;
-      holeFlash = [1, 1, 1, 4, timePassed];
-      puttyInToolbox = false;
-      hole.total++;
-      if (cursorLocked[0] === -1) recordFocusAverage();
-      soundRefresh = 1;
-      play(6);
-      lastHole = -1;
-      shiftFocus(z);
-      refillAfterPlacement();
-      hole.pieces.push({ ...cursor, x, y });
-      applyPutty(hole.grid, fills, true);
-      hole.putty.push(fills);
-      cursor = { letter: '', rotation: 0, flip: 0 };
-      return;
-    }
-    holeFlash = [1, 1, 1, 4, timePassed];
-    hole.total++;
-    if (cursorLocked[0] === -1) {
-      recordFocusAverage();
-      soundRefresh = 1;
-    }
-    play(perfectMove === 5 ? 5 : 16);
-    if (cursorLocked[0] === -1) {
-      mouseHeld = [false, 0, false];
-      lastHole = z;
-      shiftFocus(z);
-      refillAfterPlacement();
-    } else {
-      // A second-chance piece can only move one cell from where it was.
-      x = Math.max(cursorLocked[1] - 18, Math.min(cursorLocked[1] + 18, x));
-      y = Math.max(cursorLocked[2] - 18, Math.min(cursorLocked[2] + 18, y));
-      lastHole = -1;
-      cursorLocked[0] = -1;
-      mouseHeld = [false, 0, false];
-    }
-    hole.pieces.push({ ...cursor, x, y });
-    hole.edges = applyPiece(hole.grid, cursor, x, y, z, true);
-    cursor = { letter: '', rotation: 0, flip: 0 };
-  }
-
-  /** Handles every click, unlike the original, which kept only the last one in a frame. */
-  function handleEvents(events: InputEvent[]): void {
-    for (const event of events) {
-      if (event.type === 'mousedown') {
-        handleClick(event.button, event.pos, event.button === 1 ? 'D' : 'R');
-      } else if (event.type === 'keydown' && boardActive) {
-        for (let x = 0; x < 6; x++) {
-          if (event.key !== KEYS[x]) continue;
-          if (x >= 3 && cursorLocked[0] === -1) {
-            actions[x] = 2;
-            keyboardVsMouse[2]++;
-          } else if (x <= 2) {
-            actions[x] = 1;
-          }
-        }
-        if (event.key === KEYS[6]) {
-          mouseHeld = [false, 0, false];
-          handleClick(1, input.mouse, 'K');
-        }
-      } else if (event.type === 'mouseup' && mouseHeld[2] && event.button === 1) {
-        // Drag and drop: releasing after holding a piece for 100ms places it.
-        mouseHeld = [false, 0, false];
-        handleClick(1, event.pos, 'U');
-      }
-    }
-  }
-
-  function handleClick(button: number, pos: Point, kind: 'D' | 'R' | 'K' | 'U'): void {
-    if (button === 1 && boardActive) boardClick(pos, kind as 'D' | 'U' | 'K');
-    if (boardActive && kind === 'R') {
-      if (button === 3) actions[0] = 1;
-      else if (button === 4) actions[1] = 1;
-      else if (button === 5 || button === 2) actions[2] = 1;
-    }
-  }
-
-  function applyActions(): void {
-    if (mouseHeld[0] && !mouseHeld[2] && ticks() > mouseHeld[1] + 100) mouseHeld[2] = true;
-    if (actions[0] === 1) {
-      cursor.flip = cursor.flip === 0 ? 1 : 0;
-      cursor.rotation = 360 - cursor.rotation;
-      actions[0] = 0;
-      flipCount++;
-    }
-    if (actions[1] === 1) {
-      if (cursor.rotation === 360) cursor.rotation = 0;
-      cursor.rotation += 90;
-      actions[1] = 0;
-      spinCount++;
-    }
-    if (actions[2] === 1) {
-      if (cursor.rotation === 0) cursor.rotation = 360;
-      cursor.rotation -= 90;
-      actions[2] = 0;
-      spinCount++;
-    }
-    for (let slot = 0; slot < 3; slot++) {
-      const action = actions[3 + slot];
-      if (action === 0) continue;
-      const take = () => {
-        cursor = { letter: toolbox[slot], rotation: toolboxRotation[slot], flip: toolboxFlip[slot] };
-        toolbox[slot] = '';
-        toolboxBlank = slot;
-        lastHole = -1;
-      };
-      if (cursor.letter === '') {
-        take();
-      } else {
-        // Put the piece in hand back where it came from; the keyboard then takes the chosen slot.
-        const back = slotOf(toolboxBlank);
-        toolbox[back] = cursor.letter;
-        toolboxRotation[back] = cursor.rotation;
-        toolboxFlip[back] = cursor.flip;
-        cursor = { letter: '', rotation: 0, flip: 0 };
-        if (action === 2) take();
-      }
-      actions[3 + slot] = 0;
-    }
-  }
-
-  // ---- Starting a session or a new board ----
-
-  function startOrReset(): void {
-    if (startProcedure) {
-      holesFilledTotal = 0;
-      sessionScoresComputed = false;
-      cheatsUsed = false;
-      if (!seeded) {
-        holesSeed = rng.randintN(0, MAX_SEED);
-        piecesSeed = rng.randintN(0, MAX_SEED);
-        rotationSeed = rng.randintN(0, MAX_SEED);
-      } else {
-        [holesSeed, piecesSeed, rotationSeed] = seedsAtStart;
-        cheatsUsed = true;
-      }
-      seedsAtStart = [holesSeed, piecesSeed, rotationSeed];
-      piecesFound = {};
-      keyboardVsMouse = ['H', 0, 0];
-      piecesReplaced = 0;
-      piecesPlaced = 0;
-      flipCount = 0;
-      spinCount = 0;
-      timeAnimating = 0;
-      scrollsCount = [0, 0];
-      averageFocus = [0];
-      pDrought = [0, 0];
-      holeTimers = [0, 999999999];
-      sightUsed = false;
-      startTime = ticks();
-      timePassed = 0;
-      scoreFull = [0, 0, 0];
-      scoreTotal = 0;
-      pauseTime = 0;
-      endProcedureComplete = false;
-      if (config.unlimited) cheatsUsed = true;
-    }
-    holesOrder = [0, 1, 2, 3];
-    flying = [null, null, null];
-    completionText = [
-      [0, 0, 0, 0],
-      [0, 0, 0, 0],
-    ];
-    jiggleTimer[0] = jiggleTimer[1] = 0;
-    holeFlash = [-1, -1, -1, 4, 0];
-    mouseHeld = [false, 0, false];
-    puttyInToolbox = false;
-    for (const hole of holes) {
-      hole.grid = emptyGrid();
-      hole.original = emptyGrid();
-      hole.edges = emptyGrid();
-      hole.clearPieces();
-      hole.focusPast = 0;
-      hole.generated = false;
-      hole.ready = true;
-      hole.needed = [];
-    }
+  function startSession(): void {
+    stats = newStats();
+    cheatsUsed = seeded || config.unlimited;
+    sightUsed = false;
+    if (!seeded) seed = Math.floor(Math.random() * MAX_SEED);
+    seedAtStart = seed;
+    speedRng = seeded ? new PyRandom(seed) : new PyRandom();
+    boardIndex = 0;
+    startTime = ticks();
+    timePassed = 0;
+    pauseTime = 0;
     warningPlayed = false;
-    cursor = { letter: '', rotation: 0, flip: 0 };
-    toolboxBlank = -1;
-    cursorLocked = [-1, 1, 1];
-    lastHole = -1;
-    scrollCorner = [1, 1, 1, 1];
-    backgrounds = [
-      [18, 34],
-      [774, 628],
-      [18, 628],
-      [774, 34],
-    ];
-    backgroundsBackup = backgrounds.map((p) => [...p]);
-    holesCreated = 0;
-    holesFilled = 0;
-    rng.seed(holesSeed);
-    holesSeed++;
-    rng.shuffle(holesOrder);
-    toolbox = ['', '', ''];
-    piecesUntilRefresh = 0;
-    codesInUse = ['', '', '', ''];
-    requiredLetter = config.speedLetter < 12 ? PIECES_NO_PUTTY[config.speedLetter] : '';
-
-    for (const z of holesOrder) {
-      if (holesCreated >= MAX_HOLES) continue;
-      if (config.speed) {
-        if (config.speedHoles > holesCreated) {
-          makeSmallHole(z);
-          holesCreated++;
-          holes[z].generated = true;
-          holes[z].ready = false;
-        }
-      } else {
-        const [hole, next] = createHole(rng, holesSeed);
-        holesSeed = next;
-        tempHoles[z] = hole;
-        holes[z].prob = hole.prob;
-        holes[z].edges = hole.edges;
-        holes[z].original = copyGrid(hole.grid);
-        holesCreated++;
-        holes[z].generated = true;
-        holes[z].ready = false;
-      }
-    }
-    for (const hole of holes) hole.completed = false;
-    play(1);
-
-    if (config.speed) {
-      if (config.speedSize === 1) {
-        const needed = rng.shuffle(holes.flatMap((h) => h.needed));
-        const dealt = Math.min(3, config.speedHoles);
-        for (let z = 0; z < dealt; z++) toolbox[z] = needed[z];
-        for (let z = dealt; z < 3; z++) {
-          toolbox[z] = rng.choiceWeighted(PIECES_NO_PUTTY, PIECE_WEIGHTS_NO_PUTTY);
-          countFound(toolbox[z]);
-        }
-      } else {
-        piecesUntilRefresh = config.speedSize;
-        dealSpeedCombination();
-      }
-    } else {
-      for (let z = 0; z < 3; z++) dealSeededPiece(z);
-    }
-    numToolbox = [0, 1, 2].filter((x) => toolbox[x] !== '');
-    for (const x of numToolbox) {
-      rng.seed(rotationSeed);
-      rotationSeed++;
-      randomOrientation(x);
-    }
-
-    if (!config.speed) {
-      startScroll = true;
-      timeAnimating += 1000;
-      scroll = { vec: [396, 0], start: timePassed, active: true, duration: 1000, offset: [0, 0] };
-    } else {
-      startScroll = false;
-      scroll = { vec: [0, 0], start: 0, active: true, duration: 1000, offset: [0, 0] };
-    }
-    endScroll = [false, 0];
-    startProcedure = false;
-    boardReset = false;
+    endProcedureComplete = false;
+    sessionScoresComputed = false;
+    pendingSounds = [];
+    newBoard();
   }
-
-  /** Speed carp with 2–3 piece holes: the toolbox holds one way to fill one of the holes. */
-  function dealSpeedCombination(): void {
-    const pools = holes.map((h, i) => (h.needed.length ? i : -1)).filter((i) => i >= 0);
-    const pool = rng.choicesUniform(pools);
-    const combination = rng.choicesUniform(holes[pool].needed);
-    combination.split('').forEach((letter, y) => (toolbox[y] = letter));
-    rng.shuffle(toolbox);
-  }
-
-  // ---- Completed holes ----
-
-  function checkCompletions(): void {
-    holes.forEach((hole, z) => {
-      if (hole.completed || !hole.generated) return;
-      hole.completed = holeComplete(hole.grid);
-      if (!hole.completed) return;
-      const took = timePassed - hole.startedAt;
-      if (took > holeTimers[0]) holeTimers[0] = took;
-      if (took < holeTimers[1]) holeTimers[1] = took;
-      lastHole = -1;
-      const perfect = config.speed ? config.speedSize : 5;
-      const grade = hole.total === perfect ? 2 : hole.total === perfect + 1 ? 1 : 0;
-      scoreFull[grade]++;
-      holesFilled++;
-      holesFilledTotal++;
-      if (!config.speed) {
-        play([4, 2, 3][grade]);
-        completionText[0][z] = 3 - grade;
-        completionText[1][z] = timePassed;
-        return;
-      }
-      clearSpeedHole(z);
-      if (config.speedSize > 1) speedHoleCompleted = true;
-    });
-  }
-
-  /** Speed carp: empties hole z and deals a new hole into a free spot. */
-  function clearSpeedHole(z: number): void {
-    const hole = holes[z];
-    hole.original = emptyGrid();
-    hole.grid = emptyGrid();
-    hole.edges = emptyGrid();
-    hole.clearPieces();
-    hole.generated = false;
-    lastHole = -1;
-    hole.ready = false;
-    hole.needed = [];
-    const free = [0, 1, 2, 3].filter((i) => !holes[i].generated);
-    if (4 - free.length < config.speedHoles) {
-      rng.shuffle(free);
-      const target = free[0];
-      makeSmallHole(target);
-      holes[target].generated = true;
-      holes[target].completed = false;
-      holes[target].ready = false;
-    }
-  }
-
-  function speedRefresh(): void {
-    if (!(config.speedSize > 1 && config.speed)) return;
-    if (piecesUntilRefresh !== 0 && !speedHoleCompleted) return;
-    if (!speedHoleCompleted) {
-      // Out of pieces without finishing: one more random piece.
-      piecesUntilRefresh++;
-      const slot = rng.choicesUniform([0, 1, 2]);
-      toolbox[slot] = rng.choiceWeighted(PIECES_NO_PUTTY, PIECE_WEIGHTS_NO_PUTTY);
-      countFound(toolbox[slot]);
-      for (const x of numToolbox) randomOrientation(x);
-      return;
-    }
-    speedHoleCompleted = false;
-    // Holes left half-filled count as failures and are replaced.
-    holes.forEach((hole, z) => {
-      if (hole.completed || !hole.generated || hole.total <= 0) return;
-      scoreFull[0]++;
-      hole.completed = false;
-      codesInUse[z] = '';
-      clearSpeedHole(z);
-    });
-    toolbox = ['', '', ''];
-    piecesUntilRefresh = config.speedSize;
-    dealSpeedCombination();
-    for (const x of numToolbox) randomOrientation(x);
-  }
-
-  /** Normal carp: when a full row or column of holes is done, the board scrolls to bring in new ones. */
-  function planScroll(): void {
-    if (config.speed || endScroll[0]) return;
-    const [c0, c1, c2, c3] = holes.map((h) => h.completed);
-    const roomForDiagonal = holesCreated < MAX_HOLES - 2;
-    if (c0) {
-      if (c1) {
-        holes[0].ready = holes[1].ready = true;
-        scroll.vec[1] -= 342;
-        if (c2) {
-          holes[2].ready = true;
-          if (roomForDiagonal) {
-            scroll.vec[0] -= 198;
-            scrollCorner[0] = 2;
-          }
-        }
-        if (c3) {
-          holes[3].ready = true;
-          if (roomForDiagonal) {
-            scroll.vec[0] += 198;
-            scrollCorner[1] = 2;
-          }
-        }
-      } else if (c2) {
-        holes[0].ready = holes[2].ready = true;
-        scroll.vec[0] -= 198;
-        if (c3) {
-          holes[3].ready = true;
-          if (roomForDiagonal) {
-            scroll.vec[1] += 342;
-            scrollCorner[2] = 2;
-          }
-        }
-      }
-    } else if (c3) {
-      if (c1) {
-        holes[3].ready = holes[1].ready = true;
-        scroll.vec[0] += 198;
-        if (c2) {
-          holes[2].ready = true;
-          if (roomForDiagonal) {
-            scrollCorner[3] = 2;
-            scroll.vec[1] += 342;
-          }
-        }
-      } else if (c2) {
-        holes[3].ready = holes[2].ready = true;
-        scroll.vec[1] += 342;
-      }
-    }
-  }
-
-  function startScrollIfReady(): void {
-    if (holesCreated === 16 && scroll.vec[0] !== 0 && scroll.vec[1] !== 0) {
-      scrollCorner = [1, 1, 1, 1];
-      scroll.vec[1] = 0;
-    }
-    if (holes.some((h) => h.ready) && holesCreated < MAX_HOLES) {
-      scroll.start = timePassed + 1500;
-      scroll.active = true;
-      if (scroll.vec[0] !== 0 && scroll.vec[1] !== 0) {
-        scroll.duration = 1414;
-        timeAnimating += 2914;
-        scrollsCount[1]++;
-      } else {
-        scroll.duration = 1000;
-        timeAnimating += 2500;
-        scrollsCount[0]++;
-      }
-      backgroundsBackup = backgrounds.map((p) => [...p]);
-    }
-    if (config.speed) return;
-    holes.forEach((hole, z) => {
-      if (!hole.ready) return;
-      if (holesCreated < MAX_HOLES) {
-        const [made, next] = createHole(rng, holesSeed);
-        holesSeed = next;
-        tempHoles[z] = made;
-        holesCreated++;
-      } else {
-        hole.ready = false;
-        hole.completed = false;
-        hole.generated = false;
-      }
-    });
-  }
-
-  function finishScroll(): void {
-    for (let a = 0; a < 4; a++) {
-      backgrounds[a][0] = backgroundsBackup[a][0] + scroll.vec[0];
-      backgrounds[a][1] = backgroundsBackup[a][1] + scroll.vec[1];
-      if (backgrounds[a][0] > 772) backgrounds[a][0] -= 1512;
-      else if (backgrounds[a][0] < -740) backgrounds[a][0] += 1512;
-      if (backgrounds[a][1] > 628) backgrounds[a][1] -= 1188;
-      else if (backgrounds[a][1] < -560) backgrounds[a][1] += 1188;
-    }
-    const sources = SCROLL_SOURCES[scroll.vec.join(',')];
-    if (sources) {
-      const old = holes.map((h) => ({ ...h }));
-      const generated = holes.map((h) => h.generated);
-      sources.forEach(([kind, index], z) => {
-        const hole = holes[z];
-        if (kind === 'h') {
-          Object.assign(hole, old[index]);
-        } else {
-          hole.deal(tempHoles[index]);
-        }
-        // The original took the "generated" flag from the source index either way.
-        hole.generated = generated[index];
-      });
-    }
-    tempHoles = [blankHole(), blankHole(), blankHole(), blankHole()];
-    // Pieces are stored in screen coordinates, so they move with the scroll.
-    for (const hole of holes) {
-      for (const piece of hole.pieces) {
-        piece.x += scroll.vec[0];
-        piece.y += scroll.vec[1];
-      }
-    }
-    for (const hole of holes) {
-      if (hole.ready) {
-        hole.ready = false;
-        hole.completed = false;
-      }
-    }
-    scroll.active = false;
-    scroll.vec = [0, 0];
-    scroll.offset = [0, 0];
-    scrollCorner = [1, 1, 1, 1];
-  }
-
-  function moveBackgrounds(): void {
-    for (let a = 0; a < 4; a++) {
-      backgrounds[a][0] = pyRound(backgroundsBackup[a][0] + scroll.offset[0], 2);
-      backgrounds[a][1] = pyRound(backgroundsBackup[a][1] + scroll.offset[1], 2);
-      if (backgrounds[a][0] > 773) backgrounds[a][0] -= 1512;
-      else if (backgrounds[a][0] < -739) backgrounds[a][0] += 1512;
-      if (backgrounds[a][1] > 628) backgrounds[a][1] -= 1188;
-      else if (backgrounds[a][1] < -560) backgrounds[a][1] += 1188;
-    }
-  }
-
-  function animateScroll(): void {
-    const elapsed = timePassed - scroll.start;
-    if (scroll.active && elapsed <= scroll.duration) {
-      if (elapsed > 0) {
-        scroll.offset = [(scroll.vec[0] * elapsed) / scroll.duration, (scroll.vec[1] * elapsed) / scroll.duration];
-        moveBackgrounds();
-      }
-    } else if (scroll.active && startScroll) {
-      for (let z = 0; z < 4; z++) holes[z].grid = tempHoles[z].grid;
-      scroll.active = false;
-      scroll.vec = [0, 0];
-      scroll.offset = [0, 0];
-      startScroll = false;
-      tempHoles = [blankHole(), blankHole(), blankHole(), blankHole()];
-    } else if (scroll.active && endScroll[0]) {
-      if (elapsed >= scroll.duration + 500) {
-        scroll.active = false;
-        scroll.vec = [0, 0];
-        scroll.offset = [0, 0];
-        boardReset = true;
-      }
-    } else if (scroll.active && !startScroll) {
-      finishScroll();
-    }
-  }
-
-  // ---- Neglect: rattles, flying pieces, tearing holes ----
-
-  function warnings(): void {
-    if (config.speed) return;
-    for (let x = 5; x < 8; x++) {
-      holes.forEach((hole, z) => {
-        if (hole.focus !== x) return;
-        if (hole.pieces.length > 0) {
-          if (x + 2 > soundHierarchy[2]) soundHierarchy[2] = x + 2;
-        } else if (hole.teared < 4) {
-          if (holeFlash[x - 5] === 1) drawRedBorder(z, hole.edges);
-          // The original compared against x + 2 but stored x + 5, so the lowest warning wins.
-          if (x + 2 > soundHierarchy[3]) soundHierarchy[3] = x + 5;
-        }
-      });
-    }
-  }
-
-  function neglect(): void {
-    if (config.speed) return;
-    holes.forEach((hole, z) => {
-      if (hole.focus !== 8) return;
-      if (hole.pieces.length > 0) {
-        const last = hole.pieces.pop()!;
-        if (last.letter === 'b') {
-          applyPutty(hole.grid, hole.putty.pop()!, false);
-        } else {
-          hole.edges = applyPiece(hole.grid, last, last.x, last.y, z, false);
-          const slot = flying.findIndex((f) => f === null);
-          if (slot >= 0) {
-            rng.seed(null);
-            const end: [number, number] = [0, 0];
-            if (rng.randintN(0, 1) === 0) {
-              end[0] = rng.randintN(36, 420);
-              end[1] = rng.choice([36, 635]);
-            } else {
-              end[1] = rng.randintN(36, 635);
-              end[0] = rng.choice([36, 420]);
-            }
-            const c = 22 / Math.sqrt(Math.abs(end[0] - last.x) ** 2 + Math.abs(end[1] - last.y) ** 2);
-            flying[slot] = {
-              piece: { letter: last.letter, rotation: last.rotation, flip: last.flip },
-              pos: [last.x, last.y],
-              end,
-              step: [c * (end[0] - last.x), c * (end[1] - last.y)],
-            };
-          }
-        }
-        hole.focus = 0;
-        soundHierarchy[0] = 13;
-      } else if (hole.teared < 4) {
-        hole.edges = tearHole(hole.grid, hole.prob, rng);
-        hole.original = copyGrid(hole.grid);
-        hole.focus = 0;
-        hole.teared++;
-        soundHierarchy[1] = 14;
-      }
-    });
-  }
-
-  function updateFlying(): void {
-    if (timePassed - flyTimer <= 10) return;
-    for (let a = 0; a < 3; a++) {
-      const f = flying[a];
-      if (!f) continue;
-      for (const i of [0, 1]) {
-        if (f.pos[i] === f.end[i]) continue;
-        const next = f.pos[i] + f.step[i];
-        if (f.step[i] > 0) f.pos[i] = next <= f.end[i] ? next : f.end[i];
-        else if (f.step[i] < 0) f.pos[i] = next >= f.end[i] ? next : f.end[i];
-      }
-      if (f.pos[0] === f.end[0] && f.pos[1] === f.end[1]) flying[a] = null;
-    }
-    flyTimer += 10;
-  }
-
-  // ---- Speed carp toolbox top-up (the original's "hack fix") ----
-
-  function topUpToolbox(): void {
-    if (!boardActive || cursor.letter !== '') return;
-    if (!config.speed) {
-      for (let x = 0; x < 3; x++) {
-        if (toolbox[x] !== '') continue;
-        dealSeededPiece(x);
-        randomOrientation(x);
-      }
-      return;
-    }
-    if (config.speedSize !== 1) return;
-    for (let x = 0; x < 3; x++) {
-      if (toolbox[x] !== '') continue;
-      if (config.speedHoles === 1) {
-        const order = rng.shuffle([0, 1, 2]);
-        const needed = rng.shuffle(holes.flatMap((h) => h.needed));
-        toolbox[order[0]] = needed[0];
-        for (const ef of order.slice(1)) {
-          rng.seed(piecesSeed);
-          piecesSeed++;
-          toolbox[ef] = rng.choiceWeighted(PIECES_NO_PUTTY, PIECE_WEIGHTS_NO_PUTTY);
-          countFound(toolbox[ef]);
-        }
-        for (let fg = 0; fg < 3; fg++) randomOrientation(fg);
-      } else {
-        const needed = rng.shuffle(holes.flatMap((h) => h.needed));
-        const inToolbox = [...toolbox];
-        const blank = slotOf(toolboxBlank);
-        let picked = false;
-        for (let i = 0; !picked; i++) {
-          if (!inToolbox.includes(needed[i][0])) {
-            toolbox[blank] = needed[i][0];
-            picked = true;
-          }
-          if (!picked && i === needed.length - 1) {
-            rng.seed(piecesSeed);
-            piecesSeed++;
-            toolbox[blank] = rng.choiceWeighted(PIECES_NO_PUTTY, PIECE_WEIGHTS_NO_PUTTY);
-            countFound(toolbox[blank]);
-            picked = true;
-          }
-        }
-        randomOrientation(x);
-      }
-    }
-  }
-
-  // ---- End of session ----
 
   function scoresKey(): string {
-    return (
-      (config.ghost ? 'a' : 'b') +
-      (config.speed ? 'a' : 'b') +
-      (config.speed ? `${config.speedHoles}${config.speedSize}${config.speedLetter}` : '000')
-    );
+    return (config.ghost ? 'a' : 'b') + (config.speed ? 'a' : 'b') + (config.speed ? `${config.speedHoles}${config.speedSize}${config.speedLetter}` : '000');
   }
 
   function endSession(): void {
     boardActive = false;
     if (!endProcedureComplete) {
-      if (startScroll) timeAnimating -= 1000 - (timePassed - scroll.start);
-      else if (endScroll[0]) {
-        if (scroll.active) timeAnimating -= 1000 - (timePassed - scroll.start);
-        else timeAnimating -= 1000 + 1500 - (timePassed - endScroll[1]);
-      } else if (scroll.active) {
-        timeAnimating -= scroll.start + scroll.duration - timePassed;
-        scroll.active = false;
-      }
-      const samples = averageFocus.slice(1);
-      finalAverageFocus = samples.length ? samples.reduce((a, b) => a + b, 0) / samples.length : 0;
-      if (!cheatsUsed && scoreCounting && !(config.ghost && sightUsed)) {
-        if (scoreTotal > bestScore) {
-          bestScore = scoreTotal;
-          if (!config.ghost) play(17);
-          bestScores[bestScoresKey] = bestScore;
-          store.set('bestScores', bestScores);
-        }
+      if (!cheatsUsed && scoreCounting && !(config.ghost && sightUsed) && score() > bestScore) {
+        bestScore = score();
+        if (!config.ghost) play('audio_pb_sound');
+        bestScores[bestScoresKey] = bestScore;
+        store.set('bestScores', bestScores);
       }
       endProcedureComplete = true;
       endProcedureKey = bestScoresKey;
-    } else if (scoreTotal > 0) {
-      if (!sessionScoresComputed) {
-        recordSession();
-        sessionScoresComputed = true;
-      }
-      if (endProcedureKey === bestScoresKey) drawStatsTable();
+    }
+    if (score() > 0 && !sessionScoresComputed) {
+      recordSession();
+      sessionScoresComputed = true;
     }
   }
 
   function recordSession(): void {
+    const total = score();
+    const holes = stats.holesFilled;
     const s = sessionScores[bestScoresKey];
     if (!s) {
       sessionScores[bestScoresKey] = {
         sessions: 1,
-        total_score: scoreTotal,
-        total_holes: holesFilledTotal,
-        total_pieces: piecesPlaced,
-        max_score: scoreTotal,
-        most_vp: scoreFull[2],
-        most_holes: holesFilledTotal,
-        most_pieces: piecesPlaced,
-        average_holes: holesFilledTotal,
-        score_per_hole: scoreTotal / holesFilledTotal,
-        average_score: scoreTotal,
-        average_pieces: piecesPlaced,
+        total_score: total,
+        total_holes: holes,
+        total_pieces: stats.placed,
+        max_score: total,
+        most_vp: stats.grades[2],
+        most_holes: holes,
+        most_pieces: stats.placed,
+        average_holes: holes,
+        score_per_hole: total / holes,
+        average_score: total,
+        average_pieces: stats.placed,
       };
       return;
     }
     s.sessions++;
-    s.total_score += scoreTotal;
-    s.total_holes += holesFilledTotal;
-    s.total_pieces += piecesPlaced;
-    s.max_score = Math.max(s.max_score, scoreTotal);
-    s.most_vp = Math.max(s.most_vp, scoreFull[2]);
-    s.most_holes = Math.max(s.most_holes, holesFilledTotal);
-    s.most_pieces = Math.max(s.most_pieces, piecesPlaced);
+    s.total_score += total;
+    s.total_holes += holes;
+    s.total_pieces += stats.placed;
+    s.max_score = Math.max(s.max_score, total);
+    s.most_vp = Math.max(s.most_vp, stats.grades[2]);
+    s.most_holes = Math.max(s.most_holes, holes);
+    s.most_pieces = Math.max(s.most_pieces, stats.placed);
     s.average_holes = s.total_holes / s.sessions;
     s.score_per_hole = s.total_score / s.total_holes;
     s.average_score = s.total_score / s.sessions;
     s.average_pieces = s.total_pieces / s.sessions;
   }
 
-  // ---- Drawing ----
+  // ---- Input ----
 
-  function drawPiece(letter: string, x: number, y: number, rotation: number, flip: number, state: number, offset: readonly number[]): void {
-    if (!letter) return;
-    x = x - 36 + offset[0];
-    y = y - 36 + offset[1];
-    if (letter === 'b') {
-      if (state === 3) screen.blit(img('carp_b_3'), x, y);
-      else if (state === 2) screen.blit(img('carp_b_2'), x + 10, y - 18);
+  const inView = (x: number, y: number) => x >= VIEW_X && y >= VIEW_Y && x < VIEW_X + VIEW_W && y < VIEW_Y + VIEW_H;
+
+  function handleEvents(events: InputEvent[]): void {
+    if (!game || !boardActive) return;
+    const [mx, my] = input.mouse;
+    if ((mx !== lastMouse[0] || my !== lastMouse[1]) && inView(mx, my)) game.pointerMove(mx, my);
+    lastMouse = [mx, my];
+    for (const event of events) {
+      if (event.type === 'mousedown') {
+        if (inView(event.pos[0], event.pos[1])) {
+          // Several clicks can arrive in one frame; each acts where it happened.
+          game.pointerMove(event.pos[0], event.pos[1]);
+          game.pointerDown(event.button, event.pos[0], event.pos[1]);
+        }
+      } else if (event.type === 'mouseup') {
+        game.pointerUp(event.button);
+      } else if (event.type === 'keydown') {
+        const k = event.key;
+        if (k === KEYS.flip) game.flip();
+        else if (k === KEYS.ccw) game.rotate(false);
+        else if (k === KEYS.cw) game.rotate(true);
+        else if (KEYS.slots.includes(k)) game.keyPick(KEYS.slots.indexOf(k));
+        else if (k === KEYS.place && inView(mx, my)) game.placeKey(mx, my);
+      }
+    }
+  }
+
+  // ---- Drawing the board view ----
+
+  /** Board-view pixels (world) to the panel. */
+  const sx = (wx: number) => VIEW_X + wx - game!.view[0];
+  const sy = (wy: number) => VIEW_Y + wy - game!.view[1];
+
+  function drawDeck(view: Cell): void {
+    const sheet = art('wood_background');
+    const [vx, vy] = view;
+    const r0 = Math.floor(vy / PLANK_H);
+    const r1 = Math.floor((vy + VIEW_H) / PLANK_H);
+    const c0 = Math.floor(vx / PLANK_W);
+    const c1 = Math.floor((vx + VIEW_W) / PLANK_W);
+    for (let r = r0; r <= r1; r++) {
+      const [start, off] = r % 2 === 0 ? [c0, 0] : [c0 - 1, PLANK_W / 2];
+      for (let c = start; c <= c1; c++) {
+        const tile = (Math.abs(c) * Math.abs(r)) % PLANKS;
+        screen.blit(sheet, VIEW_X + c * PLANK_W + off - vx, VIEW_Y + r * PLANK_H - vy, { area: [tile * PLANK_W, 0, PLANK_W, PLANK_H] });
+      }
+    }
+  }
+
+  /** Each hole drawn once into a canvas: black cells, splinters cut out, and its red blink outline. */
+  const holeCache = new WeakMap<HoleSprite, { version: number; black: HTMLCanvasElement; red: HTMLCanvasElement }>();
+
+  function holeCanvases(hs: HoleSprite) {
+    const version = hs.grown.length;
+    const cached = holeCache.get(hs);
+    if (cached && cached.version === version) return cached;
+    const w = hs.hole.width * CELL + 1;
+    const h = hs.hole.height * CELL + 1;
+    const black = document.createElement('canvas');
+    black.width = w;
+    black.height = h;
+    const b = black.getContext('2d')!;
+    b.fillStyle = '#000000';
+    hs.cells.forEach((col, x) => col.forEach((open, y) => open && b.fillRect(x * CELL, y * CELL, CELL, CELL)));
+    for (const [x, y, gw, gh] of hs.grown) b.fillRect(x, y, gw, gh);
+    for (const [x, y, rw] of hs.ragged) b.clearRect(x, y, rw, 1);
+    const red = holeOutline(black);
+    const entry = { version, black, red };
+    holeCache.set(hs, entry);
+    return entry;
+  }
+
+  function drawHole(hs: HoleSprite): void {
+    if (hs.hole.width === 0) return;
+    const { black, red } = holeCanvases(hs);
+    const x = sx(hs.pos[0]);
+    const y = sy(hs.pos[1]);
+    screen.blit(black, x, y);
+    if (hs.blink?.on) screen.blit(red, x, y);
+  }
+
+  /** Draws a piece with its first cell's top-left at (x, y) on the panel (carpentry/r and s). */
+  function drawPiece(sprite: PieceSprite, x: number, y: number): void {
+    const piece = sprite.piece;
+    if (piece.isPutty) {
+      if (sprite.pour) {
+        drawPour(sprite, x, y);
+        return;
+      }
+      const at: Cell = sprite.held ? [x, y - PUTTY_SPOUT] : [x - PUTTY_W / 2, y - PUTTY_H / 2];
+      screen.blit(puttyImages[config.look][Math.min(3, sprite.state)], at[0], at[1], sprite.held ? { alpha: 204 } : {});
       return;
     }
-    screen.blit(img(`carp_${letter}_${state}`), x, y, { flipX: flip === 1, rotate: rotation });
+    const cells = piece.cells();
+    const base = new Piece(piece.tool, sprite.look.baseOrient).cells();
+    const minBx = Math.min(...base.map((c) => c[0]));
+    const minBy = Math.min(...base.map((c) => c[1]));
+    const m = orientMatrix(piece.orient);
+    const b = orientMatrix(sprite.look.baseOrient);
+    const t = compose(m, [b[0], b[2], b[1], b[3]]);
+    const texture = art('wood_pieces');
+    ctx.save();
+    if (sprite.held) ctx.globalAlpha = 0.6;
+    cells.forEach(([cx, cy], k) => {
+      const tx = sprite.look.texture * TEXTURE_W + sprite.look.crop[0] + (base[k][0] - minBx) * CELL;
+      const ty = sprite.look.crop[1] + (base[k][1] - minBy) * CELL;
+      ctx.setTransform(t[0], t[1], t[2], t[3], Math.trunc(x) + cx * CELL + CELL / 2, Math.trunc(y) + cy * CELL + CELL / 2);
+      ctx.drawImage(texture, tx, ty, CELL, CELL, -CELL / 2, -CELL / 2, CELL, CELL);
+    });
+    ctx.restore();
+    outline(cells, x, y, look().outlines[sprite.state]);
+    // The little pin at the piece's first cell (carpentry/r.e).
+    const px = Math.trunc(x) + CELL / 2 - 1;
+    const py = Math.trunc(y) + CELL / 2 - 1;
+    screen.rect(px, py, 1, 1, '#404040');
+    screen.rect(px + 1, py + 1, 1, 1, '#404040');
+    screen.rect(px, py + 1, 1, 1, '#000000');
+    screen.rect(px + 1, py, 1, 1, '#808080');
   }
 
-  function drawHoles(grids: Grid[], offsets: number[][]): void {
-    grids.forEach((grid, z) => {
-      const [hx, hy] = [z === 0 || z === 2 ? 53 : 251, z === 0 || z === 1 ? 105 : 447];
-      for (let y = 0; y < 4; y++) {
-        for (let x = 0; x < 9; x++) {
-          if (grid[y][x] === 1) screen.blit(img('carp_black'), hx + offsets[z][0] + x * 18, hy + offsets[z][1] + y * 18);
+  /** The outline around a set of cells. */
+  function outline(cells: Cell[], x: number, y: number, colour: string): void {
+    const has = (a: number, b: number) => cells.some(([cx, cy]) => cx === a && cy === b);
+    x = Math.trunc(x);
+    y = Math.trunc(y);
+    for (const [cx, cy] of cells) {
+      const px = x + cx * CELL;
+      const py = y + cy * CELL;
+      if (!has(cx, cy - 1)) screen.rect(px, py, CELL + 1, 1, colour);
+      if (!has(cx, cy + 1)) screen.rect(px, py + CELL, CELL + 1, 1, colour);
+      if (!has(cx - 1, cy)) screen.rect(px, py, 1, CELL + 1, colour);
+      if (!has(cx + 1, cy)) screen.rect(px + CELL, py, 1, CELL + 1, colour);
+    }
+  }
+
+  /** Poured putty: blood spreading in a circle from the middle of the poured cell (carpentry/s.a(long)). */
+  function drawPour(sprite: PieceSprite, x: number, y: number): void {
+    const pour = sprite.pour!;
+    const r = Math.min(pour.radius, (timePassed - pour.start) / 10);
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(Math.trunc(x) + CELL / 2, Math.trunc(y) + CELL / 2, Math.max(0, r), 0, Math.PI * 2);
+    ctx.clip();
+    ctx.fillStyle = look().putty;
+    for (const [cx, cy] of sprite.piece.cells()) ctx.fillRect(Math.trunc(x) + cx * CELL, Math.trunc(y) + cy * CELL, CELL, CELL);
+    ctx.restore();
+    outline(sprite.piece.cells(), x, y, look().outlines[5]);
+  }
+
+  function floatText(text: string, cx: number, cy: number, size: number, fill: string, stroke: string, alpha: number): void {
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.translate(cx, cy);
+    ctx.scale(1.1, 1);
+    ctx.font = `${size}px "${FONT}"`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.lineWidth = 4;
+    ctx.lineJoin = 'round';
+    ctx.strokeStyle = stroke;
+    ctx.strokeText(text, 0, 0);
+    ctx.fillStyle = fill;
+    ctx.fillText(text, 0, 0);
+    ctx.restore();
+  }
+
+  function drawBoard(): void {
+    const g = game!;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(VIEW_X, VIEW_Y, VIEW_W, VIEW_H);
+    ctx.clip();
+    drawDeck(g.view);
+    for (const hs of g.holeSprites) drawHole(hs);
+    if (!config.ghost) {
+      for (const hs of g.holeSprites) {
+        for (const p of hs.pieces) {
+          const o = p.sprite.shake?.offset ?? [0, 0];
+          drawPiece(p.sprite, sx(hs.pos[0] + p.at[0] * CELL) + o[0], sy(hs.pos[1] + p.at[1] * CELL) + o[1]);
         }
       }
+    }
+    screen.blit(art('toolbox'), VIEW_X + TOOLBOX_AT[0], VIEW_Y + TOOLBOX_AT[1]);
+    g.tools.forEach((tool, slot) => {
+      if (!tool || tool === g.held) return;
+      const [cx, cy] = Game.toolCell(slot);
+      drawPiece(tool, VIEW_X + cx * CELL, VIEW_Y + cy * CELL);
     });
+    if (g.held) drawPiece(g.held, VIEW_X + g.cursor[0] * CELL, VIEW_Y + g.cursor[1] * CELL);
+    for (const f of g.flyers) {
+      const [fx, fy] = g.flyerAt(f);
+      drawPiece(f.sprite, sx(fx), sy(fy));
+    }
+    for (const t of g.texts) {
+      const age = timePassed - t.start;
+      const alpha = age < TEXT_MS / 2 ? 1 : Math.max(0, 1 - (age - TEXT_MS / 2) / (TEXT_MS / 2));
+      floatText(t.text, sx(t.at[0]), sy(t.at[1]) - (30 * age) / TEXT_MS, t.size, t.colour, '#000000', alpha);
+    }
+    if (g.levelText) floatText(LEVEL_TEXT, sx(g.levelText.at[0]), sy(g.levelText.at[1]), 36, 'rgb(255, 243, 32)', 'rgb(48, 98, 123)', 1);
+    ctx.restore();
   }
 
-  function drawRedBorder(z: number, edges: Grid): void {
-    const x = z === 1 || z === 3 ? 251 : 53;
-    const y = z === 2 || z === 3 ? 447 : 105;
-    const [ox, oy] = scroll.offset;
-    for (let a = 0; a < 4; a++) {
-      for (let b = 0; b < 9; b++) {
-        const e = edges[a][b];
-        const px = x + 18 * b + ox;
-        const py = y + 18 * a + oy;
-        if (e % 10 >= 1) screen.blit(img('red_border_v'), px, py);
-        if (Math.floor((e % 100) / 10) >= 1) screen.blit(img('red_border_v'), px + 18, py);
-        if (Math.floor((e % 1000) / 100) >= 1) screen.blit(img('red_border_h'), px, py);
-        if (Math.floor(e / 1000) >= 1) screen.blit(img('red_border_h'), px, py + 18);
-      }
-    }
-  }
-
-  function drawHoleContents(): void {
-    if (!startScroll) drawHoles(holes.map((h) => h.original), [scroll.offset, scroll.offset, scroll.offset, scroll.offset]);
-    if (scroll.active) {
-      const [ox, oy] = scroll.offset;
-      const [vx, vy] = scroll.vec;
-      let offsets: number[][];
-      if (vx !== 0 && vy !== 0) offsets = scrollCorner.map((k) => [ox - k * vx, oy - k * vy]);
-      else if (startScroll) offsets = Array.from({ length: 4 }, () => [ox - 2 * vx + 396, oy - 2 * vy]);
-      else offsets = Array.from({ length: 4 }, () => [ox - 2 * vx, oy - 2 * vy]);
-      drawHoles(
-        tempHoles.map((t) => t.grid),
-        offsets,
-      );
-    }
-    if (config.ghost) return;
-    const lastState = cursorLocked[0] !== -1 ? 1 : 5;
-    holes.forEach((hole, z) => {
-      const count = hole.pieces.length;
-      if (count === 0) return;
-      for (const fills of hole.putty) {
-        for (const [y, x] of fills) {
-          screen.blit(img('carp_blood'), (z === 0 || z === 2 ? 54 : 252) + scroll.offset[0] + 18 * x, (z === 0 || z === 1 ? 105 : 447) + scroll.offset[1] + 18 * y);
-        }
-      }
-      for (const p of hole.pieces.slice(0, -1)) drawPiece(p.letter, p.x, p.y, p.rotation, p.flip, 1, scroll.offset);
-      const last = hole.pieces[count - 1];
-      if (lastHole === z) {
-        drawPiece(last.letter, last.x, last.y, last.rotation, last.flip, lastState, scroll.offset);
-      } else {
-        const jiggle = hole.focus >= 6 && hole.focus <= 7 ? jiggleOffset[hole.focus - 6] : [0, 0];
-        drawPiece(last.letter, last.x + jiggle[0], last.y + jiggle[1], last.rotation, last.flip, 1, scroll.offset);
-      }
-    });
-  }
-
-  function drawCursorPiece(): void {
-    if (cursor.letter === '') return;
-    const mouse = input.mouse;
-    let [mx, my] = snap(mouse);
-    let state = 4;
-    if (cursorLocked[0] === -1) {
-      if (within(mouse, 90, 362, 288, 379)) state = 2;
-      legalMove = false;
-      if (!startScroll) {
-        holes.forEach((hole, z) => {
-          const [x1, x2, y1, y2] = holeBounds(z);
-          if (hole.generated && within(mouse, x1, x2, y1, y2) && cursor.letter !== 'b') {
-            [legalMove, perfectMove] = checkPlacement(hole.grid, hole.edges, cursor, mx, my, z);
-          }
-        });
-      }
-      state = legalMove ? 2 : 4;
-    } else {
-      mx = Math.max(cursorLocked[1] - 18, Math.min(cursorLocked[1] + 18, mx));
-      my = Math.max(cursorLocked[2] - 18, Math.min(cursorLocked[2] + 18, my));
-      const z = cursorLocked[0];
-      const [x1, x2, y1, y2] = holeBounds(z);
-      if (within([mx, my], x1, x2, y1, y2)) {
-        if (cursor.letter !== 'b') [legalMove, perfectMove] = checkPlacement(holes[z].grid, holes[z].edges, cursor, mx, my, z);
-        state = legalMove ? 2 : 4;
-      }
-    }
-    if (cursor.letter === 'b') {
-      legalMove = true;
-      state = 2;
-    }
-    drawPiece(cursor.letter, mx, my, cursor.rotation, cursor.flip, state, [0, 0]);
-  }
-
+  /** stars.png: tile 0 the empty star, tile 1 the fill, which rises from the bottom (puzzle/client/d, h). */
   function drawStars(): void {
-    const filled = holesFilled % 17;
-    for (let z = 0; z < 9; z++) {
-      if (Math.floor(filled / 2) > z) screen.blit(img('full_star'), 30, 372 - z * 20);
-      else if (filled % 2 === 1 && filled / 2 > z) screen.blit(img('half_star'), 30, 372 - z * 20);
+    const sheet = img('stars');
+    const target = game ? game.meter : 0;
+    const elapsed = timePassed - meterAt;
+    meterAt = timePassed;
+    if (target < meterShown) meterShown = target;
+    else meterShown = Math.min(target, meterShown + elapsed / STAR_MS_PER_PCT);
+    const total = Math.trunc(meterShown) * STARS;
+    const full = Math.trunc(total / 100);
+    const part = total % 100;
+    for (let i = 0; i < STARS; i++) {
+      const y = STARS_AT[1] + (STARS - i - 1) * STAR_STEP;
+      screen.blit(sheet, STARS_AT[0], y, { area: [0, 0, STAR, STAR] });
+      const pct = i < full ? 100 : i > full ? 0 : part;
+      const h = Math.trunc((pct * STAR) / 100);
+      if (h > 0) screen.blit(sheet, STARS_AT[0], y + STAR - h, { area: [STAR, STAR - h, STAR, h] });
     }
-    for (let z = 0; z < 9; z++) if (MAX_HOLES / 2 > z) screen.blit(img('empty_star'), 30, 372 - z * 20);
   }
 
   /** str(round(x, n)) in Python. */
   const roundStr = (x: number, n: number) => floatStr(pyRound(x, n));
 
+  /** The simulator's end-of-session table. */
   function drawStatsTable(): void {
     const t = (value: string, x: number, y: number, colour = WHITE) => screen.text(value, x, y, statsFont, colour);
+    const placed = stats.placed;
     if (config.speed) {
       screen.blit(img('background_stats2'), 0, 0);
     } else {
@@ -1301,32 +600,35 @@ export default (async ({ screen, input, panel, store, ticks }) => {
         ['b', 39],
       ];
       for (const [letter, col] of columns) {
-        const found = piecesFound[letter] ?? 0;
+        const found = stats.found[letter] ?? 0;
         t(String(found), 58 + col * 9, 94);
-        t(String(Math.trunc(found - (rates[letter] * (piecesPlaced + 3)) / 95)), 58 + col * 9, 112, PURPLE);
+        t(String(Math.trunc(found - (rates[letter] * (placed + 3)) / 95)), 58 + col * 9, 112, PURPLE);
       }
     }
-    const picks = keyboardVsMouse[1] + keyboardVsMouse[2];
-    keyboardVsMouse[0] = picks && keyboardVsMouse[2] / picks > 0.8 ? 'K' : picks && keyboardVsMouse[1] / picks > 0.8 ? 'M' : 'H';
+    const picks = stats.mousePicks + stats.keyPicks;
+    const kbm = picks && stats.keyPicks / picks > 0.8 ? 'K' : picks && stats.mousePicks / picks > 0.8 ? 'M' : 'H';
+    const focus = stats.focus.length ? stats.focus.reduce((a, b) => a + b, 0) / stats.focus.length : 0;
+    const [slipshod, creaky, proof] = stats.grades;
     const left: [string, number][] = [
-      [`Score: ${scoreTotal}   -   ${scoreFull[0]}, ${scoreFull[1]}, ${scoreFull[2]}`, 0],
-      [`Score / Hole: ${roundStr(scoreTotal / holesFilledTotal, 2)}`, 0.5],
-      [`Holes Filled: ${holesFilledTotal}`, 1],
-      [`Animating (s): ${roundStr(timeAnimating / 1000, 2)}`, 2],
-      [`Scrolls: ${scrollsCount[0]}h - ${scrollsCount[1]}d`, 2.5],
-      [`KBM: ${keyboardVsMouse[0]} - ${keyboardVsMouse[2]} - ${keyboardVsMouse[1]}`, 3],
-      [`Pieces Placed: ${piecesPlaced}`, 4],
-      [`Pieces Replaced: ${piecesReplaced}`, 4.5],
-      [`Flips: ${flipCount}`, 5],
-      [`Spins: ${spinCount}`, 5.5],
-      [`Focus: ${roundStr(finalAverageFocus, 1)}`, 6.5],
-      [`> P Drought: ${pDrought[0]}`, 7],
-      [`Slowest Hole (s) : ${roundStr(holeTimers[0] / 1000, 1)}`, 7.5],
-      [`Quickest Hole (s) : ${roundStr(holeTimers[1] / 1000, 1)}`, 8],
+      [`Score: ${score()}   -   ${slipshod}, ${creaky}, ${proof}`, 0],
+      [`Score / Hole: ${roundStr(score() / stats.holesFilled, 2)}`, 0.5],
+      [`Holes Filled: ${stats.holesFilled}`, 1],
+      [`Animating (s): ${roundStr(stats.animating / 1000, 2)}`, 2],
+      [`Scrolls: ${stats.scrolls[0]}h - ${stats.scrolls[1]}d`, 2.5],
+      [`KBM: ${kbm} - ${stats.keyPicks} - ${stats.mousePicks}`, 3],
+      [`Pieces Placed: ${placed}`, 4],
+      [`Pieces Replaced: ${stats.replaced}`, 4.5],
+      [`Flips: ${stats.flips}`, 5],
+      [`Spins: ${stats.spins}`, 5.5],
+      [`Focus: ${roundStr(focus, 1)}`, 6.5],
+      [`> P Drought: ${Math.max(stats.pDrought[0], stats.pDrought[1])}`, 7],
+      [`Slowest Hole (s) : ${roundStr(stats.holeTimes[0] / 1000, 1)}`, 7.5],
+      [`Quickest Hole (s) : ${roundStr(stats.holeTimes[1] / 1000, 1)}`, 8],
     ];
     for (const [value, row] of left) t(value, 50, 221 + row * 36);
-    screen.text(`Seed: ${seedString()}`, 50, 221 + 10 * 36, statsFontSmall);
+    screen.text(`Seed: ${seedAtStart}`, 50, 221 + 10 * 36, statsFontSmall);
     const s = sessionScores[bestScoresKey];
+    if (!s) return;
     const right: [string, number][] = [
       [`Sessions: ${s.sessions}`, 0],
       [`Average Score: ${roundStr(s.average_score, 2)}`, 0.5],
@@ -1341,26 +643,8 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     for (const [value, row] of right) t(value, 240, 221 + row * 36);
   }
 
-  function drawCompletionTexts(): void {
-    for (let z = 0; z < 4; z++) {
-      const kind = completionText[0][z];
-      if (kind === 0) continue;
-      const since = timePassed - completionText[1][z];
-      if (since > 1500) {
-        completionText[0][z] = 0;
-        continue;
-      }
-      const alpha = since > 1000 ? 255 * (1 - (since - 1000) / 500) : 255;
-      const [x, y] = COMPLETION_LOCATIONS[z];
-      if (kind === 1) screen.text('Vampire Proof!', x, y, fontLarge, WHITE, alpha);
-      if (kind === 2) screen.text('Creaky Coffin', x, y, fontLarge, WHITE, alpha);
-      if (kind === 3) screen.text('Slipshod', x + 50, y, fontLarge, WHITE, alpha);
-    }
-  }
+  // ---- Panel ----
 
-  // ---- Panel (the original's right-hand column) ----
-
-  /** Every option change saved, as the column saved the config after each click. */
   const changed = (change: () => void) => () => {
     change();
     saveConfig();
@@ -1386,8 +670,8 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     saveConfig();
   };
 
-  const game = panel.group('Game');
-  game.select(
+  const settings = panel.group('Game');
+  settings.select(
     'Mode',
     [
       { value: 'normal', label: 'Normal' },
@@ -1399,14 +683,14 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     { title: 'Ghost hides placed pieces; Speed deals small holes with the pieces to fill them' },
   );
   const speedHidden = () => !config.speed;
-  game.select(
+  settings.select(
     'Holes',
     [1, 2, 3, 4].map((n) => ({ value: n, label: String(n) })),
     () => config.speedHoles,
     (n) => restartOption(() => (config.speedHoles = n))(),
     { hidden: speedHidden, title: 'Speed: holes on the board at once' },
   );
-  game.select(
+  settings.select(
     'Size',
     [1, 2, 3].map((n) => ({ value: n, label: `${n} piece${n > 1 ? 's' : ''}` })),
     () => config.speedSize,
@@ -1417,14 +701,14 @@ export default (async ({ screen, input, panel, store, ticks }) => {
       })(),
     { hidden: speedHidden, title: 'Speed: pieces per hole' },
   );
-  game.select(
+  settings.select(
     'Piece',
     [...PIECES_NO_PUTTY.map((letter, i) => ({ value: i, label: letter.toUpperCase() })), { value: 12, label: 'Any' }],
     () => config.speedLetter,
     (n) => restartOption(() => (config.speedLetter = n))(),
     { hidden: speedHidden, disabled: () => config.speedSize === 1, title: 'Speed: a piece every hole needs' },
   );
-  game.toggle(
+  settings.toggle(
     'Unlimited',
     () => config.unlimited,
     (on) =>
@@ -1434,7 +718,7 @@ export default (async ({ screen, input, panel, store, ticks }) => {
       })(),
     { title: 'No time limit (no PB)' },
   );
-  game.toggle(
+  settings.toggle(
     'Seeded',
     () => seeded,
     (on) => {
@@ -1443,7 +727,7 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     },
     { title: 'Start sessions from the seed below' },
   );
-  game.toggle(
+  settings.toggle(
     'Score counts',
     () => scoreCounting,
     (on) => {
@@ -1452,7 +736,7 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     },
     { title: 'Off: sessions can’t set a PB' },
   );
-  game.toggle(
+  settings.toggle(
     'Cheats',
     () => config.cheats,
     (on) =>
@@ -1469,7 +753,7 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     .button(
       'Start',
       () => {
-        if (!boardActive) startProcedure = true;
+        if (!boardActive) startSession();
         boardActive = !boardActive;
       },
       { variant: 'primary', label: () => (boardActive ? 'Stop' : 'Start') },
@@ -1486,44 +770,41 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     .button(
       'Dismiss',
       () => {
-        if (boardActive) boardReset = true;
+        if (!boardActive) return;
+        boardIndex++;
+        newBoard();
       },
       { disabled: () => !boardActive, title: 'Deal a new board without restarting the clock' },
     );
 
   panel.group('Score').stats(['', 'Now', 'PB'], () => [
     ['Time', timePassed < sessionTime() ? String(Math.trunc(timePassed / 1000)) : '120', ''],
-    ['Score', String(scoreTotal), String(bestScore)],
-    ['Vampire proof', String(scoreFull[2]), ''],
-    ['Creaky', String(scoreFull[1]), ''],
-    ['Slipshod', String(scoreFull[0]), ''],
+    ['Score', String(score()), String(bestScore)],
+    ['Vampire proof', String(stats.grades[2]), ''],
+    ['Creaky', String(stats.grades[1]), ''],
+    ['Slipshod', String(stats.grades[0]), ''],
   ]);
 
-  // Seeded: the box takes a pasted seed with the same check as the original's paste.
-  const seed = panel.group('Seed', { hidden: () => !seeded });
-  seed.text(
+  // Seeded: the board's own seed (the client's java.util.Random), so it deals what the game would.
+  const seedGroup = panel.group('Seed', { hidden: () => !seeded });
+  seedGroup.text(
     'Seed',
-    seedString,
+    () => String(seed),
     (text) => {
       boardActive = false;
-      play(18);
+      play('audio_options_change');
       text = text.trim();
-      if (/^\d{45}$/.test(text)) {
-        holesSeed = Number(text.slice(0, 15));
-        piecesSeed = Number(text.slice(15, 30));
-        rotationSeed = Number(text.slice(30));
-      }
-      seedsAtStart = [holesSeed, piecesSeed, rotationSeed];
+      if (/^\d{1,15}$/.test(text) && Number(text) <= MAX_SEED) seed = Number(text);
     },
-    { placeholder: '45 digits', inputMode: 'numeric' },
+    { placeholder: 'up to 15 digits', inputMode: 'numeric' },
   );
-  seed
+  seedGroup
     .button(
       'Copy',
       () => {
         boardActive = false;
-        copyText(seedString(), 'Copy this seed:');
-        play(18);
+        copyText(String(seed), 'Copy this seed:');
+        play('audio_options_change');
       },
       { title: 'Copy the seed' },
     )
@@ -1531,12 +812,9 @@ export default (async ({ screen, input, panel, store, ticks }) => {
       'New',
       () => {
         boardActive = false;
-        holesSeed = rng.randintN(0, MAX_SEED);
-        piecesSeed = rng.randintN(0, MAX_SEED);
-        rotationSeed = rng.randintN(0, MAX_SEED);
-        seedsAtStart = [holesSeed, piecesSeed, rotationSeed];
-        copyText(seedString(), 'Copy this seed:');
-        play(18);
+        seed = Math.floor(Math.random() * MAX_SEED);
+        copyText(String(seed), 'Copy this seed:');
+        play('audio_options_change');
       },
       { title: 'Make a new seed and copy it' },
     );
@@ -1556,9 +834,7 @@ export default (async ({ screen, input, panel, store, ticks }) => {
       if (letter === 'b') button.style.gridColumn = '1 / -1';
       button.textContent = letter === 'b' ? 'Putty' : letter.toUpperCase();
       button.addEventListener('click', () => {
-        if (letter === 'b') puttyInToolbox = true;
-        else if (cursor.letter === 'b') puttyInToolbox = false;
-        cursor = { letter, rotation: 0, flip: 0 };
+        if (game && boardActive) game.holdCheat(letter === 'b' ? 12 : PIECE_LETTERS.indexOf(letter as (typeof PIECE_LETTERS)[number]));
         cheatsUsed = true;
         panel.used();
       });
@@ -1566,6 +842,17 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     }
     cheats.append(line);
   }
+
+  panel.group('Look').select(
+    'Graphics',
+    [
+      { value: 'vampire', label: 'Vampire Lair' },
+      { value: 'normal', label: 'Normal carpentry' },
+    ],
+    () => config.look,
+    (v) => changed(() => (config.look = v))(),
+    { title: 'The Vampire Lair’s dark art, or normal carpentry’s' },
+  );
 
   panel.group('Sound').select(
     'Volume',
@@ -1583,93 +870,43 @@ export default (async ({ screen, input, panel, store, ticks }) => {
       })(),
   );
 
-  // ---- The frame, in the original's order ----
+  // ---- The frame ----
 
   function frame(events: InputEvent[]): void {
-    for (const [x, y] of backgrounds) screen.blit(img('background_wood'), Math.floor(x), Math.floor(y));
-
-    handleEvents(events);
-    if (boardActive) applyActions();
-
-    if (boardActive) {
-      if (startProcedure || boardReset) startOrReset();
-      drawHoleContents();
-      if (!scroll.active) {
-        checkCompletions();
-        if (holesFilled === MAX_HOLES && !config.speed) {
-          if (!endScroll[0]) {
-            endScroll = [true, timePassed];
-            timeAnimating += 2500;
-            scroll = { vec: [0, 0], start: 0, active: false, duration: 1000, offset: [0, 0] };
-          }
-          if (timePassed - endScroll[1] > 1500 && scroll.vec[1] === 0) {
-            scroll = { vec: [0, 684], start: timePassed, active: true, duration: 1000, offset: [0, 0] };
-          }
-        }
-        speedRefresh();
-        planScroll();
-        startScrollIfReady();
-      }
-      warnings();
-    }
-
-    screen.blit(img('background_toolbox'), 0, 0);
-    if (boardActive) {
-      for (let x = 0; x < 3; x++) drawPiece(toolbox[x], 126 + x * 91, 324, toolboxRotation[x], toolboxFlip[x], 3, [0, 0]);
-      drawCursorPiece();
-      neglect();
-      animateScroll();
-      if (soundRefresh === 1) {
-        const next = soundHierarchy.find((s) => s > 0);
-        if (next) {
-          play(next);
-          soundRefresh = 0;
-        }
-      }
-      soundHierarchy.fill(0);
-    }
-
-    scoreTotal = -scoreFull[0] + scoreFull[1] + scoreFull[2] * 2;
-    topUpToolbox();
     if (loadBestScore) {
       bestScoresKey = scoresKey();
       bestScore = bestScores[bestScoresKey] ?? 0;
       loadBestScore = false;
     }
     if (boardActive) timePassed = ticks() - startTime + pauseTime;
-    if (timePassed > sessionTime()) endSession();
-    if (timePassed > sessionTime() - 15000 && !warningPlayed) {
-      play(15);
+    handleEvents(events);
+    if (game && boardActive) {
+      game.update(timePassed);
+      const due = pendingSounds.filter((s) => s.at <= timePassed);
+      pendingSounds = pendingSounds.filter((s) => s.at > timePassed);
+      for (const s of due) play(s.name);
+    }
+    if (boardActive && timePassed > sessionTime()) endSession();
+    if (boardActive && timePassed > sessionTime() - 15000 && !warningPlayed) {
+      play('warning');
       warningPlayed = true;
     }
 
-    if (timePassed - jiggleTimer[0] > 25) {
-      jiggleTimer[0] = timePassed;
-      rng.seed(null);
-      jiggleOffset[1] = [rng.randintN(-2, 2), rng.randintN(-2, 2)];
-      if (jiggleTimer[1] === 0) {
-        jiggleOffset[0] = [rng.randintN(-2, 2), rng.randintN(-2, 2)];
-        jiggleTimer[1] = 3;
-      }
-      jiggleTimer[1]--;
+    screen.blit(art('background'), 0, 0);
+    const title = art('title');
+    screen.blit(title, Math.round((450 - title.width) / 2), Math.round((VIEW_Y - title.height) / 2));
+    if (game) drawBoard();
+    else {
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(VIEW_X, VIEW_Y, VIEW_W, VIEW_H);
+      ctx.clip();
+      drawDeck([0, 0]);
+      screen.blit(art('toolbox'), VIEW_X + TOOLBOX_AT[0], VIEW_Y + TOOLBOX_AT[1]);
+      ctx.restore();
     }
-    if (timePassed - holeFlash[4] > 250) {
-      holeFlash[4] = timePassed;
-      holeFlash[2] *= -1;
-      if (holeFlash[3] === 2) holeFlash[1] *= -1;
-      if (holeFlash[3] === 0) {
-        holeFlash[1] *= -1;
-        holeFlash[0] *= -1;
-        holeFlash[3] = 4;
-      }
-      holeFlash[3]--;
-    }
-    updateFlying();
-    for (const f of flying) {
-      if (f) drawPiece(f.piece.letter, Math.ceil(f.pos[0]), Math.ceil(f.pos[1]), f.piece.rotation, f.piece.flip, 1, [0, 0]);
-    }
-    if (boardActive) drawCompletionTexts();
-    if (boardActive) drawStars();
+    drawStars();
+    if (endProcedureComplete && !boardActive && score() > 0 && endProcedureKey === bestScoresKey) drawStatsTable();
   }
 
   return { frame, dispose: () => sounds.dispose() };

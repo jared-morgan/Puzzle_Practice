@@ -10,6 +10,7 @@ Practice versions of Puzzle Pirates puzzles that run in the browser:
   sounds, with the Forage Simulator's puzzles, CI and Infinite (cursed isle) modes on top.
 - **Vampire Carp**: patch coffin holes with pentomino planks.
 - **Blacksmithing**: strike squares to forge a sword, each piece deciding where you strike next.
+- **Vampire Carp**: patch coffin holes with pentomino planks (the Vampire Lair's carpentry, rebuilt from the game client).
 
 Play at https://jared-morgan.github.io/Puzzle_Practice/.
 
