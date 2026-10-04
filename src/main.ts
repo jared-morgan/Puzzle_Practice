@@ -3,6 +3,7 @@
 import './style.css';
 import { runPuzzle, type RunningPuzzle } from './core/host';
 import { puzzles } from './core/registry';
+import { exportAll, importAll } from './core/storage';
 
 const app = document.querySelector<HTMLDivElement>('#app')!;
 let running: RunningPuzzle | null = null;
@@ -28,7 +29,52 @@ function showLanding(): void {
   app.replaceChildren(
     el('header', { className: 'site' }, el('h1', {}, 'Puzzle Practice'), el('p', {}, 'Practice tools for Puzzle Pirates puzzles. Pick one to play.')),
     el('main', { className: 'grid' }, ...cards),
+    backupFooter(),
   );
+}
+
+/** Scores, history and replays live in this browser only, so they can be saved to a file and loaded back. */
+function backupFooter(): HTMLElement {
+  const button = (label: string, onClick: () => void) => {
+    const node = document.createElement('button');
+    node.type = 'button';
+    node.className = 'panel-button';
+    node.textContent = label;
+    node.addEventListener('click', onClick);
+    return node;
+  };
+  const file = document.createElement('input');
+  file.type = 'file';
+  file.accept = '.json,application/json';
+  file.hidden = true;
+  file.addEventListener('change', async () => {
+    const chosen = file.files?.[0];
+    file.value = '';
+    if (!chosen) return;
+    try {
+      const count = importAll(await chosen.text());
+      window.alert(`Restored ${count} saved item${count === 1 ? '' : 's'}.`);
+    } catch {
+      window.alert("That file isn't a Puzzle Practice backup.");
+    }
+  });
+  const save = button('Back up', () => {
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(new Blob([exportAll()], { type: 'application/json' }));
+    link.download = `puzzle-practice-${new Date().toISOString().slice(0, 10)}.json`;
+    link.click();
+    URL.revokeObjectURL(link.href);
+  });
+  const buttons = document.createElement('div');
+  buttons.className = 'panel-buttons';
+  buttons.append(save, button('Restore', () => file.click()), file);
+  const footer = document.createElement('footer');
+  footer.className = 'about backup';
+  footer.append(
+    el('p', {}, 'Scores, history and replays are saved in this browser only. Back them up to a file to keep them or move them to another browser.'),
+    buttons,
+  );
+  return footer;
 }
 
 async function showPuzzle(id: string): Promise<void> {

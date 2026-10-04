@@ -12,6 +12,7 @@
 import { Images } from '../../core/assets';
 import { SoundBank } from '../../core/audio';
 import { loadFont } from '../../core/fonts';
+import { historyGroup } from '../../core/history';
 import type { InputEvent } from '../../core/input';
 import type { Option } from '../../core/panel';
 import type { PuzzleFactory } from '../../core/puzzle';
@@ -366,6 +367,9 @@ export default (async ({ screen, input, panel, store, ticks }) => {
   }
 
   function stop(): void {
+    // A round counts when its time is up, or in clear mode when the board is cleared; not when stopped early.
+    const completed = mode === 'clear' ? clearMs > 0 : timed() && !!roundEnd && ticks() >= roundEnd;
+    if (completed && running) store.addHistory(bestKey(), { score: score() });
     running = false;
     active = false;
     finished = true;
@@ -817,6 +821,10 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     ['Rating', 'not yet', ''],
     ];
   }).note(() => "Points are the client's own count for each move. The game's server turns them into your duty performance, which isn't worked out here yet.");
+
+  historyGroup(panel, () => (mode === 'clear' ? store.history(bestKey()) : null), [{ label: 'Time', value: (g) => seconds(g.score) }]);
+  historyGroup(panel, () => (timed() && mode === 'spawn' ? store.history(bestKey()) : null), [{ label: 'Spawn score', value: (g) => String(g.score) }]);
+  historyGroup(panel, () => (timed() && mode !== 'spawn' ? store.history(bestKey()) : null), [{ label: 'Points', value: (g) => String(g.score) }]);
 
   panel.group('Combos').stats(['', 'Count'], () => COMBO_NAMES.map((name) => [name, String(tally.combos[name] ?? 0)]));
 

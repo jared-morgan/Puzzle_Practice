@@ -35,6 +35,12 @@ export type Cell = [number, number];
 /** Cells are 45px (ForageBoardView). */
 export const CELL = 45;
 
+/**
+ * Randomness that only changes how moves look (slide lengths, wobble, the monkey's side). The
+ * view points it at a seeded source so a replayed session animates exactly as it was played.
+ */
+export const looks = { random: Math.random };
+
 /** Animation timings in milliseconds, from the client. */
 export const TIMING = {
   /** A 2x2 turn: each piece slides straight to its new cell (client/o, 250L). */
@@ -44,7 +50,7 @@ export const TIMING = {
   /** Earthquake: 45px x columns at 0.1 px/ms, plus up to 20% more at random (client/s). */
   slide: (columns: number) => {
     const t = Math.trunc((CELL * columns) / Math.fround(0.1));
-    return Math.trunc(t + Math.floor(Math.random() * Math.trunc(t * 0.2)) - 0.1);
+    return Math.trunc(t + Math.floor(looks.random() * Math.trunc(t * 0.2)) - 0.1);
   },
   /** The earthquake's pieces bob up and down 9px (a fifth of a cell) at 0.03 rad/ms (client/l). */
   wobblePx: CELL / 5,
@@ -328,7 +334,7 @@ export class Forage {
         delay: 0,
         duration: TIMING.slide(Math.abs(tx - sx)),
         path: 'wobble',
-        phase: Math.random() * Math.PI * 2,
+        phase: looks.random() * Math.PI * 2,
       });
     });
     this.end();
@@ -342,7 +348,7 @@ export class Forage {
    */
   private monkey(x: number, y: number): void {
     const b = this.board;
-    const facing = x < Math.trunc(WIDTH / 2) ? 1 : x > Math.trunc(WIDTH / 2) ? 0 : Math.random() < 0.5 ? 0 : 1;
+    const facing = x < Math.trunc(WIDTH / 2) ? 1 : x > Math.trunc(WIDTH / 2) ? 0 : looks.random() < 0.5 ? 0 : 1;
     const box: Cell = [Math.min(Math.max(0, x - 1), WIDTH - 3), Math.min(Math.max(0, y - 1), HEIGHT - 3)];
     const travel = (box[1] + 3) * CELL;
     let step = this.begin();

@@ -13,6 +13,7 @@ import { Images } from '../../core/assets';
 import { SoundBank } from '../../core/audio';
 import { copyText } from '../../core/clipboard';
 import { loadFont, pygameFont } from '../../core/fonts';
+import { historyGroup } from '../../core/history';
 import type { InputEvent } from '../../core/input';
 import type { PuzzleFactory } from '../../core/puzzle';
 import { floatStr, pyRound } from '../../core/py';
@@ -298,11 +299,15 @@ export default (async ({ screen, input, panel, store, ticks }) => {
   function endSession(): void {
     boardActive = false;
     if (!endProcedureComplete) {
-      if (!cheatsUsed && scoreCounting && !(config.ghost && sightUsed) && score() > bestScore) {
-        bestScore = score();
-        if (!config.ghost) play('audio_pb_sound');
-        bestScores[bestScoresKey] = bestScore;
-        store.set('bestScores', bestScores);
+      // As the simulator's scores.yaml: every counted session's score, and the PB, per settings.
+      if (!cheatsUsed && scoreCounting && !(config.ghost && sightUsed)) {
+        store.addHistory(bestScoresKey, { score: score() });
+        if (score() > bestScore) {
+          bestScore = score();
+          if (!config.ghost) play('audio_pb_sound');
+          bestScores[bestScoresKey] = bestScore;
+          store.set('bestScores', bestScores);
+        }
       }
       endProcedureComplete = true;
       endProcedureKey = bestScoresKey;
@@ -784,6 +789,8 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     ['Creaky', String(stats.grades[1]), ''],
     ['Slipshod', String(stats.grades[0]), ''],
   ]);
+
+  historyGroup(panel, () => store.history(scoresKey()), [{ label: 'Score', value: (g) => String(g.score) }]);
 
   // Seeded: the board's own seed (the client's java.util.Random), so it deals what the game would.
   const seedGroup = panel.group('Seed', { hidden: () => !seeded });

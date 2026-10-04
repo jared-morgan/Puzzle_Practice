@@ -15,6 +15,7 @@ import { Images } from '../../core/assets';
 import { SoundBank } from '../../core/audio';
 import { copyText, pasteText } from '../../core/clipboard';
 import { loadFont } from '../../core/fonts';
+import { historyGroup } from '../../core/history';
 import type { InputEvent, Point } from '../../core/input';
 import type { PuzzleFactory } from '../../core/puzzle';
 import {
@@ -669,6 +670,8 @@ export default (async ({ screen, input, panel, store, ticks }) => {
 
   /** The jug is full (BrewController.s): "Finished!" holds the board, then it clears. */
   function finish(): void {
+    const key = historyKey(startedMode);
+    if (key && game) store.addHistory(key, { score: Number(sessionScore().toFixed(2)) });
     say(MESSAGES.jug_filled, { wait: true });
     sounds.play('finished');
     running = false;
@@ -875,6 +878,19 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     return true;
   }
 
+  /** The simulator's Score: points per column distilled. */
+  function sessionScore(): number {
+    const up = game ? game.columns.filter((c) => c.distilled).length : 0;
+    return game ? game.points / Math.max(up, 1) : 0;
+  }
+
+  /** Finished sessions are kept per mode and settings (per board for Practice); Create, a sandbox, keeps none. */
+  function historyKey(m: Mode): string | null {
+    if (m === 'Create') return null;
+    if (m === 'Practice') return `Practice:${practiceNum.join('-')}`;
+    return `${m}:${timerOn ? timerSeconds : 'off'}:${difficulty}:${spawnRates.join('-')}`;
+  }
+
   const gameGroup = panel.group('Game');
   gameGroup.select('Mode', MODES, () => mode, (m) => {
     mode = save('mode', m);
@@ -905,12 +921,17 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     .button('Pause', togglePause, { disabled: () => !running, label: () => (paused ? 'Resume' : 'Pause'), title: 'Esc' });
 
   panel.group('Score').stats([], () => {
-    const up = game ? game.columns.filter((c) => c.distilled).length : 0;
+    const games = historyKey(mode) ? store.history(historyKey(mode)!) : [];
     return [
-      ['Score', game ? (game.points / Math.max(up, 1)).toFixed(2) : '0.00'],
+      ['Score', sessionScore().toFixed(2)],
+      ...(games.length ? [['Best', Math.max(...games.map((g) => g.score)).toFixed(2)]] : []),
       ['Chain', String(game?.board.consecCrystal ?? 0)],
     ];
   });
+
+  historyGroup(panel, () => (historyKey(mode) ? store.history(historyKey(mode)!) : null), [
+    { label: 'Score', value: (g) => g.score.toFixed(2) },
+  ]);
 
   const settingsGroup = panel.group('Settings', { hidden: () => mode === 'Practice' });
   const timerShown = () => (mode === 'Create' ? createTimerOn : timerOn);

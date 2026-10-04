@@ -468,3 +468,19 @@ a {
     margin: 0 auto;
   }
 }
+
+/* ---- Landing page backup buttons (main.ts) ---- */
+
+.backup {
+  padding: 0 16px 24px;
+}
+
+.backup .panel-buttons {
+  justify-content: center;
+  margin-top: 8px;
+}
+
+.backup .panel-button {
+  flex: 0 0 auto;
+  min-width: 110px;
+}

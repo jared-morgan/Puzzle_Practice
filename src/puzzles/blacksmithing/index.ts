@@ -13,6 +13,7 @@
 import { Images } from '../../core/assets';
 import { SoundBank } from '../../core/audio';
 import { loadFont } from '../../core/fonts';
+import { historyGroup } from '../../core/history';
 import type { InputEvent, Point } from '../../core/input';
 import type { Option } from '../../core/panel';
 import type { PuzzleFactory } from '../../core/puzzle';
@@ -558,6 +559,7 @@ export default (async ({ screen, input, panel, store, ticks }) => {
       return;
     }
     const key = String(difficulty);
+    if (board) store.addHistory(`classic:${key}`, { score: board.numHits });
     if (board && board.numHits > (bests[key] ?? 0)) {
       bests[key] = board.numHits;
       store.set('bestStrikes', bests);
@@ -592,6 +594,7 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     if (!timeUp) return;
     say("Time's up!", 4, 2500);
     const key = perfectKey();
+    store.addHistory(`run:${key}`, { score: run.points, boards: run.boards });
     if (run.points > (timedBests[key] ?? -1)) {
       timedBests[key] = run.points;
       store.set('perfectTimedBests', timedBests);
@@ -886,6 +889,14 @@ export default (async ({ screen, input, panel, store, ticks }) => {
       ['Score', 'not yet', ''],
     ];
   }).note(() => "Points come from the game's server, so they aren't worked out here yet.");
+
+  historyGroup(panel, () => (mode === 'classic' ? store.history(`classic:${difficulty}`) : null), [
+    { label: 'Strikes', value: (g) => String(g.score) },
+  ]);
+  historyGroup(panel, () => (mode === 'perfect' && timerMs ? store.history(`run:${perfectKey()}`) : null), [
+    { label: 'Points', value: (g) => String(g.score) },
+    { label: 'Boards', value: (g) => String(g.boards) },
+  ]);
 
   panel.group('Combos').stats(['', 'This sword'], () => [
     ['Double', String(tally.chains[2] ?? 0)],
