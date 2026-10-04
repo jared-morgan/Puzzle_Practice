@@ -15,6 +15,7 @@ import { Images } from '../../core/assets';
 import { SoundBank } from '../../core/audio';
 import { copyText, pasteText } from '../../core/clipboard';
 import { loadFont } from '../../core/fonts';
+import { keyMatches } from '../../core/controls';
 import { historyGroup } from '../../core/history';
 import type { InputEvent, Point } from '../../core/input';
 import type { PuzzleFactory } from '../../core/puzzle';
@@ -130,9 +131,6 @@ const KEY_MOVES: Record<string, number> = {
   '7': NW,
   home: NW,
 };
-const SWAP_KEYS = new Set(['space', '5', 'clear']);
-const BURN_KEY = 'x';
-
 /**
  * The Distilling Simulator's modes: Standard (your spawn rates and timer), Seeded (replay a seed or a
  * recorded piece sequence), Create (paint any board; never ends) and Practice (set boards from practice.ts).
@@ -236,8 +234,6 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     return canvas;
   }
 
-  let volume = store.get<number>('volume', 3);
-  sounds.setVolume(volume / 6);
   let mode = store.get<Mode>('mode', 'Standard');
   if (!MODES.some((m) => m.value === mode)) mode = 'Standard';
   let timerOn = store.get<boolean>('timerOn', true);
@@ -259,10 +255,12 @@ export default (async ({ screen, input, panel, store, ticks }) => {
   let startedMode: Mode = mode;
   /** A piece key (1-5) held down in Create mode paints the piece under the mouse. */
   let paintWith: number | null = null;
+  let palettePiece: number | null = null;
 
   let game: BrewGame | null = null;
   let active = false;
   let running = false;
+  let resultRows: string[][] | null = null;
   let pieces: Piece[][] = [];
   let leaving: Piece[] = [];
   let selected: Piece | null = null;
@@ -456,10 +454,12 @@ export default (async ({ screen, input, panel, store, ticks }) => {
   }
 
   function start(): void {
+    resultRows = null;
     game = newGame();
     startedMode = mode;
     paused = false;
     paintWith = null;
+    palettePiece = null;
     pieces = [];
     for (let col = 0; col < COLUMNS; col++) pieces.push(makeColumn(col, false));
     leaving = [];
@@ -474,9 +474,9 @@ export default (async ({ screen, input, panel, store, ticks }) => {
   }
 
   function stop(): void {
+    resultRows = makeResultRows();
     running = false;
     active = false;
-    game = null;
     pieces = [];
     leaving = [];
     selected = null;
@@ -670,6 +670,7 @@ export default (async ({ screen, input, panel, store, ticks }) => {
 
   /** The jug is full (BrewController.s): "Finished!" holds the board, then it clears. */
   function finish(): void {
+    resultRows = makeResultRows();
     const key = historyKey(startedMode);
     if (key && game) store.addHistory(key, { score: Number(sessionScore().toFixed(2)) });
     say(MESSAGES.jug_filled, { wait: true });
@@ -784,6 +785,11 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     for (const event of events) {
       if (event.type === 'mousedown' && event.button <= 3) {
         if (!inView(event.pos)) continue;
+        if (creating && palettePiece !== null && event.button === 1) {
+          paint(event.pos, palettePiece);
+          mouseHeld = true;
+          continue;
+        }
         hover(event.pos);
         if (isBurnButton(event.button)) burnNow();
         else {
@@ -800,14 +806,19 @@ export default (async ({ screen, input, panel, store, ticks }) => {
         if (dragSwapped && selected) setSelected(null);
         dragMode = dragSwapped = mouseHeld = false;
       } else if (event.type === 'keydown') {
-        const paintKey = creating ? ['1', '2', '3', '4', '5'].indexOf(event.key) : -1;
-        const move = KEY_MOVES[event.key];
+        const paintKeys = ['1', '2', '3', '4', '5'];
+        const paintKey = creating ? paintKeys.findIndex((_, i) => keyMatches(event.key, 'distilling', `paint${i + 1}`, paintKeys[i])) : -1;
+        const directionIds: Record<number, string> = { [SW]: 'downLeft', [NW]: 'upLeft', [N]: 'up', [NE]: 'upRight', [SE]: 'downRight', [S]: 'down' };
+        const move = Object.entries(directionIds).find(([direction, id]) =>
+          keyMatches(event.key, 'distilling', id, Object.keys(KEY_MOVES).find((key) => KEY_MOVES[key] === Number(direction) && key.startsWith('arrow')) ?? ''),
+        );
+        const movement = move ? Number(move[0]) : ['1','2','3','4','6','7','8','9','home','end','pageup','pagedown'].includes(event.key) ? KEY_MOVES[event.key] : undefined;
         if (paintKey >= 0) paintWith = PAINT_ORDER[paintKey];
-        else if (event.key === 'escape') togglePause();
-        else if (move !== undefined) moveCursor(move);
-        else if (SWAP_KEYS.has(event.key)) selOrSwap();
-        else if (event.key === BURN_KEY) burnNow();
-      } else if (event.type === 'keyup' && paintWith !== null && PAINT_ORDER[['1', '2', '3', '4', '5'].indexOf(event.key)] === paintWith) {
+        else if (keyMatches(event.key, 'distilling', 'pause', 'escape')) togglePause();
+        else if (movement !== undefined) moveCursor(movement);
+        else if (keyMatches(event.key, 'distilling', 'swap', 'space', ['5','clear'])) selOrSwap();
+        else if (keyMatches(event.key, 'distilling', 'burn', 'x')) burnNow();
+      } else if (event.type === 'keyup' && paintWith !== null && PAINT_ORDER[['1', '2', '3', '4', '5'].findIndex((_, i) => keyMatches(event.key, 'distilling', `paint${i + 1}`, String(i + 1)))] === paintWith) {
         paintWith = null;
       }
     }
@@ -820,7 +831,10 @@ export default (async ({ screen, input, panel, store, ticks }) => {
         const pos: Point = [x0 + ((input.mouse[0] - x0) * i) / steps, y0 + ((input.mouse[1] - y0) * i) / steps];
         if (!inView(pos)) continue;
         hover(pos);
-        if (mouseHeld) selOrSwap();
+        if (mouseHeld) {
+          if (creating && palettePiece !== null) paint(pos, palettePiece);
+          else selOrSwap();
+        }
       }
       lastMouse = input.mouse;
     }
@@ -892,9 +906,23 @@ export default (async ({ screen, input, panel, store, ticks }) => {
   }
 
   const timerShown = () => (mode === 'Create' ? createTimerOn : timerOn);
-  const gameGroup = panel.group();
+  panel.controls('distilling', [
+    { id: 'downLeft', label: 'Move down-left', defaultKey: 'ArrowLeft' },
+    { id: 'upLeft', label: 'Move up-left', defaultKey: 'Home' },
+    { id: 'up', label: 'Move up', defaultKey: 'ArrowUp' },
+    { id: 'upRight', label: 'Move up-right', defaultKey: 'ArrowRight' },
+    { id: 'downRight', label: 'Move down-right', defaultKey: 'PageDown' },
+    { id: 'down', label: 'Move down', defaultKey: 'ArrowDown' },
+    { id: 'swap', label: 'Swap pieces', defaultKey: 'Space' },
+    { id: 'burn', label: 'Burn now', defaultKey: 'X' },
+    { id: 'pause', label: 'Pause', defaultKey: 'Escape' },
+    ...[1,2,3,4,5].map((n) => ({ id: `paint${n}`, label: `Paint piece ${n}`, defaultKey: String(n) })),
+  ]);
+  const gameGroup = panel.session();
   gameGroup.select('Mode', MODES, () => mode, (m) => {
     mode = save('mode', m);
+    resultRows = null;
+    game = null;
     seedText = '';
     lastSeed = '';
   }, { disabled: () => running });
@@ -916,21 +944,21 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     );
   });
 
-  gameGroup.note(() => {
+  const actions = panel.group();
+  actions.note(() => {
     if (mode === 'Practice') return '';
     const timer = timerShown() ? `${timerSeconds}s burn timer` : 'No burn timer';
     return `Difficulty ${difficulty} · ${timer}`;
   });
-  gameGroup
+  actions
     .button('Start', () => (running ? stop() : start()), { variant: 'primary', label: () => (running ? 'Stop' : 'Start') })
     .button('Pause', togglePause, { disabled: () => !running, label: () => (paused ? 'Resume' : 'Pause'), title: 'Esc' });
 
-  panel.group('Score').stats([], () => {
+  panel.score().stats([], () => {
     const games = historyKey(mode) ? store.history(historyKey(mode)!) : [];
     return [
       ['Score', sessionScore().toFixed(2)],
       ...(games.length ? [['Best', Math.max(...games.map((g) => g.score)).toFixed(2)]] : []),
-      ['Chain', String(game?.board.consecCrystal ?? 0)],
     ];
   });
 
@@ -986,13 +1014,33 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     start();
     copyText(get_create_seed(fromColumns(game!.board.columns)), 'Copy this seed:');
   }, { hidden: () => mode !== 'Create', disabled: () => !running, title: 'Deal a new board and copy its seed' });
-  for (const [i, name] of ['Black', 'Brown', 'White', 'Spice', 'Burnt'].entries()) {
-    boardGroup.button(name, () => fillBoard(PAINT_ORDER[i]), {
-      hidden: () => mode !== 'Create',
-      disabled: () => !running,
-      title: `Change the entire board to ${name.toLowerCase()} (middle-click on the simulator's palette)`,
+  const palette = document.createElement('div');
+  palette.className = 'piece-palette';
+  const pieceNames = ['Black', 'Brown', 'White', 'Spice', 'Burnt'];
+  pieceNames.forEach((name, i) => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'panel-button';
+    const icon = document.createElement('canvas');
+    icon.width = icon.height = CELL;
+    icon.setAttribute('aria-hidden', 'true');
+    icon.getContext('2d')!.drawImage(pieceImage(PAINT_ORDER[i], 0), 0, 0);
+    button.append(icon, document.createTextNode(`${i + 1} · ${name}`));
+    button.addEventListener('click', () => {
+      palettePiece = palettePiece === PAINT_ORDER[i] ? null : PAINT_ORDER[i];
+      setSelected(null);
+      panel.used();
     });
-  }
+    panel.addSync(() => {
+      button.disabled = !running;
+      button.setAttribute('aria-pressed', String(palettePiece === PAINT_ORDER[i]));
+    });
+    palette.append(button);
+  });
+  boardGroup.append(palette, { hidden: () => mode !== 'Create' });
+  boardGroup.note(() => 'Hold 1–5 to paint, or select a piece above and left-click to place it. Select it again to deselect. Scroll to cycle pieces.', { hidden: () => mode !== 'Create' });
+  boardGroup.select('Fill piece', pieceNames.map((label, i) => ({ value: i, label })), () => Math.max(0, PAINT_ORDER.indexOf(palettePiece ?? PAINT_ORDER[0])), (i) => { palettePiece = PAINT_ORDER[i]; }, { hidden: () => mode !== 'Create' });
+  boardGroup.button('Fill board', () => fillBoard(palettePiece ?? PAINT_ORDER[0]), { hidden: () => mode !== 'Create', disabled: () => !running });
 
   const seedGroup = panel.group('Seed', { hidden: () => mode !== 'Seeded' });
   seedGroup.button('Copy', () => lastSeed && copyText(lastSeed, 'Copy this seed:'), {
@@ -1005,20 +1053,23 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     copyText(seedText, 'Copy this seed:');
   }, { disabled: () => running, title: 'Make a new seed, copy it and use it for the next start' });
 
-  panel.settings.group('Sound').select(
-    'Volume',
-    [
-      { value: 0, label: 'Off' },
-      { value: 1, label: 'Low' },
-      { value: 2, label: 'Medium' },
-      { value: 3, label: 'High' },
-    ],
-    () => volume,
-    (v) => {
-      volume = save('volume', v);
-      sounds.setVolume(v / 6);
-    },
-  );
+  panel.clock(() => {
+    if ((running && game?.timerless) || (!running && runSettings().interval === null)) return null;
+    const ms = running && game ? game.timeUntilBurn(ticks()) : runSettings().interval ?? 0;
+    return { label: 'Next burn', ms, countdown: true, warn: running && ms < 3000 };
+  });
+  function makeResultRows(): string[][] {
+    return [
+      ['Score', sessionScore().toFixed(2)],
+      ['Points', String(game?.points ?? 0)], ['Columns distilled', String(game?.columns.filter((c) => c.distilled).length ?? 0)],
+      ['Columns burnt', String(game?.columns.filter((c) => !c.distilled).length ?? 0)],
+      ['Pieces distilled', String(game?.distilled ?? 0)], ['Crystal chain', String(game?.board.consecCrystal ?? 0)],
+    ];
+  }
+  panel.results(() => resultRows && !active ? {
+    title: 'Distilling results',
+    rows: resultRows,
+  } : null);
 
   if (import.meta.env.DEV) {
     (window as unknown as Record<string, unknown>).__brew = {

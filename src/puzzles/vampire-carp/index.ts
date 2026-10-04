@@ -12,11 +12,11 @@
 import { Images } from '../../core/assets';
 import { SoundBank } from '../../core/audio';
 import { copyText } from '../../core/clipboard';
-import { loadFont, pygameFont } from '../../core/fonts';
+import { keyMatches } from '../../core/controls';
+import { loadFont } from '../../core/fonts';
 import { historyGroup } from '../../core/history';
 import type { InputEvent } from '../../core/input';
 import type { PuzzleFactory } from '../../core/puzzle';
-import { floatStr, pyRound } from '../../core/py';
 import { PyRandom } from '../../core/pyrandom';
 import { BoardRandom, type Cell, Piece, PIECE_LETTERS } from './board';
 import {
@@ -41,10 +41,6 @@ const imageUrls = import.meta.glob<string>('./media/*.png', { eager: true, query
 const soundUrls = import.meta.glob<string>('./sounds/*.mp3', { eager: true, query: '?url', import: 'default' });
 
 const FONT = 'Delarobb';
-const WHITE = '#ffffff';
-const PURPLE = 'rgb(153, 51, 204)';
-const statsFont = pygameFont(26);
-const statsFontSmall = pygameFont(14);
 
 /** The deck's planks: 108x54 tiles, every other row half a plank over (CarpentryBoardView.g). */
 const PLANK_W = 6 * CELL;
@@ -215,7 +211,7 @@ export default (async ({ screen, input, panel, store, ticks }) => {
   const art = (name: string) => img(`${name}${look().suffix}`);
   const saveConfig = () => store.set('config', config);
   const bestScores = store.get<Record<string, number>>('bestScores', {});
-  sounds.setVolume(config.volume / 6);
+
 
   // ---- Session ----
   let game: Game | null = null;
@@ -373,11 +369,13 @@ export default (async ({ screen, input, panel, store, ticks }) => {
         game.pointerUp(event.button);
       } else if (event.type === 'keydown') {
         const k = event.key;
-        if (k === KEYS.flip) game.flip();
-        else if (k === KEYS.ccw) game.rotate(false);
-        else if (k === KEYS.cw) game.rotate(true);
-        else if (KEYS.slots.includes(k)) game.keyPick(KEYS.slots.indexOf(k));
-        else if (k === KEYS.place && inView(mx, my)) game.placeKey(mx, my);
+        if (keyMatches(k, 'vampire-carp', 'flip', KEYS.flip)) game.flip();
+        else if (keyMatches(k, 'vampire-carp', 'rotateLeft', KEYS.ccw)) game.rotate(false);
+        else if (keyMatches(k, 'vampire-carp', 'rotateRight', KEYS.cw)) game.rotate(true);
+        else if (KEYS.slots.some((key, i) => keyMatches(k, 'vampire-carp', `piece${i + 1}`, key))) {
+          game.keyPick(KEYS.slots.findIndex((key, i) => keyMatches(k, 'vampire-carp', `piece${i + 1}`, key)));
+        }
+        else if (keyMatches(k, 'vampire-carp', 'place', KEYS.place) && inView(mx, my)) game.placeKey(mx, my);
       }
     }
   }
@@ -578,75 +576,39 @@ export default (async ({ screen, input, panel, store, ticks }) => {
   }
 
   /** str(round(x, n)) in Python. */
-  const roundStr = (x: number, n: number) => floatStr(pyRound(x, n));
 
   /** The simulator's end-of-session table. */
-  function drawStatsTable(): void {
-    const t = (value: string, x: number, y: number, colour = WHITE) => screen.text(value, x, y, statsFont, colour);
-    const placed = stats.placed;
-    if (config.speed) {
-      screen.blit(img('background_stats2'), 0, 0);
-    } else {
-      screen.blit(img('background_stats'), 0, 0);
-      const rates: Record<string, number> = { f: 14, i: 2, l: 8, n: 8, p: 22, t: 7, u: 4, v: 4, w: 4, x: 3, y: 14, z: 4, b: 1 };
-      const columns: [string, number][] = [
-        ['p', 0],
-        ['f', 4],
-        ['y', 8],
-        ['n', 10],
-        ['l', 13],
-        ['t', 16],
-        ['u', 20],
-        ['v', 23],
-        ['w', 27],
-        ['z', 30],
-        ['x', 33],
-        ['i', 36],
-        ['b', 39],
-      ];
-      for (const [letter, col] of columns) {
-        const found = stats.found[letter] ?? 0;
-        t(String(found), 58 + col * 9, 94);
-        t(String(Math.trunc(found - (rates[letter] * (placed + 3)) / 95)), 58 + col * 9, 112, PURPLE);
-      }
-    }
-    const picks = stats.mousePicks + stats.keyPicks;
-    const kbm = picks && stats.keyPicks / picks > 0.8 ? 'K' : picks && stats.mousePicks / picks > 0.8 ? 'M' : 'H';
-    const focus = stats.focus.length ? stats.focus.reduce((a, b) => a + b, 0) / stats.focus.length : 0;
-    const [slipshod, creaky, proof] = stats.grades;
-    const left: [string, number][] = [
-      [`Score: ${score()}   -   ${slipshod}, ${creaky}, ${proof}`, 0],
-      [`Score / Hole: ${roundStr(score() / stats.holesFilled, 2)}`, 0.5],
-      [`Holes Filled: ${stats.holesFilled}`, 1],
-      [`Animating (s): ${roundStr(stats.animating / 1000, 2)}`, 2],
-      [`Scrolls: ${stats.scrolls[0]}h - ${stats.scrolls[1]}d`, 2.5],
-      [`KBM: ${kbm} - ${stats.keyPicks} - ${stats.mousePicks}`, 3],
-      [`Pieces Placed: ${placed}`, 4],
-      [`Pieces Replaced: ${stats.replaced}`, 4.5],
-      [`Flips: ${stats.flips}`, 5],
-      [`Spins: ${stats.spins}`, 5.5],
-      [`Focus: ${roundStr(focus, 1)}`, 6.5],
-      [`> P Drought: ${Math.max(stats.pDrought[0], stats.pDrought[1])}`, 7],
-      [`Slowest Hole (s) : ${roundStr(stats.holeTimes[0] / 1000, 1)}`, 7.5],
-      [`Quickest Hole (s) : ${roundStr(stats.holeTimes[1] / 1000, 1)}`, 8],
-    ];
-    for (const [value, row] of left) t(value, 50, 221 + row * 36);
-    screen.text(`Seed: ${seedAtStart}`, 50, 221 + 10 * 36, statsFontSmall);
-    const s = sessionScores[bestScoresKey];
-    if (!s) return;
-    const right: [string, number][] = [
-      [`Sessions: ${s.sessions}`, 0],
-      [`Average Score: ${roundStr(s.average_score, 2)}`, 0.5],
-      [`Average Holes: ${roundStr(s.average_holes, 2)}`, 2],
-      [`Score Per Hole: ${roundStr(s.score_per_hole, 2)}`, 2.5],
-      [`Average Pieces: ${roundStr(s.average_pieces, 1)}`, 3],
-      [`Best Score: ${s.max_score}`, 4],
-      [`Most VP: ${s.most_vp}`, 4.5],
-      [`Most Holes: ${s.most_holes}`, 5],
-      [`Most Pieces: ${s.most_pieces}`, 5.5],
-    ];
-    for (const [value, row] of right) t(value, 240, 221 + row * 36);
-  }
+  panel.results(() => endProcedureComplete && !boardActive && endProcedureKey === bestScoresKey ? {
+    title: 'Carpentry results',
+    rows: [
+      ['Score', String(score())],
+      ['Time', `${(timePassed / 1000).toFixed(1)}s`],
+      ['Vampire proof / Creaky / Slipshod', stats.grades.slice().reverse().join(' / ')],
+      ['Holes filled', String(stats.holesFilled)],
+      ['Score / hole', stats.holesFilled ? (score() / stats.holesFilled).toFixed(2) : '0'],
+      ['Pieces placed / replaced', `${stats.placed} / ${stats.replaced}`],
+      ['Flips / spins', `${stats.flips} / ${stats.spins}`],
+      ['Keyboard / mouse picks', `${stats.keyPicks} / ${stats.mousePicks}`],
+      ['Hole / deck scrolls', stats.scrolls.join(' / ')],
+      ['Animation time', `${(stats.animating / 1000).toFixed(2)}s`],
+      ['Average focus', stats.focus.length ? (stats.focus.reduce((a, b) => a + b, 0) / stats.focus.length).toFixed(1) : '0'],
+      ['Longest P drought', String(Math.max(...stats.pDrought))],
+      ['Slowest / quickest hole', `${(stats.holeTimes[0] / 1000).toFixed(1)}s / ${Number.isFinite(stats.holeTimes[1]) ? (stats.holeTimes[1] / 1000).toFixed(1) : '—'}s`],
+      ['Pieces drawn', Object.entries(stats.found).map(([piece, count]) => `${piece.toUpperCase()}: ${count}`).join(' · ')],
+      ['Seed', String(seedAtStart)],
+      ...(sessionScores[bestScoresKey] ? (() => {
+        const totals = sessionScores[bestScoresKey];
+        return [
+          ['Sessions with these settings', String(totals.sessions)],
+          ['Average score / holes', `${totals.average_score.toFixed(2)} / ${totals.average_holes.toFixed(2)}`],
+          ['Overall score / hole', totals.score_per_hole.toFixed(2)],
+          ['Average pieces', totals.average_pieces.toFixed(1)],
+          ['Best score / most vampire proof', `${totals.max_score} / ${totals.most_vp}`],
+          ['Most holes / pieces', `${totals.most_holes} / ${totals.most_pieces}`],
+        ];
+      })() : []),
+    ],
+  } : null);
 
   // ---- Panel ----
 
@@ -681,7 +643,14 @@ export default (async ({ screen, input, panel, store, ticks }) => {
       : { label: 'Time left', ms: sessionTime() - timePassed, countdown: true, warn: boardActive && sessionTime() - timePassed < 10000 },
   );
 
-  const session = panel.group();
+  const session = panel.session();
+  panel.controls('vampire-carp', [
+    { id: 'flip', label: 'Flip piece', defaultKey: 'Space' },
+    { id: 'rotateLeft', label: 'Rotate anticlockwise', defaultKey: 'X' },
+    { id: 'rotateRight', label: 'Rotate clockwise', defaultKey: 'C' },
+    ...[1,2,3].map((n) => ({ id: `piece${n}`, label: `Select piece ${n}`, defaultKey: String(n) })),
+    { id: 'place', label: 'Place piece', defaultKey: 'Z' },
+  ]);
   session.select(
     'Mode',
     [
@@ -693,7 +662,8 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     setMode,
     { title: 'Ghost hides placed pieces; Speed deals small holes with the pieces to fill them' },
   );
-  session.note(() => {
+  const actions = panel.group();
+  actions.note(() => {
     const parts: string[] = [];
     if (config.speed) {
       const holes = `${config.speedHoles} hole${config.speedHoles > 1 ? 's' : ''}`;
@@ -708,7 +678,7 @@ export default (async ({ screen, input, panel, store, ticks }) => {
   });
 
   const pauseAvailable = () => timePassed > 0 && timePassed < sessionTime() && pauseTime > 0;
-  session
+  actions
     .button(
       'Start',
       () => {
@@ -802,11 +772,8 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     { title: 'Pick any piece from the cheat pieces (no PB)' },
   );
 
-  panel.group('Score').stats(['', 'Now', 'PB'], () => [
+  panel.score().stats(['', 'Now', 'PB'], () => [
     ['Score', String(score()), String(bestScore)],
-    ['Vampire proof', String(stats.grades[2]), ''],
-    ['Creaky', String(stats.grades[1]), ''],
-    ['Slipshod', String(stats.grades[0]), ''],
   ]);
 
   historyGroup(panel, () => store.history(scoresKey()), [{ label: 'Score', value: (g) => String(g.score) }]);
@@ -880,22 +847,6 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     { title: 'The Vampire Lair’s dark art, or normal carpentry’s' },
   );
 
-  panel.settings.group('Sound').select(
-    'Volume',
-    [
-      { value: 0, label: 'Off' },
-      { value: 1, label: 'Low' },
-      { value: 2, label: 'Medium' },
-      { value: 3, label: 'High' },
-    ],
-    () => config.volume,
-    (v) =>
-      changed(() => {
-        config.volume = v;
-        sounds.setVolume(config.volume / 6);
-      })(),
-  );
-
   // ---- The frame ----
 
   function frame(events: InputEvent[]): void {
@@ -932,7 +883,6 @@ export default (async ({ screen, input, panel, store, ticks }) => {
       ctx.restore();
     }
     drawStars();
-    if (endProcedureComplete && !boardActive && score() > 0 && endProcedureKey === bestScoresKey) drawStatsTable();
   }
 
   return { frame, dispose: () => sounds.dispose() };

@@ -3,6 +3,17 @@
 // first click or key press (see unlockAudio) and sounds decode lazily after that.
 // Ship sounds as MP3: Safari can't decode Ogg Vorbis everywhere.
 import { byName, type UrlGlob } from './assets';
+import { Store } from './storage';
+
+const preferences = new Store('global');
+let globalVolume = Math.max(0, Math.min(100, preferences.get<number>('volume', 50)));
+const banks = new Set<SoundBank>();
+export const getVolume = () => globalVolume;
+export function setVolume(value: number): void {
+  globalVolume = Math.max(0, Math.min(100, value));
+  preferences.set('volume', globalVolume);
+  for (const bank of banks) bank.setVolume(globalVolume / 100);
+}
 
 let context: AudioContext | null = null;
 const waiting: Array<(ctx: AudioContext) => void> = [];
@@ -28,10 +39,11 @@ function withContext(callback: (ctx: AudioContext) => void): void {
 export class SoundBank<Name extends string = string> {
   private readonly buffers = new Map<string, AudioBuffer>();
   private gain: GainNode | null = null;
-  private volume = 0.5;
+  private volume = globalVolume / 100;
   private disposed = false;
 
   constructor(glob: UrlGlob) {
+    banks.add(this);
     const urls = byName(glob);
     withContext((ctx) => {
       if (this.disposed) return;
@@ -64,6 +76,7 @@ export class SoundBank<Name extends string = string> {
   }
 
   dispose(): void {
+    banks.delete(this);
     this.disposed = true;
     this.gain?.disconnect();
   }

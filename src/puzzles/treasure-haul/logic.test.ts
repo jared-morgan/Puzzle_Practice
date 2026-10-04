@@ -29,6 +29,31 @@ function seq(values: number[]): () => number {
 }
 
 describe('populate', () => {
+  it('keeps chests waiting until the first-clear delay expires', () => {
+    const b = boardFrom(QUIET, () => 0.3);
+    let now = 0;
+    b.chestReady = () => now >= 1000;
+    b.chestList.push({ value: 0, size: 0 });
+    for (let y = 0; y < 2; y++) for (let x = 0; x < 2; x++) b.set(x, y, EMPTY);
+    b.step();
+    expect(b.cells.filter(isChestOrigin)).toHaveLength(0);
+    expect(b.chestList).toHaveLength(1);
+    now = 1000;
+    for (let y = 0; y < 2; y++) for (let x = 0; x < 2; x++) b.set(x, y, EMPTY);
+    b.step();
+    expect(b.cells.filter(isChestOrigin)).toHaveLength(1);
+    expect(b.chestList).toHaveLength(0);
+  });
+
+  it('custom gem rates can disable gems or generate only gems', () => {
+    const b = new HaulBoard(() => 0.2);
+    b.gemRates = [0, 0];
+    expect(b.nextPiece()).toBeLessThan(4);
+    b.gemRates = [100, 0];
+    expect(b.nextPiece()).toBe(RUBY);
+    b.gemRates = [0, 100];
+    expect(b.nextPiece()).toBe(EMERALD);
+  });
   it('deals only coins and never three in a row', () => {
     for (let n = 0; n < 50; n++) {
       const b = new HaulBoard(Math.random);

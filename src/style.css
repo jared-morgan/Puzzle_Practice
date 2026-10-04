@@ -150,6 +150,7 @@ a {
 }
 
 .stage {
+  position: relative;
   width: min(100%, 560px, calc((100vh - 120px) * 0.75));
   min-width: 0;
 }
@@ -207,6 +208,22 @@ a {
   display: none;
 }
 
+.panel-range-control { display: flex; align-items: center; gap: 10px; }
+.panel-range { width: 100%; accent-color: var(--accent); }
+.panel-range-control output { min-width: 3ch; font-variant-numeric: tabular-nums; }
+.game-results {
+  position: absolute; inset: 0; z-index: 2; overflow-y: auto;
+  padding: clamp(14px, 4vw, 28px); background: var(--surface);
+  border: 1px solid var(--border); border-radius: var(--radius);
+}
+.game-results h2 { margin: 0 0 18px; font-size: 1.3rem; }
+.game-results .panel-stats { font-size: 0.9rem; }
+.game-results .panel-stats th, .game-results .panel-stats td { padding: 5px 8px; }
+.piece-palette { display: flex; flex-wrap: wrap; gap: 6px; }
+.piece-palette button { flex: 1; min-width: 70px; }
+.piece-palette canvas { width: 28px; height: 28px; display: block; margin: auto; }
+.piece-palette button[aria-pressed="true"] { outline: 2px solid var(--accent); background: var(--surface-2); }
+
 .panel-tabs {
   position: sticky;
   top: 0;
@@ -256,7 +273,7 @@ a {
   gap: 10px;
 }
 
-/* The clock: the same card, first on the Play tab, in every puzzle that can be timed. */
+/* The shared clock and score follow the session controls in every puzzle. */
 .panel-clock {
   display: grid;
   grid-template-columns: auto 1fr;

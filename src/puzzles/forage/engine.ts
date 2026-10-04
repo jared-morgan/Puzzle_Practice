@@ -47,6 +47,8 @@ export const TIMING = {
   turn: 250,
   /** Gravity: 45px x rows at 0.35 x 1.5 px/ms, truncated per piece (client/w). */
   fall: (rows: number) => Math.trunc((CELL * rows) / Math.fround(Math.fround(0.35) * 1.5)),
+  /** New practice chests enter at the base piece speed, before accelerated settling. */
+  chestEntry: (rows: number) => Math.trunc((CELL * rows) / Math.fround(0.35)),
   /** Earthquake: 45px x columns at 0.1 px/ms, plus up to 20% more at random (client/s). */
   slide: (columns: number) => {
     const t = Math.trunc((CELL * columns) / Math.fround(0.1));
@@ -158,6 +160,8 @@ const TURN: Cell[] = [
 ];
 
 export class Forage {
+  /** Older replay files used accelerated entry for chests. */
+  legacyChestTiming = false;
   board: ForageBoard;
   steps: Step[] = [];
   /** Crates collected this game (ForageController's e). */
@@ -223,7 +227,9 @@ export class Forage {
 
   /** A falling piece (client/w): pieces from above the board are made there and drop in. */
   private fall = (piece: number, x: number, sy: number, tx: number, ty: number) => {
-    this.current?.sprites.push({ piece, from: [x, sy], to: [tx, ty], delay: 0, duration: TIMING.fall(Math.abs(ty - sy)), path: 'line' });
+    const rows = Math.abs(ty - sy);
+    const duration = sy < 0 && isCrate(piece) && !this.legacyChestTiming ? TIMING.chestEntry(rows) : TIMING.fall(rows);
+    this.current?.sprites.push({ piece, from: [x, sy], to: [tx, ty], delay: 0, duration, path: 'line' });
   };
 
   /** Clears a cell (client/A): it fades after `ripple` cells' delay, with a pop and one destroy sound per kind of piece and delay. */

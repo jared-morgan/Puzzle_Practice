@@ -380,6 +380,12 @@ export class BrewGame {
   }
 
   /** Stops the furnace clock (a practice extra: the real puzzle can't be paused). */
+  timeUntilBurn(now: number): number {
+    if (this.timerless || this.finished) return 0;
+    const at = this.pausedAt ?? now;
+    return Math.max(0, this.nextTick - at + Math.max(0, BURN_TICKS - this.furnace) * this.tickMs);
+  }
+
   pause(now: number): void {
     if (this.pausedAt === null) this.pausedAt = now;
   }

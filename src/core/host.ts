@@ -22,7 +22,7 @@ export async function runPuzzle(
   const screen = new Screen(canvas, meta.width ?? 800, meta.height ?? 600);
   const input = new Input(screen);
   const store = new Store(id);
-  const panel = new Panel(panelRoot);
+  const panel = new Panel(panelRoot, canvas);
   panel.onUsed = () => canvas.focus();
   await loadPygameFont();
   const start = performance.now();

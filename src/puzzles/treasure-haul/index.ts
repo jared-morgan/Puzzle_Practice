@@ -13,6 +13,7 @@ import { Images } from '../../core/assets';
 import { SoundBank } from '../../core/audio';
 import { loadFont } from '../../core/fonts';
 import { historyGroup } from '../../core/history';
+import { keyMatches } from '../../core/controls';
 import type { InputEvent } from '../../core/input';
 import type { Option } from '../../core/panel';
 import type { PuzzleFactory } from '../../core/puzzle';
@@ -32,6 +33,7 @@ import {
   type Step,
   W,
 } from './logic';
+import { createDrill, type ClearPack } from './training';
 import delarobbUrl from './delarobb.ttf?url';
 
 const imageUrls = import.meta.glob<string>('./media/*.png', { eager: true, query: '?url', import: 'default' });
@@ -69,23 +71,22 @@ const SKIN = [236, 188, 140];
 
 /**
  * 0-2: that many chests are kept coming; as one is hauled, the next is sent. spawn: a chest is
- * always waiting to come in, and the board is dealt again each time one does. clear: one chest
- * starts on the board away from the edges, and the clock runs until it's hauled.
+ * always waiting to come in, and the board is dealt again each time one does. clear: a chest comes in after a simulated move; each haul starts another drill.
  */
 type Mode = '0' | '1' | '2' | 'spawn' | 'clear';
 const MODES: Option<Mode>[] = [
   { value: '0', label: '0 chests' },
   { value: '1', label: '1 chest' },
   { value: '2', label: '2 chests' },
-  { value: 'spawn', label: 'Spawn chests (board resets)' },
-  { value: 'clear', label: 'Clear a chest (fastest time)' },
+  { value: 'spawn', label: 'Spawn Chests' },
+  { value: 'clear', label: 'Clear Chests' },
 ];
 const ROUNDS: Option<number>[] = [
   { value: 0, label: 'No timer' },
   { value: 30, label: '30 seconds' },
   { value: 120, label: '2 minutes' },
 ];
-const COMBO_NAMES = ['Good', 'Shiny!', 'Arrr! 3x3!', 'Arrr! 3x4!', 'Yarrr! 3x5!', 'Har! 4x4!', 'Yarrr! 4x5!', 'Yarrr! 5x5!', 'Bingo!', 'Donkey!', 'Vegas!', 'Ching!', 'Cha-Ching!'];
+
 
 type Point = [number, number];
 
@@ -156,10 +157,9 @@ interface Tally {
   spawned: number;
   middle: number;
   spawnScore: number;
-  combos: Record<string, number>;
 }
 
-const emptyTally = (): Tally => ({ moves: 0, points: 0, bestMove: 0, coins: 0, gems: 0, chests: 0, spawned: 0, middle: 0, spawnScore: 0, combos: {} });
+const emptyTally = (): Tally => ({ moves: 0, points: 0, bestMove: 0, coins: 0, gems: 0, chests: 0, spawned: 0, middle: 0, spawnScore: 0 });
 
 /** A copy of the purple hands tinted to a skin tone, keeping their shading. */
 function tint(img: HTMLImageElement): HTMLCanvasElement {
@@ -198,6 +198,13 @@ export default (async ({ screen, input, panel, store, ticks }) => {
   let roundSecs = store.get<number>('round', 0);
   if (!ROUNDS.some((r) => r.value === roundSecs)) roundSecs = 0;
   const bests = store.get<Record<string, number>>('bestPoints', {});
+  const savedPack = store.get<ClearPack | 'diamonds'>('clearPack', 'standard');
+  let clearPack: ClearPack = savedPack === 'diamonds' ? 'emeralds' : savedPack;
+  let spawnDelay = store.get<boolean>('spawnDelay', false);
+  let gemRates = store.get<[number, number]>('gemRates', [200 / 308, 200 / 308]);
+  let firstClearAt: number | null = null;
+  let trainingChest: { x: number; y: number } | null = null;
+
 
   let board: HaulBoard | null = null;
   /** The pieces as drawn in their squares (DropBoardView._pieces); moving and cleared pieces are drawn separately. */
@@ -225,7 +232,7 @@ export default (async ({ screen, input, panel, store, ticks }) => {
   let landing: { x: number; middle: boolean; hauled: boolean } | null = null;
   /** When the spawned chest has been on show long enough to redeal (0 until it stops moving). */
   let redealAt = 0;
-  /** Clear mode: when the clock started, and how long the chest took (0 until it's hauled). */
+  /** Round start and a marker that the current training chest has been hauled. */
   let clockStart = 0;
   let clearMs = 0;
   let cursor: Point = [4, 6];
@@ -244,9 +251,11 @@ export default (async ({ screen, input, panel, store, ticks }) => {
   /** Top-left of square (x, y) in board pixels: y = 0 is the bottom row (HaulBoardView.a(int, int, Point)). */
   const cellXY = (x: number, y: number): Point => [x * CELL, (H - 1 - y) * CELL];
   const chestSheet = (mini: boolean) => (mini ? 'minichest2x2' : 'chest2x2');
-  /** Bests are kept per mode and round length: points, chests spawned, or the fastest clear in ms. */
-  const timed = () => mode !== 'clear' && roundSecs > 0;
-  const bestKey = () => (mode === 'clear' ? 'clear' : `${mode}:${roundSecs}`);
+  /** Bests are kept per mode, pack, round length and spawn rules. */
+  const timed = () => roundSecs > 0;
+  const bestKey = () => `${mode}:${mode === 'clear' ? clearPack + ':' : ''}${roundSecs}` +
+    (gemRates.every((rate) => rate === 200 / 308) ? '' : `:gems:${gemRates.join('-')}`) +
+    (mode === 'spawn' && spawnDelay ? ':delay' : '');
   const actionCount = () => movers.length + fades.length;
   const inFlight = () => flyers.length + minis.length;
 
@@ -300,18 +309,33 @@ export default (async ({ screen, input, panel, store, ticks }) => {
       if (y! < ty + t.h && ty < y! + h && x! < t.x + t.w && t.x < x! + w) y = ty + t.h;
     }
     texts.push({ text: message.text, colour: message.kind === 'chain' ? '#ffff00' : '#ffffff', px, x: x!, y: Math.min(y!, BOARD - h), w, h, start: now });
-    tally.combos[message.text] = (tally.combos[message.text] ?? 0) + 1;
   }
 
   // ---- The game ----
 
   /** A fresh board floating in from below; at full speed it's the start (haul/client/h), quicker for a spawn-mode redeal. */
   function deal(speed: number, onReady: () => void): void {
-    board = new HaulBoard(random);
-    board.populate();
-    if (mode === 'clear') board.placeChest(rng.randintN(2, W - 4), rng.randintN(3, H - 3), rng.randintN(0, 2));
+    firstClearAt = null;
+    trainingChest = null;
+    if (mode === 'clear') {
+      const drill = createDrill(random, clearPack);
+      board = drill.board;
+      trainingChest = drill.chest;
+    } else {
+      board = new HaulBoard(random);
+      board.populate();
+    }
+    board.gemRates = [...gemRates];
+    board.chestReady = () => mode !== 'spawn' || !spawnDelay || (firstClearAt !== null && ticks() >= firstClearAt + 1000);
     sendChests();
     shown = [...board.cells];
+    if (trainingChest) {
+      const { x, y } = trainingChest;
+      for (let dx = 0; dx < 2; dx++) for (let dy = 0; dy < 2; dy++) shown[(y - dy) * W + x + dx] = EMPTY;
+      const sx = x + (x > 0 ? -1 : 2);
+      shown[2 * W + sx] = board.get(sx, 1);
+      shown[W + sx] = board.get(sx, 2);
+    }
     movers = [];
     fades = [];
     stable = true;
@@ -330,7 +354,23 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     intro = { start: ticks(), durations };
     later(Math.max(...durations), () => {
       intro = null;
-      onReady();
+      if (trainingChest && board) {
+        // The practice partner's clear opens a route; the chest floats in before control passes back.
+        const { x, y } = trainingChest;
+        const sx = x + (x > 0 ? -1 : 2);
+        sounds.play('piece_swap');
+        move(board.get(sx, 1), sx, 2, sx, 1, SWAP_MS);
+        move(board.get(sx, 2), sx, 1, sx, 2, SWAP_MS);
+        later(SWAP_MS, () => {
+          movers = movers.filter((m) => m.tx !== sx || (m.ty !== 1 && m.ty !== 2));
+          shown[2 * W + sx] = board!.get(sx, 2);
+          shown[W + sx] = board!.get(sx, 1);
+          for (let dx = 0; dx < 2; dx++) for (let dy = 0; dy < 2; dy++) {
+            move(board!.get(x + dx, y - dy), x + dx, -1 - dy, x + dx, y - dy, CELL * (y + 1) / RISE_PX_PER_MS);
+          }
+          later(CELL * (y + 1) / RISE_PX_PER_MS, onReady);
+        });
+      } else onReady();
     });
   }
 
@@ -364,13 +404,13 @@ export default (async ({ screen, input, panel, store, ticks }) => {
   /** The score a mode keeps a best of: higher is better, except clear mode's time. */
   function score(): number {
     if (mode === 'spawn') return tally.spawnScore;
-    if (mode === 'clear') return clearMs;
+    if (mode === 'clear') return tally.chests;
     return tally.points;
   }
 
   function stop(): void {
     // A round counts when its time is up, or in clear mode when the board is cleared; not when stopped early.
-    const completed = mode === 'clear' ? clearMs > 0 : timed() && !!roundEnd && ticks() >= roundEnd;
+    const completed = timed() && !!roundEnd && ticks() >= roundEnd;
     if (completed && running) store.addHistory(bestKey(), { score: score() });
     stoppedAt = ticks();
     running = false;
@@ -379,7 +419,7 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     intro = null;
     timers = [];
     const best = bests[bestKey()];
-    const better = mode === 'clear' ? clearMs > 0 && (!best || clearMs < best) : timed() && (best === undefined || score() > best);
+    const better = completed && (best === undefined || score() > best);
     if (better) {
       bests[bestKey()] = score();
       store.set('bestPoints', bests);
@@ -432,12 +472,13 @@ export default (async ({ screen, input, panel, store, ticks }) => {
   }
 
   function swapAt(x: number, y: number): void {
-    if (!board || !active || !stable || intro || redeal || landing || clearMs || actionCount() > 0) return;
+    if (!board || !active || !stable || intro || redeal || landing || clearMs || actionCount() > 0 || (roundEnd && ticks() >= roundEnd)) return;
     sendChests();
     const result = board.swap(x, y);
     if (result.kind === 'illegal') return;
     if (result.kind === 'gem') {
       tally.moves++;
+      if (result.cleared.length && firstClearAt === null) firstClearAt = ticks();
       clearSounds(result.cleared);
       countCleared(result.cleared);
       for (const c of result.cleared) clearFx(c);
@@ -485,7 +526,7 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     } else if (step.kind === 'haul') {
       tally.chests += step.chests.length;
       if (landing && step.chests.some((c) => c.x === landing!.x)) landing.hauled = true;
-      if (mode === 'clear' && !clearMs) {
+      if (mode === 'clear') {
         clearMs = ticks() - clockStart;
         sounds.play('big_combo');
       }
@@ -494,6 +535,7 @@ export default (async ({ screen, input, panel, store, ticks }) => {
       clearSounds(step.cleared);
       for (const c of step.cleared) clearFx(c);
     } else {
+      if (step.cleared.length && firstClearAt === null) firstClearAt = ticks();
       clearSounds(step.cleared);
       countCleared(step.cleared);
       for (const c of step.cleared) clearFx(c);
@@ -512,7 +554,7 @@ export default (async ({ screen, input, panel, store, ticks }) => {
       if (!redealAt) redealAt = ticks() + 500;
       if (ticks() < redealAt) return;
       if (roundEnd && ticks() >= roundEnd) stop();
-      else deal(3, () => {});
+      else deal(3, () => { active = true; });
       return;
     }
     if (stable) return;
@@ -526,7 +568,13 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     tally.points += points;
     tally.bestMove = Math.max(tally.bestMove, points);
     if (landing) scoreSpawn(landing);
-    else if ((roundEnd && ticks() >= roundEnd) || clearMs) stop();
+    else if (roundEnd && ticks() >= roundEnd) stop();
+    else if (mode === 'clear' && clearMs) {
+      clearMs = 0;
+      active = false;
+      redeal = true;
+      redealAt = 0;
+    }
   }
 
   /**
@@ -754,11 +802,11 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     for (const event of events) {
       if (event.type === 'mousedown' && event.button <= 3 && onBoard(event.pos)) swapAt(cursor[0], cursor[1]);
       else if (event.type === 'keydown') {
-        if (event.key === 'arrowleft') moveCursor(-1, 0);
-        else if (event.key === 'arrowright') moveCursor(1, 0);
-        else if (event.key === 'arrowup') moveCursor(0, 1);
-        else if (event.key === 'arrowdown') moveCursor(0, -1);
-        else if (event.key === 'space' || event.key === 'enter') swapAt(cursor[0], cursor[1]);
+        if (keyMatches(event.key, 'treasure-haul', 'left', 'arrowleft')) moveCursor(-1, 0);
+        else if (keyMatches(event.key, 'treasure-haul', 'right', 'arrowright')) moveCursor(1, 0);
+        else if (keyMatches(event.key, 'treasure-haul', 'up', 'arrowup')) moveCursor(0, 1);
+        else if (keyMatches(event.key, 'treasure-haul', 'down', 'arrowdown')) moveCursor(0, -1);
+        else if (keyMatches(event.key, 'treasure-haul', 'swap', 'space', ['enter'])) swapAt(cursor[0], cursor[1]);
       }
     }
 
@@ -790,52 +838,63 @@ export default (async ({ screen, input, panel, store, ticks }) => {
   /** The clock's now: it stops when the game does. */
   const clockNow = () => (running ? ticks() : stoppedAt);
   panel.clock(() => {
-    const best = bests[bestKey()];
-    if (mode === 'clear') {
-      const ms = clearMs || (clockStart ? clockNow() - clockStart : 0);
-      return { label: 'Time', ms, best: best ?? null };
-    }
     if (!timed()) return null;
     const ms = roundEnd ? roundEnd - clockNow() : roundSecs * 1000;
     return { label: 'Time left', ms, countdown: true, warn: running && ms < 10000 };
   });
 
-  const session = panel.group();
+  panel.controls('treasure-haul', [
+    { id: 'left', label: 'Move left', defaultKey: 'ArrowLeft' },
+    { id: 'right', label: 'Move right', defaultKey: 'ArrowRight' },
+    { id: 'up', label: 'Move up', defaultKey: 'ArrowUp' },
+    { id: 'down', label: 'Move down', defaultKey: 'ArrowDown' },
+    { id: 'swap', label: 'Swap pieces', defaultKey: 'Space' },
+  ]);
+  const session = panel.session();
   session.select('Mode', MODES, () => mode, (m) => {
     mode = m;
     store.set('mode', m);
-  }, { disabled: () => running, title: '0-2 chests: as one is hauled the next comes. Spawn: a chest in the middle four columns scores 3, plus 12 less the pieces left above it once it lands; elsewhere -9. Then the board resets. Clear: haul one chest as fast as you can' });
-  session.button('Start', () => (running ? stop() : start()), { variant: 'primary', label: () => (running ? 'Stop' : finished ? 'Play again' : 'Start') });
+  }, { disabled: () => running });
+  session.select('Training pack', [
+    { value: 'standard', label: 'Middle chests' },
+    { value: 'efficient', label: 'Vertical + horizontal 3' },
+    { value: 'emeralds', label: 'Edge emeralds' },
+    { value: 'edges', label: 'Difficult edge chests' },
+  ] as Option<ClearPack>[], () => clearPack, (p) => { clearPack = p; store.set('clearPack', p); }, { hidden: () => mode !== 'clear', disabled: () => running });
+  const actions = panel.group();
+  actions.note(() => mode === 'clear' ? 'A practice move brings in each chest. Haul as many as you can.' : '');
+  actions.button('Start', () => (running ? stop() : start()), { variant: 'primary', label: () => (running ? 'Stop' : finished ? 'Play again' : 'Start') });
 
   const best = () => bests[bestKey()];
-  panel.group('Haul').stats(['', 'Now', 'Best'], () => {
-    const rows: string[][] = [];
-    if (mode === 'spawn') {
-      rows.push(['Spawn score', String(tally.spawnScore), timed() && best() !== undefined ? String(best()) : '-']);
-      rows.push(['Chests in middle', `${tally.middle} / ${tally.spawned}`, '']);
-    }
-    rows.push(['Points', String(tally.points), mode !== 'spawn' && mode !== 'clear' && timed() && best() ? String(best()) : '-']);
-    return [
-      ...rows,
-    ['Moves', String(tally.moves), ''],
-    ['Best move', String(tally.bestMove), ''],
-    ['Coins', String(tally.coins), ''],
-    ['Gems', String(tally.gems), ''],
-    ['Chests', String(tally.chests), ''],
-    ['Rating', 'not yet', ''],
-    ];
-  }).note(() => "Points are the client's own count for each move. The game's server turns them into your duty performance, which isn't worked out here yet.");
-
-  historyGroup(panel, () => (mode === 'clear' ? store.history(bestKey()) : null), [{ label: 'Time', value: (g) => seconds(g.score) }]);
-  historyGroup(panel, () => (timed() && mode === 'spawn' ? store.history(bestKey()) : null), [{ label: 'Spawn score', value: (g) => String(g.score) }]);
-  historyGroup(panel, () => (timed() && mode !== 'spawn' ? store.history(bestKey()) : null), [{ label: 'Points', value: (g) => String(g.score) }]);
-
-  panel.group('Combos').stats(['', 'Count'], () => COMBO_NAMES.map((name) => [name, String(tally.combos[name] ?? 0)]));
-
-  panel.settings.group('Game', { hidden: () => mode === 'clear' }).select('Round', ROUNDS, () => roundSecs, (s) => {
+  panel.score('Haul').stats(['', 'Now', 'Best'], () => [[
+    mode === 'spawn' ? 'Spawn score' : mode === 'clear' ? 'Chests cleared' : 'Points',
+    String(score()), timed() && best() !== undefined ? String(best()) : '—',
+  ]]);
+  panel.results(() => finished ? {
+    title: 'Treasure Haul results',
+    rows: [
+      [mode === 'spawn' ? 'Spawn score' : mode === 'clear' ? 'Chests cleared' : 'Points', String(score())],
+      ['Time', `${(clockStart ? Math.max(0, stoppedAt - clockStart) / 1000 : 0).toFixed(2)}s`],
+      ['Moves', String(tally.moves)], ['Best move', String(tally.bestMove)],
+      ['Coins', String(tally.coins)], ['Gems', String(tally.gems)], ['Chests hauled', String(tally.chests)],
+      ...(mode === 'spawn' ? [['Chests in middle', `${tally.middle} / ${tally.spawned}`]] : []),
+    ],
+  } : null);
+  historyGroup(panel, () => timed() ? store.history(bestKey()) : null, [{
+    label: 'Score', value: (g) => String(g.score),
+  }]);
+  panel.settings.group('Game').select('Round', ROUNDS, () => roundSecs, (s) => {
     roundSecs = s;
     store.set('round', s);
-  }, { disabled: () => running, title: 'How long the chest modes last' });
+  }, { disabled: () => running });
+  panel.settings.group('Spawn Chests', { hidden: () => mode !== 'spawn' })
+    .toggle('Wait one second after first clear', () => spawnDelay, (on) => { spawnDelay = on; store.set('spawnDelay', on); }, { disabled: () => running });
+  const gems = panel.settings.group('Gem spawn rates', { columns: 2 });
+  ['Ruby (%)', 'Emerald (%)'].forEach((label, i) => gems.number(label, () => gemRates[i], (v) => {
+    gemRates[i] = Math.max(0, Math.min(100 - gemRates[1 - i], v));
+    store.set('gemRates', gemRates);
+  }, { min: 0, max: 100, step: 0.01, disabled: () => running }));
+  gems.button('Defaults', () => { gemRates = [200 / 308, 200 / 308]; store.set('gemRates', gemRates); }, { disabled: () => running });
 
   return { frame, dispose: () => sounds.dispose() };
 }) satisfies PuzzleFactory;
