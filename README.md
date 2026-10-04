@@ -11,9 +11,6 @@ Practice versions of Puzzle Pirates puzzles that run in the browser:
   game client's own rules, with the Distilling Simulator's practice modes and drills on top.
 - **Forage Simulator**: rotate 2×2 blocks to drop boxes, jars and chests.
 
-- **Vampire Carp**: patch coffin holes with pentomino planks.
-- **Blacksmithing**: strike squares to forge a sword, each piece deciding where you strike next.
-
 Play at https://jared-morgan.github.io/Puzzle_Practice/.
 
 Each started as a separate desktop game in Python ([Distilling_Simulator](https://github.com/jared-morgan/Distilling_Simulator),
