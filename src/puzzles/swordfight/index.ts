@@ -734,8 +734,15 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
       ? `Skill: cultists ${settings.cultistSkill}, homunculi ${settings.homunculusSkill}, thralls ${settings.thrallSkill}, swabbies ${settings.swabbieSkill} · starting speed ${speed} · your ${sword.toLowerCase()} (Settings tab)`
       : `Starting speed ${speed} · your ${sword.toLowerCase()} (Settings tab)`;
   });
-  session.button('Start', () => (running ? stop() : start()), {
-    variant: 'primary', disabled: () => !!replays?.isPlaying, label: () => (running ? 'Stop' : finished ? 'Fight again' : 'Start'),
+  // Starting while a replay is open closes it and starts a fight of your own.
+  session.button('Start', () => {
+    if (replays.isPlaying) {
+      replays.stop();
+      if (!replays.isPlaying) start();
+    } else if (running) stop();
+    else start();
+  }, {
+    variant: 'primary', label: () => (replays?.isPlaying ? 'Start' : running ? 'Stop' : finished ? 'Fight again' : 'Start'),
   });
   session.button('View stats', () => { showResults = !showResults; }, {
     hidden: () => !finished || !match?.result, label: () => (showResults ? 'View board' : 'View stats'),

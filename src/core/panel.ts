@@ -5,8 +5,8 @@
 //
 // Play, Settings and History are always available, followed by mode, clock and main score.
 //
-//   Shared    tabs, session choices (Mode), clock, then main score.
-//   Play      Start / Stop and any other controls that matter during a game.
+//   Shared    tabs, clock, then main score.
+//   Play      session choices (Mode) with Start / Stop, then Start / Stop and any other controls that matter during a game.
 //   Settings  everything chosen before a game: the rest of the game's options, then Look and
 //             Sound last.
 //
@@ -205,9 +205,9 @@ export class Panel {
       p.tab.classList.toggle('is-active', on);
       p.tab.setAttribute('aria-selected', String(on));
     }
-    const settingsOpen = name === 'Settings';
-    this.sessionElement.hidden = settingsOpen;
-    this.liveElement.hidden = settingsOpen;
+    // Session choices and Start belong to Play; the clock and score also show on History.
+    this.sessionElement.hidden = name !== 'Play';
+    this.liveElement.hidden = name === 'Settings';
     this.sync();
   }
 
@@ -227,7 +227,7 @@ export class Panel {
     return this.play.group(title, options);
   }
 
-  /** Session controls follow the tabs and precede the timer and main score. */
+  /** Session controls follow the tabs on the Play tab and precede the timer and main score. */
   session(title?: string, options: GroupOptions = {}): Group {
     return this.sessionPage.group(title, options);
   }
