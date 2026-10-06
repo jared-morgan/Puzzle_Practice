@@ -96,6 +96,11 @@ abstract class TallyNpc<S extends BaseStyle> {
     this.nextAt = started + style.pairMs;
   }
 
+  /** Attacks waiting to land on it, and how many pieces they hold between them. */
+  get queue(): { attacks: number; blocks: number } {
+    return { attacks: this.incoming.length, blocks: this.incoming.reduce((n, a) => n + a, 0) };
+  }
+
   receive(shaft: Shaft): void {
     if (this.out) return;
     const amount = shaft.sprinkles + shaft.strikes.reduce((n, s) => n + s.width * s.height, 0);

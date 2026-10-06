@@ -179,6 +179,17 @@ describe('knocked-out pirates', () => {
   });
 });
 
+describe('attack queues', () => {
+  it('count the attacks waiting to land on an enemy and their pieces', () => {
+    const m = new Match({ ...settings, cultists: 1, opponents: 1 }, 5, 0);
+    const enemy = m.fighters[1] as GameNpc;
+    expect(enemy.queue).toEqual({ attacks: 0, blocks: 0 });
+    enemy.receive({ from: 0, id: 1, strikes: [{ id: 1, width: 2, height: 4, x: 0, y: 0, orient: 0, pieces: [] }], sprinkles: 3 });
+    enemy.receive({ from: 0, id: 2, strikes: [], sprinkles: 4 });
+    expect(enemy.queue).toEqual({ attacks: 2, blocks: 15 });
+  });
+});
+
 describe('AI skill from 0 to 100', () => {
   it("uses the game's destruction table at every 10 and blends in between", () => {
     expect(gameSkillStyle(60)).toMatchObject({ baseDestroy: 38, maxDestroy: 63, chainChance: 24 });

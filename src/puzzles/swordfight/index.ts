@@ -32,6 +32,7 @@ const soundUrls = import.meta.glob<string>('./sounds/*.ogg', { eager: true, quer
 
 const PUZZLE = 'swordfight';
 const WIDTH = 450;
+const HEIGHT = 600;
 const BOARD_X = 143;
 const BOARD_Y = 62;
 const BOARD_W = W * COL_PX;
@@ -216,6 +217,7 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
   let startedAt = 0;
   let messages: Message[] = [];
   let hideOpponents = store.get<boolean>('hideOpponents', true);
+  let showQueues = store.get<boolean>('showQueues', false);
   /** Left and right held, repeating 7 times a second after 300ms (PuzzlePanel's key bindings). */
   const held = { left: 0, right: 0, leftNext: 0, rightNext: 0 };
 
@@ -575,7 +577,12 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
     ctx.strokeRect(bx + 1.5, by + 1.5, SUMMARY_W - 3, SUMMARY_H - 3);
     // The sword.
     const icon = icons.has(`sword${sword.type}`) ? icons.get(`sword${sword.type}`) : null;
-    if (icon) ctx.drawImage(icon, at.sword, y + Math.floor((ROW_H - icon.height) / 2));
+    if (icon) {
+      const iy = y + Math.floor((ROW_H - icon.height) / 2);
+      ctx.drawImage(icon, at.sword, iy);
+      const [mx, my] = input.mouse;
+      if (mx >= at.sword && mx < at.sword + SWORD_W && my >= y && my < y + ROW_H) hoveredSword = index;
+    }
     // The face (passed out once knocked out, faded where the game has no such face), with the name
     // over its top as YoFaceLabel draws it: 10pt, outlined, wrapped to the face's width.
     const face = faceOf(m, index, f.out);
@@ -592,6 +599,9 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
       else lines.push(word);
     }
     const colour = m.kinds[index] === 'Skilled swabbie' ? NAME_RED : NAME_YELLOW;
+    // With attack queues shown, an enemy still standing shows attacks:pieces waiting for it instead.
+    const queue = showQueues && m.teams[index] === 1 && !f.out && 'queue' in f ? f.queue : null;
+    if (queue) lines.splice(0, lines.length, `${queue.attacks}:${queue.blocks}`);
     lines.forEach((line, i) => outlined(line, at.face + SLOT / 2, y + 1 + i * 13, colour));
     // Attacker dots: one for each pirate attacking this one, in the colours of their sword.
     const attackers = m.targeters(index);
@@ -616,6 +626,32 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
       ctx.fill();
       dy += 9;
     }
+    ctx.restore();
+  }
+
+  /** The sword under the mouse, found while drawing the status rows. */
+  let hoveredSword = -1;
+
+  /** A tooltip by the mouse with a sword's name and colours (primary, then secondary). */
+  function swordTip(m: Match, index: number): void {
+    const sword = m.swords[index];
+    const [p, s] = [SWORD_COLOURS[sword.primary], SWORD_COLOURS[sword.secondary].toLowerCase()];
+    const text = `${sword.name}: ${sword.primary === sword.secondary ? p : `${p} and ${s}`}`;
+    ctx.save();
+    ctx.font = '11px Arial, sans-serif';
+    ctx.textBaseline = 'top';
+    ctx.textAlign = 'left';
+    const w = Math.ceil(ctx.measureText(text).width) + 8;
+    const [mx, my] = input.mouse;
+    const x = Math.max(0, Math.min(WIDTH - w, mx + 10));
+    const y = my + 18 + 17 > HEIGHT ? my - 20 : my + 18;
+    ctx.fillStyle = '#fffbe0';
+    ctx.fillRect(x, y, w, 17);
+    ctx.strokeStyle = '#000';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x + 0.5, y + 0.5, w - 1, 16);
+    ctx.fillStyle = '#000';
+    ctx.fillText(text, x + 4, y + 3);
     ctx.restore();
   }
 
@@ -656,10 +692,12 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
     screen.blit(img('background'), 0, 0);
     drawNext(match.player);
     // Your side on the left, you first; the enemies on the right; the knocked out at the bottom.
+    hoveredSword = -1;
     match.rows[0].forEach((i, row) => drawStatus(match!, i, LEFT_X, ROWS_Y + row * ROW_H, false));
     match.rows[1].forEach((i, row) => drawStatus(match!, i, RIGHT_X, ROWS_Y + row * ROW_H, true));
     drawBoard(match.player, running ? now : match.settledAt || match.endedAt || now);
     if (finished && !match.result) banner('Stopped', 330);
+    if (hoveredSword >= 0) swordTip(match, hoveredSword);
     replays.drawOverlay(ctx);
   }
 
@@ -740,6 +778,9 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
   }
   panel.settings.group('Opponent screens').toggle('Hide opponent screens', () => hideOpponents, (on) => { hideOpponents = on; store.set('hideOpponents', on); }, {
     title: 'Shows red boxes where an opponent has pieces, instead of the pieces themselves.',
+  });
+  panel.settings.group('Opponent screens').toggle('Show attack queues', () => showQueues, (on) => { showQueues = on; store.set('showQueues', on); }, {
+    title: "Replaces each enemy's name with the attacks waiting to land on it and how many pieces they hold, as attacks:pieces (5:30 is five attacks of 30 pieces).",
   });
   const off = { disabled: () => running };
   const foes = panel.settings.group('Opponents');

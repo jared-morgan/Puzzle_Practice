@@ -75,7 +75,9 @@ choice for each of these so the puzzle plays; each one is easy to change.
     and a first name and surname for skilled swabbies. Which parts the game's own cultists and
     swabbies wear is my reading of the part names. Names are drawn as the game draws them over a
     face: 10pt, outlined in black, yellow, with skilled swabbies in red (role 12).
-    The game recolours the sword icons to the sword's colours; I show the plain icons. The incoming-strike sparks and the piece
+    The game recolours the sword icons to the sword's colours; I show the plain icons. Hovering a sword shows its name
+    and colours. A toggle (Settings, Opponent screens) replaces enemies' names with the attacks
+    waiting to land on them, as attacks:pieces; the game doesn't show this. The incoming-strike sparks and the piece
     explosions are close copies, not exact.
 11. **Not built yet:** Duelling (the game has it, with a second full-size board), and the
     special seas: Atlantean (aqua pieces), Haunted (purple pieces that turn to metal), sanguine
