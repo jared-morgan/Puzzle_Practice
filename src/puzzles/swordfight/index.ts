@@ -74,6 +74,8 @@ interface Settings extends MatchSettings {}
 
 /** Jared's settings from 6 October 2026. */
 const DEFAULTS: Settings = {
+  cultists: 2,
+  homunculi: 0,
   opponents: 2,
   skill: 10,
   opponentType: 'game',
@@ -82,13 +84,10 @@ const DEFAULTS: Settings = {
   difficulty: 5,
   breakers: 18,
   sword: [16, 0, 0],
-  enemySword: [16, 4, 2],
 };
 
-const OPPONENTS: Option<number>[] = [
-  { value: 0, label: 'None (practice)' },
-  ...[1, 2, 3, 4, 5, 6].map((n) => ({ value: n, label: n === 1 ? '1 opponent' : `${n} opponents` })),
-];
+/** At most this many opponents in a fight. */
+const MAX_ENEMIES = 6;
 
 const KEYS = [
   { id: 'left', label: 'Move left', defaultKey: 'ArrowLeft' },
@@ -136,15 +135,23 @@ function upgrade(value: unknown): unknown {
   if (!validStyle(s.ai)) s.ai = skillStyle(s.skill as number);
   if (!validGameStyle(s.gameAi)) s.gameAi = gameSkillStyle(s.skill as number);
   if (s.opponentType !== 'tally' && s.opponentType !== 'game') s.opponentType = 'game';
+  // Before cultists and homunculi, opponents were one count with one sword: they become cultists.
+  if (!int(s.cultists, 0, MAX_ENEMIES) || !int(s.homunculi, 0, MAX_ENEMIES)) {
+    s.cultists = int(s.opponents, 0, MAX_ENEMIES) ? s.opponents : 0;
+    s.homunculi = 0;
+  }
+  s.opponents = (s.cultists as number) + (s.homunculi as number);
+  delete s.enemySword;
   return s;
 }
 
 function validSettings(value: unknown): value is Settings {
   if (!value || typeof value !== 'object') return false;
   const s = value as Record<string, unknown>;
-  return int(s.opponents, 0, 6) && int(s.skill, 0, 10) && validStyle(s.ai) && validGameStyle(s.gameAi) &&
+  return int(s.cultists, 0, MAX_ENEMIES) && int(s.homunculi, 0, MAX_ENEMIES) && s.opponents === (s.cultists as number) + (s.homunculi as number) &&
+    int(s.opponents, 0, MAX_ENEMIES) && int(s.skill, 0, 10) && validStyle(s.ai) && validGameStyle(s.gameAi) &&
     (s.opponentType === 'tally' || s.opponentType === 'game') && int(s.difficulty, 0, 9) &&
-    typeof s.breakers === 'number' && s.breakers >= 0 && s.breakers <= 100 && validSword(s.sword) && validSword(s.enemySword);
+    typeof s.breakers === 'number' && s.breakers >= 0 && s.breakers <= 100 && validSword(s.sword);
 }
 
 /** Whether the opponent's options are still exactly the AI skill preset. */
@@ -207,7 +214,7 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
     const a = settings.ai;
     return `custom ${a.pairMs}/${a.breakAverage}/${a.variation}/${a.heightBoost}/${a.storeChance}/${a.comboMax}/${a.strikeShare}/${a.pairsPerAttack}`;
   };
-  const settingsKey = () => `${settings.opponents}:${opponentKey()}:${settings.difficulty}:${settings.breakers}`;
+  const settingsKey = () => `${settings.cultists}c${settings.homunculi}h:${opponentKey()}:${settings.difficulty}:${settings.breakers}`;
   const record = store.get<Record<string, { wins: number; losses: number; best: number }>>('record', {});
 
   function start(seed?: number): void {
@@ -566,7 +573,7 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
     }
     dy++;
     for (const from of attackers.slice(groups * 5)) {
-      const [, primary, secondary] = from === 0 ? m.settings.sword : m.settings.enemySword;
+      const { primary, secondary } = m.swords[from];
       const cx = (right ? at.dots + 1 : at.dots + DOTS - 6 - 2) + 3;
       const cy = dy + 3;
       ctx.fillStyle = SWORD_RGB[secondary];
@@ -632,7 +639,16 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
   panel.controls(PUZZLE, KEYS);
 
   const session = panel.session();
-  session.select('Opponents', OPPONENTS, () => settings.opponents, (n) => { settings.opponents = n; save(); }, { disabled: () => running });
+  // Cultists and homunculi, up to six between them; none is practice on your own.
+  const enemies = (cultists: number, homunculi: number) => {
+    settings.cultists = cultists;
+    settings.homunculi = Math.min(homunculi, MAX_ENEMIES - cultists);
+    settings.opponents = settings.cultists + settings.homunculi;
+    save();
+  };
+  const counts = (): Option<number>[] => Array.from({ length: MAX_ENEMIES + 1 }, (_, n) => ({ value: n, label: String(n) }));
+  session.select('Cultists (spears)', counts(), () => settings.cultists, (n) => enemies(n, Math.min(settings.homunculi, MAX_ENEMIES - n)), { disabled: () => running });
+  session.select('Homunculi (trunks)', counts(), () => settings.homunculi, (n) => enemies(Math.min(settings.cultists, MAX_ENEMIES - n), n), { disabled: () => running });
   session.note(() => {
     const sword = SWORD_NAMES[settings.sword[0]];
     const speed = `${Math.round(ROW_PX / startSpeed(settings.difficulty))}ms a row`;
@@ -739,7 +755,7 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
 
   const swordOptions: Option<number>[] = PLAIN_SWORDS.map((t) => ({ value: t, label: SWORD_NAMES[t] }));
   const colourOptions: Option<number>[] = SWORD_COLOURS.map((name, i) => ({ value: i, label: name }));
-  for (const [title, which] of [['Your sword', 'sword'], ["Opponents' sword", 'enemySword']] as const) {
+  for (const [title, which] of [['Your sword', 'sword']] as const) {
     const g = panel.settings.group(title);
     g.select('Sword', swordOptions, () => settings[which][0], (t) => { settings[which] = [t, settings[which][1], settings[which][2]]; save(); }, { disabled: () => running });
     g.select('Colour 1', colourOptions, () => settings[which][1], (c) => { settings[which] = [settings[which][0], c, settings[which][2]]; save(); }, { disabled: () => running || settings[which][0] === 127 });
@@ -748,12 +764,12 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
   panel.settings.group('Reset').button('Reset to defaults', () => { settings = structuredClone(DEFAULTS); save(); }, { disabled: () => running });
 
   const replaySettingsCodec: ReplaySettingsCodec = {
-    currentVersion: 4,
+    currentVersion: 5,
     simulatorVersion: 2,
     // Earlier recordings had an opponent that played the board, so they can't be replayed.
     migrate: (version, value) => {
-      const upgraded = version === 3 ? upgrade(value) : value;
-      return (version === 3 || version === 4) && validSettings(upgraded) ? upgraded : null;
+      const upgraded = version < 5 ? upgrade(value) : value;
+      return version >= 3 && version <= 5 && validSettings(upgraded) ? upgraded : null;
     },
   };
   let savedSettings: Settings | null = null;

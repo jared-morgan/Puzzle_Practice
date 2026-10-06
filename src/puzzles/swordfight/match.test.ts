@@ -5,7 +5,7 @@ import { attackFor, swordFor } from './attack';
 import { Board, BREAKER, findClear } from './board';
 import { Match, type MatchSettings } from './match';
 
-const settings: MatchSettings = { opponents: 1, skill: 6, opponentType: 'tally', ai: skillStyle(6), gameAi: gameSkillStyle(6), difficulty: 5, breakers: 12.5, sword: [2, 0, 0], enemySword: [6, 4, 2] };
+const settings: MatchSettings = { cultists: 1, homunculi: 0, opponents: 1, skill: 6, opponentType: 'tally', ai: skillStyle(6), gameAi: gameSkillStyle(6), difficulty: 5, breakers: 12.5, sword: [2, 0, 0] };
 
 describe('attacks (YPPedia)', () => {
   it('turns blocks into swords', () => {
@@ -31,7 +31,7 @@ describe('attacks (YPPedia)', () => {
 });
 
 function play(seed: number, until = 10 * 60_000, opponents = 1) {
-  const m = new Match({ ...settings, opponents }, seed, 0);
+  const m = new Match({ ...settings, cultists: opponents, opponents }, seed, 0);
   let now = 0;
   while (!m.result && now < until) {
     now += 16;
@@ -124,6 +124,15 @@ describe("the game-numbers opponents", () => {
 });
 
 describe('a fight', () => {
+  it('has cultists with spears and homunculi with trunks, in random colours', () => {
+    const m = new Match({ ...settings, cultists: 2, homunculi: 1, opponents: 3 }, 9, 0);
+    expect(m.names).toEqual(['You', 'Cultist 1', 'Cultist 2', 'Homunculus']);
+    expect(m.swords.slice(1).map((s) => s.type)).toEqual([16, 16, 17]);
+    const colours = new Set<string>();
+    for (let seed = 1; seed <= 20; seed++) for (const s of new Match({ ...settings, cultists: 2, homunculi: 1, opponents: 3 }, seed, 0).swords.slice(1)) colours.add(s.primary + '/' + s.secondary);
+    expect(colours.size).toBeGreaterThan(10);
+  });
+
   it('knocks out a player who does nothing, after taking attacks', () => {
     const { m, now } = play(3);
     expect(m.result).toBe('lost');

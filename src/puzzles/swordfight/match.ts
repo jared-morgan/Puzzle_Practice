@@ -9,7 +9,10 @@ import { GameNpc, type GameStyle, Npc, type NpcStyle } from './npc';
 import { type Shaft, type Strike, Sword } from './strikes';
 
 export interface MatchSettings {
-  /** 0 is practice on your own. */
+  /** How many cultists (spears) and homunculi (tree trunks) you fight; none is practice on your own. */
+  cultists: number;
+  homunculi: number;
+  /** cultists + homunculi. */
   opponents: number;
   /** 0-10, the fight's AI skill level: a preset for `ai`. */
   skill: number;
@@ -22,9 +25,8 @@ export interface MatchSettings {
   difficulty: number;
   /** Chance a dealt piece is a breaker, in percent. */
   breakers: number;
-  /** Your sword and the opponents' (type, primary colour, secondary colour). */
+  /** Your sword (type, primary colour, secondary colour). */
   sword: [number, number, number];
-  enemySword: [number, number, number];
 }
 
 /** Each fighter gets the same pairs in the same order, from a generator seeded alike. */
@@ -61,8 +63,9 @@ export interface MatchEvents {
   message?(text: string, fighter: number): void;
 }
 
-/** Names for the opponents. */
-const BOT_NAMES = ['TrainingBot', 'Bilgerat', 'Barnacle', 'Scurvydog', 'Grogbelly', 'Plankwalker'];
+/** Cultists fight with spears and homunculi with tree trunks, each in random colours. */
+const SPEAR = 16;
+const TRUNK = 17;
 
 export class Match {
   readonly fighters: Array<Fighter | Npc | GameNpc> = [];
@@ -80,12 +83,18 @@ export class Match {
 
   constructor(readonly settings: MatchSettings, readonly seed: number, readonly startedAt: number, private readonly events: MatchEvents = {}) {
     this.strikeIds = new PyRandom(seed ^ 0x5f3759df);
-    const count = 1 + settings.opponents;
+    const colours = new PyRandom(seed ^ 0x2c1b3c6d);
+    const kinds = [...Array<string>(settings.cultists).fill('Cultist'), ...Array<string>(settings.homunculi).fill('Homunculus')];
+    const count = 1 + kinds.length;
     for (let i = 0; i < count; i++) {
       const dealer = new Dealer(seed, settings.breakers);
-      const [type, primary, secondary] = i === 0 ? settings.sword : settings.enemySword;
+      const kind = kinds[i - 1];
+      const [type, primary, secondary] = i === 0 ? settings.sword
+        : [kind === 'Cultist' ? SPEAR : TRUNK, colours.randintN(0, 7), colours.randintN(0, 7)];
       this.swords.push(new Sword(type, primary, secondary));
-      this.names.push(i === 0 ? 'You' : BOT_NAMES[(i - 1) % BOT_NAMES.length]);
+      const same = kinds.filter((k) => k === kind).length;
+      const nth = kinds.slice(0, i).filter((k) => k === kind).length;
+      this.names.push(i === 0 ? 'You' : same > 1 ? `${kind} ${nth}` : kind);
       this.shaftIds.push(0);
       const hooks: FighterHooks = {
         sound: (name) => this.events.sound?.(name, i),
