@@ -32,4 +32,15 @@ describe('PyRandom matches CPython', () => {
     const s = new PyRandom(7);
     expect(Array.from({ length: 5 }, () => s.randintN(36, 420))).toEqual([201, 113, 238, 369, 60]);
   });
+
+  it('restores a portable mid-stream snapshot', () => {
+    const source = new PyRandom('a custom seed string');
+    source.random();
+    const snapshot = source.snapshot();
+    const expected = Array.from({ length: 4 }, () => source.random());
+    const restored = new PyRandom(0);
+    expect(restored.restore(snapshot)).toBe(true);
+    expect(Array.from({ length: 4 }, () => restored.random())).toEqual(expected);
+    expect(restored.restore({ algorithm: 'unknown', words: [], index: 0 })).toBe(false);
+  });
 });

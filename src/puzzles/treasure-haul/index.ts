@@ -13,11 +13,13 @@ import { Images } from '../../core/assets';
 import { SoundBank } from '../../core/audio';
 import { loadFont } from '../../core/fonts';
 import { historyGroup } from '../../core/history';
+import { ReplayRecorder, type PuzzleReplay, type ReplaySettingsCodec } from '../../core/replay';
 import { keyMatches } from '../../core/controls';
 import type { InputEvent } from '../../core/input';
 import type { Option } from '../../core/panel';
 import type { PuzzleFactory } from '../../core/puzzle';
 import type { Drawable } from '../../core/screen';
+import type { GameRecord } from '../../core/storage';
 import { PyRandom } from '../../core/pyrandom';
 import {
   type Cleared,
@@ -183,14 +185,15 @@ function tint(img: HTMLImageElement): HTMLCanvasElement {
   return canvas;
 }
 
-export default (async ({ screen, input, panel, store, ticks }) => {
+export default (async ({ screen, input, panel, store, ticks, setReplayTime }) => {
   const [images] = await Promise.all([Images.load(imageUrls), loadFont(FONT, delarobbUrl)]);
   const img = (name: string) => images.get(name);
-  const sounds = new SoundBank<Sound>(soundUrls);
+  const sounds = new SoundBank<Sound>(soundUrls, () => replays?.isSeeking ?? false);
   const ctx = screen.ctx;
   const rng = new PyRandom();
   rng.seedFromCrypto();
   const random = () => rng.random();
+  let replays!: ReplayRecorder;
   const hands = tint(img('hands'));
 
   let mode = store.get<Mode>('mode', '0');
@@ -375,6 +378,7 @@ export default (async ({ screen, input, panel, store, ticks }) => {
   }
 
   function start(): void {
+    replays.begin({ mode, clearPack, roundSecs, spawnDelay, gemRates: [...gemRates] }, rng.snapshot());
     sparks = [];
     flyers = [];
     minis = [];
@@ -390,6 +394,7 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     finished = false;
     active = false;
     cursor = [4, 6];
+    lastMouse = [-1, -1];
     roundEnd = 0;
     clockStart = 0;
     clearMs = 0;
@@ -411,7 +416,12 @@ export default (async ({ screen, input, panel, store, ticks }) => {
   function stop(): void {
     // A round counts when its time is up, or in clear mode when the board is cleared; not when stopped early.
     const completed = timed() && !!roundEnd && ticks() >= roundEnd;
-    if (completed && running) store.addHistory(bestKey(), { score: score() });
+    const wasRunning = running;
+    const finishedReplay = replays.finish(`${score()} ${mode === 'clear' ? 'chests' : 'points'}`);
+    if (completed && wasRunning && !replays.isPlaying) store.addHistory(bestKey(), {
+      score: score(),
+      ...(finishedReplay ? { replayAt: finishedReplay.at, replayId: finishedReplay.runId ?? ''} : {}),
+    });
     stoppedAt = ticks();
     running = false;
     active = false;
@@ -419,7 +429,7 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     intro = null;
     timers = [];
     const best = bests[bestKey()];
-    const better = completed && (best === undefined || score() > best);
+    const better = !replays.isPlaying && completed && (best === undefined || score() > best);
     if (better) {
       bests[bestKey()] = score();
       store.set('bestPoints', bests);
@@ -790,47 +800,57 @@ export default (async ({ screen, input, panel, store, ticks }) => {
   }
 
   function frame(events: InputEvent[]): void {
+    const routed = replays.frame(events, input.mouse, ticks());
+    events = routed.events;
+    input.mouse = routed.mouse;
     const now = ticks();
-    const onBoard = (p: Point) => p[0] >= BOARD_X && p[0] < BOARD_X + BOARD && p[1] >= BOARD_Y && p[1] < BOARD_Y + BOARD;
-    // The cursor follows the mouse over the board: the square under it and the one below (HaulBoardView.c(int, int)).
-    if (active && onBoard(input.mouse) && (input.mouse[0] !== lastMouse[0] || input.mouse[1] !== lastMouse[1])) {
-      const cx = Math.max(0, Math.min(Math.floor((input.mouse[0] - BOARD_X) / CELL), W - 1));
-      const cy = Math.min(H - 1, H - Math.floor((input.mouse[1] - BOARD_Y) / CELL));
-      cursor = [cx, cy];
-    }
-    lastMouse = input.mouse;
-    for (const event of events) {
-      if (event.type === 'mousedown' && event.button <= 3 && onBoard(event.pos)) swapAt(cursor[0], cursor[1]);
-      else if (event.type === 'keydown') {
-        if (keyMatches(event.key, 'treasure-haul', 'left', 'arrowleft')) moveCursor(-1, 0);
-        else if (keyMatches(event.key, 'treasure-haul', 'right', 'arrowright')) moveCursor(1, 0);
-        else if (keyMatches(event.key, 'treasure-haul', 'up', 'arrowup')) moveCursor(0, 1);
-        else if (keyMatches(event.key, 'treasure-haul', 'down', 'arrowdown')) moveCursor(0, -1);
-        else if (keyMatches(event.key, 'treasure-haul', 'swap', 'space', ['enter'])) swapAt(cursor[0], cursor[1]);
+    if (!routed.renderOnly) {
+      const onBoard = (p: Point) => p[0] >= BOARD_X && p[0] < BOARD_X + BOARD && p[1] >= BOARD_Y && p[1] < BOARD_Y + BOARD;
+      // The cursor follows the mouse over the board: the square under it and the one below (HaulBoardView.c(int, int)).
+      if (active && onBoard(input.mouse) && (input.mouse[0] !== lastMouse[0] || input.mouse[1] !== lastMouse[1])) {
+        const cx = Math.max(0, Math.min(Math.floor((input.mouse[0] - BOARD_X) / CELL), W - 1));
+        const cy = Math.min(H - 1, H - Math.floor((input.mouse[1] - BOARD_Y) / CELL));
+        cursor = [cx, cy];
       }
+      lastMouse = input.mouse;
+      for (const event of events) {
+        if (event.type === 'mousedown' && event.button <= 3 && onBoard(event.pos)) swapAt(cursor[0], cursor[1]);
+        else if (event.type === 'keydown') {
+          if (keyMatches(event.key, 'treasure-haul', 'left', 'arrowleft')) moveCursor(-1, 0);
+          else if (keyMatches(event.key, 'treasure-haul', 'right', 'arrowright')) moveCursor(1, 0);
+          else if (keyMatches(event.key, 'treasure-haul', 'up', 'arrowup')) moveCursor(0, 1);
+          else if (keyMatches(event.key, 'treasure-haul', 'down', 'arrowdown')) moveCursor(0, -1);
+          else if (keyMatches(event.key, 'treasure-haul', 'swap', 'space', ['enter'])) swapAt(cursor[0], cursor[1]);
+        }
+      }
+
+      for (const timer of timers.filter((t) => now >= t.at)) {
+        timers.splice(timers.indexOf(timer), 1);
+        timer.run();
+      }
+      updateMovers(now);
+      updateFlyers(now);
+      if (running) {
+        evolve();
+        // Time's up: no more swaps, and the round ends once the board settles.
+        if (roundEnd && now >= roundEnd) {
+          active = false;
+          if (stable && actionCount() === 0) stop();
+        }
+      }
+      handsPose(now);
+      netFrame(now);
+
     }
 
-    for (const timer of timers.filter((t) => now >= t.at)) {
-      timers.splice(timers.indexOf(timer), 1);
-      timer.run();
-    }
-    updateMovers(now);
-    updateFlyers(now);
-    if (running) {
-      evolve();
-      // Time's up: no more swaps, and the round ends once the board settles.
-      if (roundEnd && now >= roundEnd) {
-        active = false;
-        if (stable && actionCount() === 0) stop();
-      }
-    }
-
+    if (replays.isSeeking || replays.isAdvancing) return;
     screen.fill('#000');
     screen.blit(img('background'), 0, 0);
     drawTop(now);
     drawBoard(now);
     if (!running && !board) banner('Press Start to haul treasure', BOARD_Y + 180);
     else if (finished) banner(clearMs ? `Hauled in ${seconds(clearMs)}` : roundEnd && now >= roundEnd ? "Time's up!" : 'Stopped', BOARD_Y + 180);
+    replays.drawOverlay(ctx);
   }
 
   // ---- Panel ----
@@ -863,7 +883,7 @@ export default (async ({ screen, input, panel, store, ticks }) => {
   ] as Option<ClearPack>[], () => clearPack, (p) => { clearPack = p; store.set('clearPack', p); }, { hidden: () => mode !== 'clear', disabled: () => running });
   const actions = panel.group();
   actions.note(() => mode === 'clear' ? 'A practice move brings in each chest. Haul as many as you can.' : '');
-  actions.button('Start', () => (running ? stop() : start()), { variant: 'primary', label: () => (running ? 'Stop' : finished ? 'Play again' : 'Start') });
+  actions.button('Start', () => (running ? stop() : start()), { variant: 'primary', disabled: () => !!replays?.isPlaying, label: () => (running ? 'Stop' : finished ? 'Play again' : 'Start') });
 
   const best = () => bests[bestKey()];
   panel.score('Haul').stats(['', 'Now', 'Best'], () => [[
@@ -880,9 +900,13 @@ export default (async ({ screen, input, panel, store, ticks }) => {
       ...(mode === 'spawn' ? [['Chests in middle', `${tally.middle} / ${tally.spawned}`]] : []),
     ],
   } : null);
+  const replayAction = {
+    available: (game: GameRecord) => typeof game.replayAt === 'number' && (replays?.hasPlayableAt(game.replayAt, typeof game.replayId === 'string' ? game.replayId : undefined) ?? false),
+    play: (game: GameRecord) => { if (typeof game.replayAt === 'number') replays?.playAt(game.replayAt, typeof game.replayId === 'string' ? game.replayId : undefined); },
+  };
   historyGroup(panel, () => timed() ? store.history(bestKey()) : null, [{
     label: 'Score', value: (g) => String(g.score),
-  }]);
+  }], 'Past games', replayAction);
   panel.settings.group('Game').select('Round', ROUNDS, () => roundSecs, (s) => {
     roundSecs = s;
     store.set('round', s);
@@ -895,6 +919,49 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     store.set('gemRates', gemRates);
   }, { min: 0, max: 100, step: 0.01, disabled: () => running }));
   gems.button('Defaults', () => { gemRates = [200 / 308, 200 / 308]; store.set('gemRates', gemRates); }, { disabled: () => running });
+  panel.settings.group('Reset').button('Reset to defaults', () => {
+    mode = '0';
+    roundSecs = 0;
+    clearPack = 'standard';
+    spawnDelay = false;
+    gemRates = [200 / 308, 200 / 308];
+    store.set('mode', mode);
+    store.set('round', roundSecs);
+    store.set('clearPack', clearPack);
+    store.set('spawnDelay', spawnDelay);
+    store.set('gemRates', gemRates);
+  }, { disabled: () => running });
 
-  return { frame, dispose: () => sounds.dispose() };
+  const replaySettingsCodec: ReplaySettingsCodec = {
+    currentVersion: 1,
+    simulatorVersion: 1,
+    migrate: (version, value) => {
+      if (version !== 1 || !value || typeof value !== 'object') return null;
+      const s = value as Record<string, unknown>;
+      return ['0', '1', '2', 'spawn', 'clear'].includes(String(s.mode)) &&
+        ['standard', 'efficient', 'emeralds', 'edges'].includes(String(s.clearPack)) &&
+        Number.isFinite(s.roundSecs) && (s.roundSecs as number) >= 0 && typeof s.spawnDelay === 'boolean' &&
+        Array.isArray(s.gemRates) && s.gemRates.length === 2 && s.gemRates.every((n) => Number.isFinite(n) && (n as number) >= 0) ? value : null;
+    },
+  };
+  let savedReplaySettings: { mode: Mode; clearPack: ClearPack; roundSecs: number; spawnDelay: boolean; gemRates: [number, number] } | null = null;
+  replays = new ReplayRecorder('treasure-haul', store, panel, ticks, (tape: PuzzleReplay) => {
+    savedReplaySettings ??= { mode, clearPack, roundSecs, spawnDelay, gemRates: [...gemRates] };
+    const settings = tape.settings as { mode: Mode; clearPack: ClearPack; roundSecs: number; spawnDelay: boolean; gemRates: [number, number] };
+    mode = settings.mode;
+    clearPack = settings.clearPack;
+    roundSecs = settings.roundSecs;
+    spawnDelay = settings.spawnDelay;
+    gemRates = [...settings.gemRates];
+    if (!rng.restore(tape.seed)) throw new Error('Invalid Treasure Haul random state');
+    start();
+  }, () => {
+    if (running) stop();
+    if (savedReplaySettings) {
+      ({ mode, clearPack, roundSecs, spawnDelay, gemRates } = savedReplaySettings);
+      savedReplaySettings = null;
+    }
+  }, (seed) => new PyRandom(0).restore(seed), setReplayTime, () => frame([]), replaySettingsCodec, () => !running || replays.isPlaying);
+
+  return { frame, dispose: () => { replays.dispose(); sounds.dispose(); } };
 }) satisfies PuzzleFactory;

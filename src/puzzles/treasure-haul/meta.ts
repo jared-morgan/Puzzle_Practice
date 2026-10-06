@@ -8,6 +8,5 @@ export default {
   width: 450,
   height: 600,
   order: 5,
-  credits: 'Based on Puzzle Pirates (Three Rings).',
   thumbnail,
 } satisfies PuzzleMeta;

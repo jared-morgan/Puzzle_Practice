@@ -15,11 +15,13 @@ import { SoundBank } from '../../core/audio';
 import { loadFont } from '../../core/fonts';
 import { historyGroup } from '../../core/history';
 import { keyMatches } from '../../core/controls';
+import { ReplayRecorder, type PuzzleReplay, type ReplaySettingsCodec } from '../../core/replay';
 import type { InputEvent, Point } from '../../core/input';
 import type { Option } from '../../core/panel';
 import type { PuzzleFactory } from '../../core/puzzle';
 import type { Drawable } from '../../core/screen';
 import { PyRandom } from '../../core/pyrandom';
+import type { GameRecord } from '../../core/storage';
 import {
   BOARD_DONE,
   boardDifficulty,
@@ -121,6 +123,7 @@ const KEY_MOVES: Record<string, Point> = {
 };
 interface Anim {
   layer: number;
+  update?(now: number): boolean;
   /** Draws the animation; returns false once it's finished. */
   draw(now: number): boolean;
 }
@@ -178,14 +181,15 @@ function silhouette(img: HTMLImageElement, colour: string): HTMLCanvasElement {
   return canvas;
 }
 
-export default (async ({ screen, input, panel, store, ticks }) => {
+export default (async ({ screen, input, panel, store, ticks, setReplayTime }) => {
   const [images] = await Promise.all([Images.load(imageUrls), loadFont(FONT, delarobbUrl)]);
   const img = (name: string) => images.get(name);
-  const sounds = new SoundBank<Sound>(soundUrls);
+  const sounds = new SoundBank<Sound>(soundUrls, () => replays?.isSeeking ?? false);
   const ctx = screen.ctx;
   const rng = new PyRandom();
   rng.seedFromCrypto();
   const random = () => rng.random();
+  let replays!: ReplayRecorder;
 
   const glowSheets = TILE_SHEETS.map((name) => (name ? [silhouette(img(name), GLOW), silhouette(img(name), GLOW_HOT)] : []));
 
@@ -224,6 +228,7 @@ export default (async ({ screen, input, panel, store, ticks }) => {
   let swordAt: Point = [-img(BLADES[0]).width, SWORD_Y];
   let swordPath: Path | null = null;
   let gleamPath: Path | null = null;
+  let gleamAt: Point | null = null;
   /** Squares and frame fade in when the sword arrives and out when it's done (alpha 0-1). */
   let fade = { start: 0, duration: 1, from: 0, to: 0 };
 
@@ -266,7 +271,7 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     let last = -1;
     return {
       layer,
-      draw(now) {
+      update(now) {
         const i = Math.floor((now - start) / FRAME_MS);
         if (i >= sequence.length) {
           opts.onEnd?.();
@@ -274,6 +279,11 @@ export default (async ({ screen, input, panel, store, ticks }) => {
         }
         // (Optional calls skip their arguments, so the count can't go inside onFrame?.(...).)
         for (; last < i; last++) opts.onFrame?.(last + 1);
+        return true;
+      },
+      draw(now) {
+        const i = Math.floor((now - start) / FRAME_MS);
+        if (i >= sequence.length) return false;
         const tile = sequence[i];
         ctx.save();
         ctx.translate(Math.trunc(x) + (opts.flipX ? w : 0), Math.trunc(y) + (opts.flipY ? h : 0));
@@ -369,6 +379,8 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     if (!run.active) messages = [];
     glows = [];
     cursor = null;
+    pressed = null;
+    lastMouse = [-1, -1];
     gleamPath = null;
     fade = { start: 0, duration: 1, from: 0, to: 0 };
     // The red-hot blade slides in from the left, then the squares fade in over it (IronBoardView.a(Board), client/i, j, k).
@@ -539,22 +551,29 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     running = false;
     finished = true;
     if (mode === 'perfect') {
-      const record = perfectRecords[perfectKey()] ?? { boards: 0, points: 0, cleared: 0, oneOff: 0 };
-      record.boards++;
-      record.points += lastPoints ?? 0;
-      if (lastPoints === 3) record.cleared++;
-      if (lastPoints === 1) record.oneOff++;
-      perfectRecords[perfectKey()] = record;
-      store.set('perfectRecords', perfectRecords);
+      if (!replays.isPlaying) {
+        const record = perfectRecords[perfectKey()] ?? { boards: 0, points: 0, cleared: 0, oneOff: 0 };
+        record.boards++;
+        record.points += lastPoints ?? 0;
+        if (lastPoints === 3) record.cleared++;
+        if (lastPoints === 1) record.oneOff++;
+        perfectRecords[perfectKey()] = record;
+        store.set('perfectRecords', perfectRecords);
+      }
       run.points += lastPoints ?? 0;
       run.boards++;
       // The next board comes straight in, for as long as the run lasts.
       if (run.active) newSword();
+      else replays.finish(`Points ${run.points}`);
       return;
     }
+    const finishedReplay = replays.finish(`Strikes ${board?.numHits ?? 0}`);
     const key = String(difficulty);
-    if (board) store.addHistory(`classic:${key}`, { score: board.numHits });
-    if (board && board.numHits > (bests[key] ?? 0)) {
+    if (board && !replays.isPlaying) store.addHistory(`classic:${key}`, {
+      score: board.numHits,
+      ...(finishedReplay ? { replayAt: finishedReplay.at, replayId: finishedReplay.runId ?? ''} : {}),
+    });
+    if (!replays.isPlaying && board && board.numHits > (bests[key] ?? 0)) {
       bests[key] = board.numHits;
       store.set('bestStrikes', bests);
     }
@@ -575,6 +594,7 @@ export default (async ({ screen, input, panel, store, ticks }) => {
   }
 
   function startRun(): void {
+    replays.begin({ mode, difficulty, perfectSize, timerMs }, rng.snapshot());
     Object.assign(run, { active: true, start: ticks(), end: ticks(), points: 0, boards: 0, timeUp: false });
     newSword();
   }
@@ -584,11 +604,12 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     run.active = false;
     run.end = ticks();
     run.timeUp = timeUp;
+    const finishedReplay = replays.finish(`Points ${run.points}`);
     abortBoard();
-    if (!timeUp) return;
+    if (!timeUp || replays.isPlaying) return;
     say("Time's up!", 4, 2500);
     const key = perfectKey();
-    store.addHistory(`run:${key}`, { score: run.points, boards: run.boards });
+    store.addHistory(`run:${key}`, { score: run.points, boards: run.boards, ...(finishedReplay ? { replayAt: finishedReplay.at, replayId: finishedReplay.runId ?? ''} : {}) });
     if (run.points > (timedBests[key] ?? -1)) {
       timedBests[key] = run.points;
       store.set('perfectTimedBests', timedBests);
@@ -710,43 +731,54 @@ export default (async ({ screen, input, panel, store, ticks }) => {
   }
 
   function frame(events: InputEvent[]): void {
+    const routed = replays.frame(events, input.mouse, ticks());
+    events = routed.events;
+    input.mouse = routed.mouse;
     const now = ticks();
-    for (const event of events) {
-      if (event.type === 'mousedown' && event.button === 1) pressed = squareAt(event.pos);
-      else if (event.type === 'mouseup' && event.button === 1) {
-        // A click strikes only if it's pressed and released on the same square (client/d).
-        const square = squareAt(event.pos);
-        if (square && pressed && square[0] === pressed[0] && square[1] === pressed[1]) strike(square[0], square[1]);
-        pressed = null;
-      } else if (event.type === 'keydown') {
-        const directions: Array<[string, string]> = [
-          ['up', 'arrowup'], ['down', 'arrowdown'], ['left', 'arrowleft'], ['right', 'arrowright'],
-          ['upLeft', 'home'], ['upRight', 'pageup'], ['downLeft', 'end'], ['downRight', 'pagedown'],
-        ];
-        const direction = directions.find(([id, key]) => keyMatches(event.key, 'blacksmithing', id, key));
-        const move = direction ? KEY_MOVES[direction[1]] : ['8','2','4','6','7','9','1','3'].includes(event.key) ? KEY_MOVES[event.key] : undefined;
-        if (move) moveCursor(move[0], move[1]);
-        else if (keyMatches(event.key, 'blacksmithing', 'strike', 'space', ['enter','5','clear']) && cursor) strike(cursor[0], cursor[1]);
+    if (!routed.renderOnly) {
+      for (const event of events) {
+        if (event.type === 'mousedown' && event.button === 1) pressed = squareAt(event.pos);
+        else if (event.type === 'mouseup' && event.button === 1) {
+          // A click strikes only if it's pressed and released on the same square (client/d).
+          const square = squareAt(event.pos);
+          if (square && pressed && square[0] === pressed[0] && square[1] === pressed[1]) strike(square[0], square[1]);
+          pressed = null;
+        } else if (event.type === 'keydown') {
+          const directions: Array<[string, string]> = [
+            ['up', 'arrowup'], ['down', 'arrowdown'], ['left', 'arrowleft'], ['right', 'arrowright'],
+            ['upLeft', 'home'], ['upRight', 'pageup'], ['downLeft', 'end'], ['downRight', 'pagedown'],
+          ];
+          const direction = directions.find(([id, key]) => keyMatches(event.key, 'blacksmithing', id, key));
+          const move = direction ? KEY_MOVES[direction[1]] : ['8','2','4','6','7','9','1','3'].includes(event.key) ? KEY_MOVES[event.key] : undefined;
+          if (move) moveCursor(move[0], move[1]);
+          else if (keyMatches(event.key, 'blacksmithing', 'strike', 'space', ['enter','5','clear']) && cursor) strike(cursor[0], cursor[1]);
+        }
       }
-    }
-    // The cursor follows the mouse while the board can be struck (client/e).
-    if (hammerable && (input.mouse[0] !== lastMouse[0] || input.mouse[1] !== lastMouse[1])) cursor = squareAt(input.mouse);
-    lastMouse = input.mouse;
+      // The cursor follows the mouse while the board can be struck (client/e).
+      if (hammerable && (input.mouse[0] !== lastMouse[0] || input.mouse[1] !== lastMouse[1])) cursor = squareAt(input.mouse);
+      lastMouse = input.mouse;
 
-    if (run.active && timeLeft() === 0) endRun(true);
+      if (run.active && timeLeft() === 0) endRun(true);
 
-    for (const timer of timers.filter((t) => now >= t.at)) {
-      timers.splice(timers.indexOf(timer), 1);
-      timer.run();
+      for (const timer of timers.filter((t) => now >= t.at)) {
+        timers.splice(timers.indexOf(timer), 1);
+        timer.run();
+      }
+
+      swordAt = stepPath(swordPath, now) ?? swordAt;
+      gleamAt = stepPath(gleamPath, now);
+      const ended = new Set<Anim>();
+      for (const animation of [...anims]) if (animation.update && !animation.update(now)) ended.add(animation);
+      anims = anims.filter((animation) => !ended.has(animation));
     }
+    if (replays.isSeeking || replays.isAdvancing) return;
 
     screen.fill('#000');
     screen.blit(img('background'), 0, 0);
     drawChain();
 
-    const swordPos = stepPath(swordPath, now) ?? swordAt;
-    swordAt = swordPos;
-    const gleamPos = stepPath(gleamPath, now);
+    const swordPos = swordAt;
+    const gleamPos = gleamAt;
 
     const layers: Anim[] = [
       ...anims,
@@ -802,6 +834,7 @@ export default (async ({ screen, input, panel, store, ticks }) => {
       ctx.fillText('Press Start to forge a sword', WIDTH / 2, 230);
       ctx.restore();
     }
+    replays.drawOverlay(ctx);
   }
 
   // ---- Panel ----
@@ -838,9 +871,9 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     if (mode === 'perfect') {
       if (run.active) endRun(false);
       else startRun();
-    } else if (running) abortBoard();
-    else newSword();
-  }, { variant: 'primary', label: () => (busy() ? 'Stop' : !finished || mode === 'perfect' ? 'Start' : 'New sword') });
+    } else if (running) { abortBoard(); replays.finish('Stopped'); }
+    else { replays.begin({ mode, difficulty, perfectSize, timerMs }, rng.snapshot()); newSword(); }
+  }, { variant: 'primary', disabled: () => !!replays?.isPlaying, label: () => (busy() ? 'Stop' : !finished || mode === 'perfect' ? 'Start' : 'New sword') });
 
   const best = () => bests[String(difficulty)];
   const perfectRecord = () => perfectRecords[perfectKey()];
@@ -874,13 +907,17 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     ];
   });
 
+  const replayAction = {
+    available: (game: GameRecord) => typeof game.replayAt === 'number' && (replays?.hasPlayableAt(game.replayAt, typeof game.replayId === 'string' ? game.replayId : undefined) ?? false),
+    play: (game: GameRecord) => { if (typeof game.replayAt === 'number') replays?.playAt(game.replayAt, typeof game.replayId === 'string' ? game.replayId : undefined); },
+  };
   historyGroup(panel, () => (mode === 'classic' ? store.history(`classic:${difficulty}`) : null), [
     { label: 'Strikes', value: (g) => String(g.score) },
-  ]);
+  ], 'Past games', replayAction);
   historyGroup(panel, () => (mode === 'perfect' && timerMs ? store.history(`run:${perfectKey()}`) : null), [
     { label: 'Points', value: (g) => String(g.score) },
     { label: 'Boards', value: (g) => String(g.boards) },
-  ]);
+  ], 'Past games', replayAction);
 
   panel.tab('History').group('Combos', { hidden: () => mode !== 'classic' || running || !finished }).stats(['', 'This sword'], () => [
     ['Double', String(tally.chains[2] ?? 0)],
@@ -931,6 +968,48 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     timerMs = ms;
     store.set('perfectTimer', ms);
   }, { disabled: busy, hidden: () => mode !== 'perfect', title: 'Boards keep coming until Stop, or until the time runs out' });
+  settings.button('Reset to defaults', () => {
+    mode = 'classic';
+    difficulty = 4;
+    perfectSize = 3;
+    timerMs = 0;
+    store.set('mode', mode);
+    store.set('difficulty', difficulty);
+    store.set('perfectSize', perfectSize);
+    store.set('perfectTimer', timerMs);
+  }, { disabled: busy });
 
-  return { frame, dispose: () => sounds.dispose() };
+  const replaySettingsCodec: ReplaySettingsCodec = {
+    currentVersion: 1,
+    simulatorVersion: 1,
+    migrate: (version, value) => {
+      if (version !== 1 || !value || typeof value !== 'object') return null;
+      const s = value as Record<string, unknown>;
+      return (s.mode === 'classic' || s.mode === 'perfect') && Number.isFinite(s.difficulty) &&
+        Number.isInteger(s.perfectSize) && Number.isFinite(s.timerMs) && (s.timerMs as number) >= 0 ? value : null;
+    },
+  };
+  let savedReplaySettings: { mode: Mode; difficulty: number; perfectSize: number; timerMs: number } | null = null;
+  replays = new ReplayRecorder('blacksmithing', store, panel, ticks, (tape: PuzzleReplay) => {
+    savedReplaySettings ??= { mode, difficulty, perfectSize, timerMs };
+    const settings = tape.settings as { mode: Mode; difficulty: number; perfectSize: number; timerMs: number };
+    mode = settings.mode;
+    difficulty = settings.difficulty;
+    perfectSize = settings.perfectSize;
+    timerMs = settings.timerMs;
+    if (!rng.restore(tape.seed)) throw new Error('Invalid Blacksmithing random state');
+    abortBoard();
+    run.active = false;
+    if (mode === 'perfect') startRun();
+    else newSword();
+  }, () => {
+    if (run.active) endRun(false);
+    else if (running) abortBoard();
+    if (savedReplaySettings) {
+      ({ mode, difficulty, perfectSize, timerMs } = savedReplaySettings);
+      savedReplaySettings = null;
+    }
+  }, (seed) => new PyRandom(0).restore(seed), setReplayTime, () => frame([]), replaySettingsCodec, () => !busy() || replays.isPlaying);
+
+  return { frame, dispose: () => { replays.dispose(); sounds.dispose(); } };
 }) satisfies PuzzleFactory;

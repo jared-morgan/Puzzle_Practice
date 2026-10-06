@@ -56,6 +56,12 @@ export interface NumberOptions extends ControlOptions {
 }
 export interface RangeOptions extends NumberOptions {
   maxValue?: Get<number>;
+  /** Formats the displayed value without changing the range's underlying precision. */
+  formatValue?: (value: number) => string;
+  /** Reserves a fixed output width so changing digits do not shift the range. */
+  outputWidth?: number;
+  /** Called once after the user finishes dragging, for expensive updates such as replay seeking. */
+  onCommit?: (value: number) => void;
 }
 
 export interface TextOptions extends ControlOptions {
@@ -155,6 +161,18 @@ export class Panel {
       this.preferences.set('hideTimer', on);
     });
     this.settings.group('Sound').range('Volume', getVolume, setVolume, { min: 0, max: 100 });
+    const replayPreferences = this.settings.group('Replays');
+    replayPreferences.toggle('Save replays',
+      () => this.preferences.get<boolean>('saveReplays', true),
+      (on) => this.preferences.set('saveReplays', on),
+      { title: 'When off, new scores are still saved but their replay files are not.' },
+    );
+    replayPreferences.toggle('Compress replays',
+      () => this.preferences.get<boolean>('compressReplays', true),
+      (on) => this.preferences.set('compressReplays', on),
+      { title: 'New recordings skip cursor travel that does not affect a move; Distilling keeps held-mouse paths.' },
+    );
+    replayPreferences.note(() => 'Saved replays remain available in this browser. Connect a folder on the home page for automatic PC backups.');
     this.show(this.pages[0].name);
   }
 
@@ -365,19 +383,23 @@ export class Group {
     input.max = String(opts.max ?? 100);
     input.step = String(opts.step ?? 1);
     const output = el('output');
+    if (opts.outputWidth) output.style.width = `${opts.outputWidth}ch`;
     const control = el('div', 'panel-range-control');
     control.append(input, output);
     input.addEventListener('input', () => {
       set(Number(input.value));
       this.panel.sync();
     });
-    input.addEventListener('change', () => this.panel.used());
+    input.addEventListener('change', () => {
+      opts.onCommit?.(Number(input.value));
+      this.panel.used();
+    });
     this.field(label, control, opts, input);
     this.panel.addSync(() => {
       if (opts.maxValue) input.max = String(opts.maxValue());
       const value = String(get());
       input.value = value;
-      output.textContent = value;
+      output.textContent = opts.formatValue?.(Number(value)) ?? value;
     });
     return this;
   }
@@ -455,11 +477,17 @@ export class Group {
    * A small table, e.g. Now / Best per stat. `rows` returns [label, ...cells];
    * the first header cell sits over the labels and is usually ''.
    */
-  stats(header: readonly string[], rows: Get<readonly (readonly string[])[]>, opts: ControlOptions = {}): this {
+  stats(
+    header: readonly string[],
+    rows: Get<readonly (readonly string[])[]>,
+    opts: ControlOptions = {},
+    rowAction?: { label: string; title: string; onClick: (index: number) => void; disabled?: (index: number) => boolean },
+  ): this {
     const table = el('table', 'panel-stats');
     if (header.some(Boolean)) {
       const head = el('tr');
       for (const cell of header) head.append(el('th', '', cell));
+      if (rowAction) head.append(el('th', '', ''));
       table.append(el('thead'));
       table.tHead!.append(head);
     }
@@ -467,19 +495,37 @@ export class Group {
     table.append(body);
     this.element.append(table);
     this.panel.watch(table, opts);
+    let rowButtons: HTMLButtonElement[] = [];
     let last = '';
     this.panel.addSync(() => {
       const data = rows();
       const key = JSON.stringify(data);
-      if (key === last) return;
-      last = key;
-      body.replaceChildren(
-        ...data.map((row) => {
+      if (key !== last) {
+        last = key;
+        rowButtons = [];
+        body.replaceChildren(
+          ...data.map((row, index) => {
           const tr = el('tr');
           row.forEach((cell, i) => tr.append(el(i === 0 ? 'th' : 'td', '', cell)));
+          if (rowAction) {
+            const td = el('td', 'panel-stats-action-cell');
+            const button = el('button', 'panel-stats-action', rowAction.label);
+            button.type = 'button';
+            button.title = rowAction.title;
+            button.setAttribute('aria-label', rowAction.title);
+            button.addEventListener('click', () => {
+              rowAction.onClick(index);
+              this.panel.used();
+            });
+            td.append(button);
+            tr.append(td);
+            rowButtons.push(button);
+          }
           return tr;
-        }),
-      );
+          }),
+        );
+      }
+      if (rowAction) rowButtons.forEach((button, index) => { button.disabled = rowAction.disabled?.(index) ?? false; });
     });
     return this;
   }

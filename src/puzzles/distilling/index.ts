@@ -17,10 +17,14 @@ import { copyText, pasteText } from '../../core/clipboard';
 import { loadFont } from '../../core/fonts';
 import { keyMatches } from '../../core/controls';
 import { historyGroup } from '../../core/history';
+import { ReplayRecorder, type PuzzleReplay, type ReplaySettingsCodec } from '../../core/replay';
+import { PyRandom } from '../../core/pyrandom';
 import type { InputEvent, Point } from '../../core/input';
 import type { PuzzleFactory } from '../../core/puzzle';
+import type { GameRecord } from '../../core/storage';
 import {
   convert_seed,
+  type Board,
   emptyBoard,
   generate_board,
   generate_column,
@@ -136,6 +140,13 @@ const KEY_MOVES: Record<string, number> = {
  * recorded piece sequence), Create (paint any board; never ends) and Practice (set boards from practice.ts).
  */
 type Mode = 'Standard' | 'Seeded' | 'Create' | 'Practice';
+interface DistillingReplayState {
+  format: 'distilling-replay-state';
+  board: Board;
+  simSeed: Seed;
+  randomState: ReturnType<PyRandom['snapshot']>;
+}
+
 const MODES: { value: Mode; label: string }[] = [
   { value: 'Standard', label: 'Standard' },
   { value: 'Seeded', label: 'Seeded' },
@@ -203,10 +214,10 @@ interface Message {
   down: boolean;
 }
 
-export default (async ({ screen, input, panel, store, ticks }) => {
+export default (async ({ screen, input, panel, store, ticks, setReplayTime }) => {
   const [images] = await Promise.all([Images.load(imageUrls), loadFont(FONT, delarobbUrl)]);
   const img = (name: string) => images.get(name);
-  const sounds = new SoundBank<Sound>(soundUrls);
+  const sounds = new SoundBank<Sound>(soundUrls, () => replays?.isSeeking ?? false);
   const ctx = screen.ctx;
 
   const PIECE_SHEETS: Record<number, string> = { [LIGHT]: 'piece_white', [MEDIUM]: 'piece_mid', [HEAVY]: 'piece_dark', [BURNT]: 'piece_white_burnt' };
@@ -251,6 +262,9 @@ export default (async ({ screen, input, panel, store, ticks }) => {
   let simSeed: Seed = ['', ''];
   /** The simulator's next random rng decider ("7" + 20 digits), counted up each start. */
   let randomSeed = generate_seed();
+  let replays!: ReplayRecorder;
+  let replayStartState: DistillingReplayState | null = null;
+  let lastReplayState: DistillingReplayState | null = null;
   let paused = false;
   let startedMode: Mode = mode;
   /** A piece key (1-5) held down in Create mode paints the piece under the mouse. */
@@ -414,14 +428,21 @@ export default (async ({ screen, input, panel, store, ticks }) => {
   }
 
   /** A new game on a simulator board, played on the client's rules. */
-  function newGame(): BrewGame {
+  function newGame(now = ticks()): BrewGame {
     const run = runSettings();
     const options: GameOptions = { tickMs: run.interval ? run.interval / 50 : TICK_MS, timerless: run.interval === null, endless: mode === 'Create' };
     const clientSeed = BigInt.asIntN(64, BigInt(Math.floor(Math.random() * 2 ** 48)));
     const text = seedText.trim();
     // The simulator's modes. A seed is [piece sequence, rng decider] (boards.ts convert_seed).
-    let board;
-    if (mode === 'Seeded' || mode === 'Create') {
+    let board: Board;
+    if (replayStartState) {
+      const snapshot = replayStartState;
+      replayStartState = null;
+      board = snapshot.board.map((column) => [...column]);
+      simSeed = [...snapshot.simSeed];
+      if (!simRandom.restore(snapshot.randomState)) throw new Error('Invalid Distilling replay state');
+      lastSeed = '';
+    } else if (mode === 'Seeded' || mode === 'Create') {
       simSeed = /^[0-9]+$/.test(text) ? convert_seed(text) : ['', ''];
       if (simSeed[1] === '') {
         simSeed[1] = randomSeed.slice(1);
@@ -440,6 +461,14 @@ export default (async ({ screen, input, panel, store, ticks }) => {
       if (mode === 'Practice') [board, simSeed] = get_practice_board(emptyBoard(), practiceNum, run.spawn, run.difficulty, simSeed);
       else [board, simSeed] = generate_board(emptyBoard(), run.spawn, 8, run.difficulty, simSeed);
     }
+    lastReplayState = {
+      format: 'distilling-replay-state',
+      board: board.map((column) => [...column]),
+      // Keep the remaining custom piece sequence, but discard the native decimal seed.
+      // The PRNG state below is replay-only and cannot be pasted into the game seed field.
+      simSeed: [simSeed[0], ''],
+      randomState: simRandom.snapshot(),
+    };
     const brew = BrewBoard.withColumns(toColumns(board), clientSeed);
     // New columns: the rest of a seeded piece sequence, then the spawn rates (activate_furnace).
     const seeded = mode === 'Seeded';
@@ -450,12 +479,14 @@ export default (async ({ screen, input, panel, store, ticks }) => {
       else [column, simSeed] = generate_column(run.spawn, run.difficulty, simSeed);
       return column.filter((p) => p !== -1).slice(0, height).map(toClientPiece);
     };
-    return new BrewGame(brew, ticks(), options);
+    return new BrewGame(brew, now, options);
   }
 
   function start(): void {
+    const now = ticks();
     resultRows = null;
-    game = newGame();
+    game = newGame(now);
+    replays.begin({ mode, timerOn, createTimerOn, timerSeconds, difficulty, spawnRates: [...spawnRates], practiceNum: [...practiceNum] }, lastReplayState, now);
     startedMode = mode;
     paused = false;
     paintWith = null;
@@ -465,6 +496,8 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     leaving = [];
     selected = null;
     cursor = { col: 0, row: 0 };
+    lastMouse = [-1, -1];
+    mouseHeld = false;
     dragMode = dragSwapped = false;
     waitCount = swapCount = 0;
     messages = [];
@@ -473,15 +506,28 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     running = true;
   }
 
-  function stop(): void {
+  function stop(completed = false): void {
+    if (!running || !game) return;
     resultRows = makeResultRows();
+    if (completed) saveCompletedSession();
+    else replays.finish(`Score ${sessionScore().toFixed(2)}`);
+    game.finished = true;
+    game.burnDue = false;
     running = false;
+    paused = false;
     active = false;
     pieces = [];
     leaving = [];
     selected = null;
     messages = [];
     timers = [];
+  }
+
+  /** Dismissing keeps the score already earned; it never processes the remaining column. */
+  function dismiss(): void {
+    if (!running) return;
+    replays.command('dismiss');
+    stop(true);
   }
 
   /** The player's turn is live: the session's on and nothing is sliding (PuzzleController.S, view.s). */
@@ -670,13 +716,23 @@ export default (async ({ screen, input, panel, store, ticks }) => {
 
   /** The jug is full (BrewController.s): "Finished!" holds the board, then it clears. */
   function finish(): void {
+    if (!running || !game) return;
     resultRows = makeResultRows();
-    const key = historyKey(startedMode);
-    if (key && game) store.addHistory(key, { score: Number(sessionScore().toFixed(2)) });
+    saveCompletedSession();
     say(MESSAGES.jug_filled, { wait: true });
     sounds.play('finished');
     running = false;
+    paused = false;
     later(FLOAT_MS, () => (active = false));
+  }
+
+  function saveCompletedSession(): void {
+    const key = historyKey(startedMode);
+    const finishedReplay = replays.finish(`Score ${sessionScore().toFixed(2)}`);
+    if (key && game && !replays.isPlaying) store.addHistory(key, {
+      score: Number(sessionScore().toFixed(2)),
+      ...(finishedReplay ? { replayAt: finishedReplay.at, replayId: finishedReplay.runId ?? ''} : {}),
+    });
   }
 
   function burnNow(): void {
@@ -780,72 +836,85 @@ export default (async ({ screen, input, panel, store, ticks }) => {
   }
 
   function frame(events: InputEvent[]): void {
+    const routed = replays.frame(events, input.mouse, ticks());
+    events = routed.events;
+    input.mouse = routed.mouse;
     const now = ticks();
-    const creating = running && startedMode === 'Create';
-    for (const event of events) {
-      if (event.type === 'mousedown' && event.button <= 3) {
-        if (!inView(event.pos)) continue;
-        if (creating && palettePiece !== null && event.button === 1) {
-          paint(event.pos, palettePiece);
-          mouseHeld = true;
-          continue;
-        }
-        hover(event.pos);
-        if (isBurnButton(event.button)) burnNow();
-        else {
-          selOrSwap();
-          dragMode = true;
-          mouseHeld = true;
-        }
-      } else if (event.type === 'mousedown' && creating) {
-        // The wheel changes the piece under the mouse in Create mode.
-        const step = event.button === 4 ? 1 : -1;
-        paint(event.pos, (old) => PAINT_ORDER[(PAINT_ORDER.indexOf(old) + step + PAINT_ORDER.length) % PAINT_ORDER.length]);
-      } else if (event.type === 'mouseup' && event.button <= 3) {
-        if (isBurnButton(event.button)) continue;
-        if (dragSwapped && selected) setSelected(null);
-        dragMode = dragSwapped = mouseHeld = false;
-      } else if (event.type === 'keydown') {
-        const paintKeys = ['1', '2', '3', '4', '5'];
-        const paintKey = creating ? paintKeys.findIndex((_, i) => keyMatches(event.key, 'distilling', `paint${i + 1}`, paintKeys[i])) : -1;
-        const directionIds: Record<number, string> = { [SW]: 'downLeft', [NW]: 'upLeft', [N]: 'up', [NE]: 'upRight', [SE]: 'downRight', [S]: 'down' };
-        const move = Object.entries(directionIds).find(([direction, id]) =>
-          keyMatches(event.key, 'distilling', id, Object.keys(KEY_MOVES).find((key) => KEY_MOVES[key] === Number(direction) && key.startsWith('arrow')) ?? ''),
-        );
-        const movement = move ? Number(move[0]) : ['1','2','3','4','6','7','8','9','home','end','pageup','pagedown'].includes(event.key) ? KEY_MOVES[event.key] : undefined;
-        if (paintKey >= 0) paintWith = PAINT_ORDER[paintKey];
-        else if (keyMatches(event.key, 'distilling', 'pause', 'escape')) togglePause();
-        else if (movement !== undefined) moveCursor(movement);
-        else if (keyMatches(event.key, 'distilling', 'swap', 'space', ['5','clear'])) selOrSwap();
-        else if (keyMatches(event.key, 'distilling', 'burn', 'x')) burnNow();
-      } else if (event.type === 'keyup' && paintWith !== null && PAINT_ORDER[['1', '2', '3', '4', '5'].findIndex((_, i) => keyMatches(event.key, 'distilling', `paint${i + 1}`, String(i + 1)))] === paintWith) {
-        paintWith = null;
+    if (!routed.renderOnly) {
+      for (const command of routed.commands) {
+        if (command === 'pause') togglePause();
+        else if (command === 'dismiss') dismiss();
       }
-    }
-    if (input.mouse[0] !== lastMouse[0] || input.mouse[1] !== lastMouse[1]) {
-      // The client gets every mouse move; a frame here can cover several, so step along the line
-      // between them, a few pixels at a time, so a quick drag doesn't skip pieces.
-      const [x0, y0] = lastMouse[0] < 0 ? input.mouse : lastMouse;
-      const steps = mouseHeld ? Math.max(1, Math.ceil(Math.hypot(input.mouse[0] - x0, input.mouse[1] - y0) / 4)) : 1;
-      for (let i = 1; i <= steps; i++) {
-        const pos: Point = [x0 + ((input.mouse[0] - x0) * i) / steps, y0 + ((input.mouse[1] - y0) * i) / steps];
-        if (!inView(pos)) continue;
-        hover(pos);
-        if (mouseHeld) {
-          if (creating && palettePiece !== null) paint(pos, palettePiece);
-          else selOrSwap();
+      const creating = running && startedMode === 'Create';
+      for (const event of events) {
+        if (event.type === 'mousedown' && event.button <= 3) {
+          if (!inView(event.pos)) continue;
+          if (creating && palettePiece !== null && event.button === 1) {
+            paint(event.pos, palettePiece);
+            mouseHeld = true;
+            continue;
+          }
+          hover(event.pos);
+          if (isBurnButton(event.button)) burnNow();
+          else {
+            selOrSwap();
+            dragMode = true;
+            mouseHeld = true;
+          }
+        } else if (event.type === 'mousedown' && creating) {
+          // The wheel changes the piece under the mouse in Create mode.
+          const step = event.button === 4 ? 1 : -1;
+          paint(event.pos, (old) => PAINT_ORDER[(PAINT_ORDER.indexOf(old) + step + PAINT_ORDER.length) % PAINT_ORDER.length]);
+        } else if (event.type === 'mouseup' && event.button <= 3) {
+          if (isBurnButton(event.button)) continue;
+          if (dragSwapped && selected) setSelected(null);
+          dragMode = dragSwapped = mouseHeld = false;
+        } else if (event.type === 'keydown') {
+          const paintKeys = ['1', '2', '3', '4', '5'];
+          const paintKey = creating ? paintKeys.findIndex((_, i) => keyMatches(event.key, 'distilling', `paint${i + 1}`, paintKeys[i])) : -1;
+          const directionIds: Record<number, string> = { [SW]: 'downLeft', [NW]: 'upLeft', [N]: 'up', [NE]: 'upRight', [SE]: 'downRight', [S]: 'down' };
+          const move = Object.entries(directionIds).find(([direction, id]) =>
+            keyMatches(event.key, 'distilling', id, Object.keys(KEY_MOVES).find((key) => KEY_MOVES[key] === Number(direction) && key.startsWith('arrow')) ?? ''),
+          );
+          const movement = move ? Number(move[0]) : ['1','2','3','4','6','7','8','9','home','end','pageup','pagedown'].includes(event.key) ? KEY_MOVES[event.key] : undefined;
+          if (paintKey >= 0) paintWith = PAINT_ORDER[paintKey];
+          else if (keyMatches(event.key, 'distilling', 'pause', 'escape')) togglePause();
+          else if (movement !== undefined) moveCursor(movement);
+          else if (keyMatches(event.key, 'distilling', 'swap', 'space', ['5','clear'])) selOrSwap();
+          else if (keyMatches(event.key, 'distilling', 'burn', 'x')) burnNow();
+        } else if (event.type === 'keyup' && paintWith !== null && PAINT_ORDER[['1', '2', '3', '4', '5'].findIndex((_, i) => keyMatches(event.key, 'distilling', `paint${i + 1}`, String(i + 1)))] === paintWith) {
+          paintWith = null;
         }
       }
-      lastMouse = input.mouse;
-    }
-    if (paintWith !== null && creating) paint(input.mouse, paintWith);
+      if (input.mouse[0] !== lastMouse[0] || input.mouse[1] !== lastMouse[1]) {
+        // The client gets every mouse move; a frame here can cover several, so step along the line
+        // between them, a few pixels at a time, so a quick drag doesn't skip pieces.
+        const [x0, y0] = lastMouse[0] < 0 ? input.mouse : lastMouse;
+        const steps = mouseHeld ? Math.max(1, Math.ceil(Math.hypot(input.mouse[0] - x0, input.mouse[1] - y0) / 4)) : 1;
+        for (let i = 1; i <= steps; i++) {
+          const pos: Point = [x0 + ((input.mouse[0] - x0) * i) / steps, y0 + ((input.mouse[1] - y0) * i) / steps];
+          if (!inView(pos)) continue;
+          hover(pos);
+          if (mouseHeld) {
+            if (creating && palettePiece !== null) paint(pos, palettePiece);
+            else selOrSwap();
+          }
+        }
+        lastMouse = input.mouse;
+      }
+      if (paintWith !== null && creating) paint(input.mouse, paintWith);
 
-    for (const timer of timers.filter((t) => now >= t.at)) {
-      timers.splice(timers.indexOf(timer), 1);
-      timer.run();
+      for (const timer of timers.filter((t) => now >= t.at)) {
+        timers.splice(timers.indexOf(timer), 1);
+        timer.run();
+      }
+      for (const p of [...pieces.flat(), ...leaving]) stepPiece(p, now);
+      if (running && game) handle(game.update(now));
+
     }
-    for (const p of [...pieces.flat(), ...leaving]) stepPiece(p, now);
-    if (running && game) handle(game.update(now));
+
+    // Seeking needs simulation updates, not 60 fps canvas redraws for every point traversed.
+    if (replays.isSeeking || replays.isAdvancing) return;
 
     screen.fill('#000');
     screen.blit(img('background'), 0, 0);
@@ -861,6 +930,7 @@ export default (async ({ screen, input, panel, store, ticks }) => {
 
     if (!active) banner(game ? 'Press Start to distil again' : 'Press Start to distil');
     else if (paused) banner('Paused');
+    replays.drawOverlay(ctx);
   }
 
   function banner(text: string): void {
@@ -951,8 +1021,8 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     return `Difficulty ${difficulty} · ${timer}`;
   });
   actions
-    .button('Start', () => (running ? stop() : start()), { variant: 'primary', label: () => (running ? 'Stop' : 'Start') })
-    .button('Pause', togglePause, { disabled: () => !running, label: () => (paused ? 'Resume' : 'Pause'), title: 'Esc' });
+    .button('Start', () => (running ? dismiss() : start()), { variant: 'primary', disabled: () => !!replays?.isPlaying, label: () => (running ? 'Dismiss' : 'Start'), title: 'Dismiss saves the current score without processing another column' })
+    .button('Pause', () => { replays.command('pause'); togglePause(); }, { disabled: () => !running || !!replays?.isPlaying, label: () => (paused ? 'Resume' : 'Pause'), title: 'Esc' });
 
   panel.score().stats([], () => {
     const games = historyKey(mode) ? store.history(historyKey(mode)!) : [];
@@ -962,9 +1032,13 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     ];
   });
 
+  const replayAction = {
+    available: (game: GameRecord) => typeof game.replayAt === 'number' && (replays?.hasPlayableAt(game.replayAt, typeof game.replayId === 'string' ? game.replayId : undefined) ?? false),
+    play: (game: GameRecord) => { if (typeof game.replayAt === 'number') replays?.playAt(game.replayAt, typeof game.replayId === 'string' ? game.replayId : undefined); },
+  };
   historyGroup(panel, () => (historyKey(mode) ? store.history(historyKey(mode)!) : null), [
     { label: 'Score', value: (g) => g.score.toFixed(2) },
-  ]);
+  ], 'Past games', replayAction);
 
   const settingsGroup = panel.settings.group('Game', { hidden: () => mode === 'Practice' });
   settingsGroup.toggle('Burn timer', timerShown, (on) => {
@@ -1053,6 +1127,20 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     copyText(seedText, 'Copy this seed:');
   }, { disabled: () => running, title: 'Make a new seed, copy it and use it for the next start' });
 
+  panel.settings.group('Reset').button('Reset to defaults', () => {
+    mode = save('mode', 'Standard');
+    timerOn = save('timerOn', true);
+    createTimerOn = save('createTimerOn', false);
+    timerSeconds = save('timerSeconds', (TICK_MS * 50) / 1000);
+    difficulty = save('difficulty', 50);
+    spawnRates = save('spawnRates', [...DEFAULT_SPAWN]);
+    practiceNum = save('practiceNum', [0, 0]);
+    seedText = '';
+    lastSeed = '';
+    resultRows = null;
+    game = null;
+  }, { disabled: () => running });
+
   panel.clock(() => {
     if ((running && game?.timerless) || (!running && runSettings().interval === null)) return null;
     const ms = running && game ? game.timeUntilBurn(ticks()) : runSettings().interval ?? 0;
@@ -1066,7 +1154,7 @@ export default (async ({ screen, input, panel, store, ticks }) => {
       ['Pieces distilled', String(game?.distilled ?? 0)], ['Crystal chain', String(game?.board.consecCrystal ?? 0)],
     ];
   }
-  panel.results(() => resultRows && !active ? {
+  panel.results(() => resultRows && !running ? {
     title: 'Distilling results',
     rows: resultRows,
   } : null);
@@ -1086,7 +1174,54 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     };
   }
 
-  return { frame, dispose: () => sounds.dispose() };
+  const isDistillingReplayState = (value: unknown): value is DistillingReplayState => {
+    if (!value || typeof value !== 'object') return false;
+    const state = value as DistillingReplayState;
+    if (state.format !== 'distilling-replay-state' || !Array.isArray(state.board) || state.board.length !== 10 ||
+        !state.board.every((column) => Array.isArray(column) && column.length === 9 && column.every((piece) => Number.isInteger(piece) && piece >= -1 && piece <= 4)) ||
+        !Array.isArray(state.simSeed) || state.simSeed.length !== 2 || typeof state.simSeed[0] !== 'string' || state.simSeed[1] !== '') return false;
+    return new PyRandom(0).restore(state.randomState);
+  };
+
+  const replaySettingsCodec: ReplaySettingsCodec = {
+    currentVersion: 1,
+    simulatorVersion: 1,
+    migrate: (version, value) => {
+      if (version !== 1 || !value || typeof value !== 'object') return null;
+      const s = value as Record<string, unknown>;
+      return ['Standard', 'Seeded', 'Create', 'Practice'].includes(String(s.mode)) &&
+        typeof s.timerOn === 'boolean' && typeof s.createTimerOn === 'boolean' &&
+        Number.isFinite(s.timerSeconds) && Number.isFinite(s.difficulty) &&
+        Array.isArray(s.spawnRates) && s.spawnRates.every(Number.isFinite) &&
+        Array.isArray(s.practiceNum) && s.practiceNum.every(Number.isFinite) ? value : null;
+    },
+  };
+  let savedReplaySettings: { mode: Mode; timerOn: boolean; createTimerOn: boolean; timerSeconds: number; difficulty: number; spawnRates: number[]; practiceNum: number[]; seedText: string; lastSeed: string } | null = null;
+  replays = new ReplayRecorder('distilling', store, panel, ticks, (tape: PuzzleReplay) => {
+    savedReplaySettings ??= { mode, timerOn, createTimerOn, timerSeconds, difficulty, spawnRates: [...spawnRates], practiceNum: [...practiceNum], seedText, lastSeed };
+    const settings = tape.settings as { mode: Mode; timerOn: boolean; createTimerOn: boolean; timerSeconds: number; difficulty: number; spawnRates: number[]; practiceNum: number[] };
+    mode = settings.mode;
+    timerOn = settings.timerOn;
+    createTimerOn = settings.createTimerOn;
+    timerSeconds = settings.timerSeconds;
+    difficulty = settings.difficulty;
+    spawnRates = [...settings.spawnRates];
+    practiceNum = [...settings.practiceNum];
+    if (!isDistillingReplayState(tape.seed)) throw new Error('Invalid Distilling replay state');
+    replayStartState = tape.seed;
+    seedText = '';
+    lastSeed = '';
+    start();
+  }, () => {
+    if (running) stop();
+    if (savedReplaySettings) {
+      ({ mode, timerOn, createTimerOn, timerSeconds, difficulty, spawnRates, practiceNum, seedText, lastSeed } = savedReplaySettings);
+      savedReplaySettings = null;
+    }
+    replayStartState = null;
+  }, isDistillingReplayState, setReplayTime, () => frame([]), replaySettingsCodec, () => !running || replays.isPlaying);
+
+  return { frame, dispose: () => { if (running && !replays.isPlaying) dismiss(); replays.dispose(); sounds.dispose(); } };
 }) satisfies PuzzleFactory;
 
 /** java.awt.Color.getHSBColor as a CSS colour. */

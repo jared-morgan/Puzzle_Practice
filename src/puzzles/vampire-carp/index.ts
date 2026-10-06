@@ -15,8 +15,10 @@ import { copyText } from '../../core/clipboard';
 import { keyMatches } from '../../core/controls';
 import { loadFont } from '../../core/fonts';
 import { historyGroup } from '../../core/history';
+import { ReplayRecorder, type PuzzleReplay, type ReplaySettingsCodec } from '../../core/replay';
 import type { InputEvent } from '../../core/input';
 import type { PuzzleFactory } from '../../core/puzzle';
+import type { GameRecord } from '../../core/storage';
 import { PyRandom } from '../../core/pyrandom';
 import { BoardRandom, type Cell, Piece, PIECE_LETTERS } from './board';
 import {
@@ -191,10 +193,10 @@ function holeOutline(black: HTMLCanvasElement): HTMLCanvasElement {
 
 const hexRgb = (hex: string): [number, number, number] => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16)) as [number, number, number];
 
-export default (async ({ screen, input, panel, store, ticks }) => {
+export default (async ({ screen, input, panel, store, ticks, setReplayTime }) => {
   const [images] = await Promise.all([Images.load(imageUrls), loadFont(FONT, delarobbUrl)]);
   const img = (name: string) => images.get(name);
-  const sounds = new SoundBank(soundUrls);
+  const sounds = new SoundBank(soundUrls, () => replays?.isSeeking ?? false);
   const ctx = screen.ctx;
 
   // The putty bucket by state, for each look: upright for 0-1, pouring for 2-3, traced in the state's colour.
@@ -222,13 +224,18 @@ export default (async ({ screen, input, panel, store, ticks }) => {
   let timePassed = 0;
   let warningPlayed = false;
   let boardIndex = 0;
-  let seeded = false;
+  let seeded = store.get<boolean>('seeded', false);
   let seed = Math.floor(Math.random() * MAX_SEED);
   let seedAtStart = seed;
   let speedRng = new PyRandom();
+  let replays!: ReplayRecorder;
+  let replayBoardSeeds: number[] | null = null;
+  let replaySpeedState: unknown = null;
+  let recordedSpeedState: unknown = null;
+  let recordedBoardSeeds: number[] = [];
   let cheatsUsed = false;
   let sightUsed = false;
-  let scoreCounting = true;
+  let scoreCounting = store.get<boolean>('scoreCounting', true);
   let endProcedureComplete = false;
   let endProcedureKey = '';
   let sessionScoresComputed = false;
@@ -244,12 +251,15 @@ export default (async ({ screen, input, panel, store, ticks }) => {
   const score = () => -stats.grades[0] + stats.grades[1] + stats.grades[2] * 2;
 
   function play(name: SoundName | ExtraSound): void {
+    if (replays?.isSeeking) return;
     sounds.play(name.startsWith('audio_') || name === 'warning' ? name : `audio_${name}`);
   }
 
   /** The board for this point in the session: seeded sessions deal seed, seed + 1, ... */
   function newBoard(): void {
-    const boardSeed = seeded ? seedAtStart + boardIndex : Math.floor(Math.random() * MAX_SEED);
+    const boardSeed = replayBoardSeeds?.[boardIndex] ?? (seeded ? seedAtStart + boardIndex : Math.floor(Math.random() * MAX_SEED));
+    recordedBoardSeeds.push(boardSeed);
+    replays?.updateSeed({ seed: seedAtStart, speedRng: recordedSpeedState, boardSeeds: [...recordedBoardSeeds] });
     const speed = config.speed ? { holes: config.speedHoles, size: config.speedSize, letter: config.speedLetter } : null;
     game = new Game(
       boardSeed,
@@ -277,7 +287,14 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     if (!seeded) seed = Math.floor(Math.random() * MAX_SEED);
     seedAtStart = seed;
     speedRng = seeded ? new PyRandom(seed) : new PyRandom();
+    if (replaySpeedState) {
+      if (!speedRng.restore(replaySpeedState)) throw new Error('Invalid Vampire Carp random state');
+      replaySpeedState = null;
+    }
+    recordedSpeedState = speedRng.snapshot();
     boardIndex = 0;
+    lastMouse = [-1, -1];
+    recordedBoardSeeds = [];
     startTime = ticks();
     timePassed = 0;
     pauseTime = 0;
@@ -285,6 +302,7 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     endProcedureComplete = false;
     sessionScoresComputed = false;
     pendingSounds = [];
+    replays.begin({ config: { ...config }, seeded }, { seed: seedAtStart, speedRng: recordedSpeedState, boardSeeds: [] });
     newBoard();
   }
 
@@ -294,10 +312,11 @@ export default (async ({ screen, input, panel, store, ticks }) => {
 
   function endSession(): void {
     boardActive = false;
+    const finishedReplay = replays.finish(`Score ${score()}`);
     if (!endProcedureComplete) {
       // As the simulator's scores.yaml: every counted session's score, and the PB, per settings.
-      if (!cheatsUsed && scoreCounting && !(config.ghost && sightUsed)) {
-        store.addHistory(bestScoresKey, { score: score() });
+      if (!replays.isPlaying && !cheatsUsed && scoreCounting && !(config.ghost && sightUsed)) {
+        store.addHistory(bestScoresKey, { score: score(), ...(finishedReplay ? { replayAt: finishedReplay.at, replayId: finishedReplay.runId ?? ''} : {}) });
         if (score() > bestScore) {
           bestScore = score();
           if (!config.ghost) play('audio_pb_sound');
@@ -308,7 +327,7 @@ export default (async ({ screen, input, panel, store, ticks }) => {
       endProcedureComplete = true;
       endProcedureKey = bestScoresKey;
     }
-    if (score() > 0 && !sessionScoresComputed) {
+    if (!replays.isPlaying && score() > 0 && !sessionScoresComputed) {
       recordSession();
       sessionScoresComputed = true;
     }
@@ -678,32 +697,38 @@ export default (async ({ screen, input, panel, store, ticks }) => {
   });
 
   const pauseAvailable = () => timePassed > 0 && timePassed < sessionTime() && pauseTime > 0;
+  function toggleSessionPause(): void {
+    if (boardActive) pauseTime = timePassed;
+    else if (pauseTime > 0) startTime = ticks();
+    if (pauseAvailable()) boardActive = !boardActive;
+  }
   actions
     .button(
       'Start',
       () => {
-        if (!boardActive) startSession();
+        if (!boardActive) { replayBoardSeeds = null; replaySpeedState = null; startSession(); }
+        else replays.finish(`Score ${score()}`);
         boardActive = !boardActive;
       },
-      { variant: 'primary', label: () => (boardActive ? 'Stop' : 'Start') },
+      { variant: 'primary', disabled: () => !!replays?.isPlaying, label: () => (boardActive ? 'Stop' : 'Start') },
     )
     .button(
       'Pause',
       () => {
-        if (boardActive) pauseTime = timePassed;
-        else if (pauseTime > 0) startTime = ticks();
-        if (pauseAvailable()) boardActive = !boardActive;
+        replays.command('pause');
+        toggleSessionPause();
       },
-      { label: () => (boardActive ? 'Pause' : 'Play'), disabled: () => !boardActive && !pauseAvailable() },
+      { label: () => (boardActive ? 'Pause' : 'Play'), disabled: () => !!replays?.isPlaying || (!boardActive && !pauseAvailable()) },
     )
     .button(
       'Dismiss',
       () => {
         if (!boardActive) return;
+        replays.command('dismiss');
         boardIndex++;
         newBoard();
       },
-      { disabled: () => !boardActive, title: 'Deal a new board without restarting the clock' },
+      { disabled: () => !boardActive || !!replays?.isPlaying, title: 'Deal a new board without restarting the clock' },
     );
 
   const settings = panel.settings.group('Game');
@@ -749,6 +774,7 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     (on) => {
       boardActive = false;
       seeded = on;
+      store.set('seeded', on);
     },
     { title: 'Start sessions from the seed below' },
   );
@@ -758,6 +784,7 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     (on) => {
       scoreCounting = on;
       boardActive = false;
+      store.set('scoreCounting', on);
     },
     { title: 'Off: sessions can’t set a PB' },
   );
@@ -776,7 +803,11 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     ['Score', String(score()), String(bestScore)],
   ]);
 
-  historyGroup(panel, () => store.history(scoresKey()), [{ label: 'Score', value: (g) => String(g.score) }]);
+  const replayAction = {
+    available: (game: GameRecord) => typeof game.replayAt === 'number' && (replays?.hasPlayableAt(game.replayAt, typeof game.replayId === 'string' ? game.replayId : undefined) ?? false),
+    play: (game: GameRecord) => { if (typeof game.replayAt === 'number') replays?.playAt(game.replayAt, typeof game.replayId === 'string' ? game.replayId : undefined); },
+  };
+  historyGroup(panel, () => store.history(scoresKey()), [{ label: 'Score', value: (g) => String(g.score) }], 'Past games', replayAction);
 
   // Seeded: the board's own seed (the client's java.util.Random), so it deals what the game would.
   const seedGroup = panel.group('Seed', { hidden: () => !seeded });
@@ -846,28 +877,104 @@ export default (async ({ screen, input, panel, store, ticks }) => {
     (v) => changed(() => (config.look = v))(),
     { title: 'The Vampire Lair’s dark art, or normal carpentry’s' },
   );
+  panel.settings.group('Reset').button('Reset to defaults', () => {
+    Object.assign(config, DEFAULT_CONFIG);
+    saveConfig();
+    seeded = false;
+    store.set('seeded', false);
+    scoreCounting = true;
+    store.set('scoreCounting', true);
+    loadBestScore = true;
+  }, { disabled: () => boardActive || pauseAvailable() });
+
+  const replaySettingsCodec: ReplaySettingsCodec = {
+    currentVersion: 1,
+    simulatorVersion: 1,
+    migrate: (version, value) => {
+      if (version !== 1 || !value || typeof value !== 'object') return null;
+      const wrapper = value as Record<string, unknown>;
+      if (typeof wrapper.seeded !== 'boolean' || !wrapper.config || typeof wrapper.config !== 'object') return null;
+      const c = wrapper.config as Record<string, unknown>;
+      return Number.isFinite(c.volume) && typeof c.cheats === 'boolean' && typeof c.ghost === 'boolean' &&
+        typeof c.speed === 'boolean' && Number.isFinite(c.speedHoles) && Number.isFinite(c.speedSize) &&
+        typeof c.unlimited === 'boolean' && Number.isInteger(c.speedLetter) &&
+        (c.look === 'vampire' || c.look === 'normal') ? value : null;
+    },
+  };
+  const isVampireReplaySeed = (value: unknown): boolean => {
+    if (!value || typeof value !== 'object') return false;
+    const state = value as { seed: number; speedRng: unknown; boardSeeds: number[] };
+    return Number.isSafeInteger(state.seed) && state.seed >= 0 && state.seed < MAX_SEED &&
+      Array.isArray(state.boardSeeds) && state.boardSeeds.length > 0 &&
+      state.boardSeeds.every((seed) => Number.isSafeInteger(seed) && seed >= 0 && seed < MAX_SEED) &&
+      new PyRandom(0).restore(state.speedRng);
+  };
+  let savedReplaySettings: { config: Config; seeded: boolean; seed: number; scoreCounting: boolean } | null = null;
+  replays = new ReplayRecorder('vampire-carp', store, panel, ticks, (tape: PuzzleReplay) => {
+    savedReplaySettings ??= { config: { ...config }, seeded, seed, scoreCounting };
+    const settings = tape.settings as { config: Config; seeded: boolean };
+    const seedData = tape.seed as { seed: number; speedRng: unknown; boardSeeds: number[] };
+    if (!seedData || !Number.isSafeInteger(seedData.seed) || seedData.seed < 0 ||
+        !Array.isArray(seedData.boardSeeds) || !seedData.boardSeeds.every((s) => Number.isSafeInteger(s) && s >= 0)) {
+      throw new Error('Invalid Vampire Carp seed');
+    }
+    Object.assign(config, settings.config);
+    seeded = true;
+    seed = seedData.seed;
+    seedAtStart = seedData.seed;
+    replayBoardSeeds = [...seedData.boardSeeds];
+    replaySpeedState = seedData.speedRng;
+    startSession();
+    boardActive = true;
+  }, () => {
+    if (boardActive) endSession();
+    boardActive = false;
+    pauseTime = 0;
+    replayBoardSeeds = null;
+    replaySpeedState = null;
+    if (savedReplaySettings) {
+      Object.assign(config, savedReplaySettings.config);
+      ({ seeded, seed, scoreCounting } = savedReplaySettings);
+      savedReplaySettings = null;
+      loadBestScore = true;
+    }
+  }, isVampireReplaySeed, setReplayTime, () => frame([]), replaySettingsCodec,
+  () => (!boardActive && !pauseAvailable()) || replays.isPlaying);
 
   // ---- The frame ----
 
   function frame(events: InputEvent[]): void {
-    if (loadBestScore) {
-      bestScoresKey = scoresKey();
-      bestScore = bestScores[bestScoresKey] ?? 0;
-      loadBestScore = false;
+    const routed = replays.frame(events, input.mouse, ticks());
+    events = routed.events;
+    input.mouse = routed.mouse;
+    if (!routed.renderOnly) {
+      for (const command of routed.commands) {
+        if (command === 'pause') toggleSessionPause();
+        else if (command === 'dismiss' && boardActive) { boardIndex++; newBoard(); }
+      }
+      if (loadBestScore) {
+        bestScoresKey = scoresKey();
+        bestScore = bestScores[bestScoresKey] ?? 0;
+        loadBestScore = false;
+      }
+      if (boardActive) timePassed = ticks() - startTime + pauseTime;
+      handleEvents(events);
+      if (game && boardActive) {
+        game.update(timePassed, !replays.isSeeking);
+        const due = pendingSounds.filter((s) => s.at <= timePassed);
+        pendingSounds = pendingSounds.filter((s) => s.at > timePassed);
+        for (const s of due) play(s.name);
+      }
+      if (boardActive && timePassed > sessionTime()) endSession();
+      if (boardActive && timePassed > sessionTime() - 15000 && !warningPlayed) {
+        play('warning');
+        warningPlayed = true;
+      }
+
     }
-    if (boardActive) timePassed = ticks() - startTime + pauseTime;
-    handleEvents(events);
-    if (game && boardActive) {
-      game.update(timePassed);
-      const due = pendingSounds.filter((s) => s.at <= timePassed);
-      pendingSounds = pendingSounds.filter((s) => s.at > timePassed);
-      for (const s of due) play(s.name);
-    }
-    if (boardActive && timePassed > sessionTime()) endSession();
-    if (boardActive && timePassed > sessionTime() - 15000 && !warningPlayed) {
-      play('warning');
-      warningPlayed = true;
-    }
+
+    // Replay seeking updates the simulation state without repainting each intermediate frame.
+    if (replays.isSeeking || replays.isAdvancing) return;
 
     screen.blit(art('background'), 0, 0);
     const title = art('title');
@@ -883,7 +990,8 @@ export default (async ({ screen, input, panel, store, ticks }) => {
       ctx.restore();
     }
     drawStars();
+    replays.drawOverlay(ctx);
   }
 
-  return { frame, dispose: () => sounds.dispose() };
+  return { frame, dispose: () => { replays.dispose(); sounds.dispose(); } };
 }) satisfies PuzzleFactory;

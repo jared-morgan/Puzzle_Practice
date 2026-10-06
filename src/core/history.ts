@@ -23,8 +23,15 @@ function when(at: number): string {
  * Adds a card to the History tab. `games` returns the history for the settings in use (or null when the
  * current mode keeps none, which hides the card).
  */
-export function historyGroup(panel: Panel, games: () => readonly GameRecord[] | null, columns: readonly HistoryColumn[], title = 'Past games'): void {
+export function historyGroup(
+  panel: Panel,
+  games: () => readonly GameRecord[] | null,
+  columns: readonly HistoryColumn[],
+  title = 'Past games',
+  replayAction?: { available: (game: GameRecord) => boolean; play: (game: GameRecord) => void },
+): void {
   const hidden = () => games() === null;
+  const shownGames = () => (games() ?? []).slice(-SHOWN).reverse();
   panel
     .tab('History')
     .group(title, { hidden })
@@ -32,10 +39,15 @@ export function historyGroup(panel: Panel, games: () => readonly GameRecord[] | 
       const n = games()?.length ?? 0;
       return n ? `${n} game${n === 1 ? '' : 's'} with these settings` : 'No games yet with these settings';
     })
-    .stats(['', ...columns.map((c) => c.label)], () =>
-      (games() ?? [])
-        .slice(-SHOWN)
-        .reverse()
-        .map((game) => [when(game.at), ...columns.map((c) => c.value(game))]),
+    .stats(
+      ['', ...columns.map((c) => c.label)],
+      () => shownGames().map((game) => [when(game.at), ...columns.map((c) => c.value(game))]),
+      {},
+      replayAction ? {
+        label: '▶',
+        title: 'Play this game replay',
+        onClick: (index) => { const game = shownGames()[index]; if (game) replayAction.play(game); },
+        disabled: (index) => { const game = shownGames()[index]; return !game || !replayAction.available(game); },
+      } : undefined,
     );
 }

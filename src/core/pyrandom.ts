@@ -53,6 +53,23 @@ export class PyRandom {
     this.initByArray(Array.from(key));
   }
 
+  /** A portable snapshot of this generator, used by shareable puzzle replays. */
+  snapshot(): { algorithm: 'python-mt19937'; words: number[]; index: number } {
+    return { algorithm: 'python-mt19937', words: Array.from(this.mt), index: this.mti };
+  }
+
+  /** Restores a snapshot produced by snapshot(), including non-numeric/custom seed histories. */
+  restore(snapshot: unknown): boolean {
+    if (!snapshot || typeof snapshot !== 'object') return false;
+    const state = snapshot as { algorithm?: unknown; words?: unknown; index?: unknown };
+    if (state.algorithm !== 'python-mt19937' || !Array.isArray(state.words) || state.words.length !== N ||
+        !state.words.every((word) => Number.isInteger(word) && word >= 0 && word <= 0xffffffff) ||
+        !Number.isInteger(state.index) || (state.index as number) < 0 || (state.index as number) > N) return false;
+    this.mt = Uint32Array.from(state.words);
+    this.mti = state.index as number;
+    return true;
+  }
+
   private initGenrand(s: number): void {
     const mt = this.mt;
     mt[0] = s >>> 0;

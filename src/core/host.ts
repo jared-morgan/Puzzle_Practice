@@ -26,11 +26,18 @@ export async function runPuzzle(
   panel.onUsed = () => canvas.focus();
   await loadPygameFont();
   const start = performance.now();
-  const ticks = () => Math.floor(performance.now() - start);
+  const realTicks = () => Math.floor(performance.now() - start);
+  let replayTime: number | null = null;
+  let liveOffset = 0;
+  const ticks = () => replayTime ?? realTicks() + liveOffset;
+  const setReplayTime = (milliseconds: number | null) => {
+    if (milliseconds === null && replayTime !== null) liveOffset = replayTime - realTicks();
+    replayTime = milliseconds;
+  };
 
   let instance: PuzzleInstance;
   try {
-    instance = await factory({ screen, input, panel, store, ticks });
+    instance = await factory({ screen, input, panel, store, ticks, setReplayTime });
   } catch (error) {
     input.dispose();
     throw error;

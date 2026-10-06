@@ -18,8 +18,6 @@ export interface PuzzleMeta {
   height?: number;
   /** Lower numbers are listed first on the landing page. */
   order?: number;
-  /** Original authors, shown under the game. */
-  credits?: string;
   /** Thumbnail URL for the landing page (import it with `?url`). */
   thumbnail?: string;
 }
@@ -33,6 +31,8 @@ export interface PuzzleContext {
   store: Store;
   /** Milliseconds since the puzzle started, like pygame.time.get_ticks(). */
   ticks(): number;
+  /** Sets an exact simulation time during playback; null resumes a continuous live clock. */
+  setReplayTime?(milliseconds: number | null): void;
 }
 
 export interface PuzzleInstance {

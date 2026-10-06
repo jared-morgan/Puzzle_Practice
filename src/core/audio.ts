@@ -42,7 +42,7 @@ export class SoundBank<Name extends string = string> {
   private volume = globalVolume / 100;
   private disposed = false;
 
-  constructor(glob: UrlGlob) {
+  constructor(glob: UrlGlob, private readonly isMuted: () => boolean = () => false) {
     banks.add(this);
     const urls = byName(glob);
     withContext((ctx) => {
@@ -61,6 +61,7 @@ export class SoundBank<Name extends string = string> {
   }
 
   play(name: Name): void {
+    if (this.isMuted()) return;
     const buffer = this.buffers.get(name);
     if (!context || !this.gain || !buffer || this.disposed) return;
     const source = context.createBufferSource();

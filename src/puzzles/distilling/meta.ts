@@ -8,6 +8,5 @@ export default {
   width: 450,
   height: 600,
   order: 1,
-  credits: 'Based on Puzzle Pirates (Three Rings). Practice modes and drills from the Distilling Simulator (jared-morgan/Distilling_Simulator).',
   thumbnail,
 } satisfies PuzzleMeta;

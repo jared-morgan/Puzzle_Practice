@@ -3,11 +3,22 @@
 import './style.css';
 import { runPuzzle, type RunningPuzzle } from './core/host';
 import { puzzles } from './core/registry';
-import { exportAll, importAll } from './core/storage';
+import {
+  chooseBackupFolder,
+  exportCompleteBackup,
+  exportScoreHistory,
+  getDataBackupStatus,
+  initializeDataBackups,
+  loadFromBackupFolder,
+  importCompleteBackup,
+  saveToBackupFolder,
+  subscribeDataBackupStatus,
+} from './core/data-backups';
 
 const app = document.querySelector<HTMLDivElement>('#app')!;
 let running: RunningPuzzle | null = null;
 let navigation = 0;
+let unsubscribeBackupStatus = () => {};
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, props: Partial<HTMLElementTagNameMap[K]> = {}, ...children: (Node | string)[]) {
   const node = Object.assign(document.createElement(tag), props);
@@ -16,6 +27,7 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, props: Partial<HTMLEl
 }
 
 function showLanding(): void {
+  unsubscribeBackupStatus();
   document.title = 'Puzzle Practice';
   const cards = puzzles.map(({ id, meta }) =>
     el(
@@ -23,7 +35,6 @@ function showLanding(): void {
       { className: 'card', href: `#/${id}` },
       ...(meta.thumbnail ? [el('img', { src: meta.thumbnail, alt: '', className: 'thumb' })] : []),
       el('h2', {}, meta.title),
-      el('p', {}, meta.description),
     ),
   );
   app.replaceChildren(
@@ -33,7 +44,7 @@ function showLanding(): void {
   );
 }
 
-/** Scores, history and replays live in this browser only, so they can be saved to a file and loaded back. */
+/** Global score, replay, and settings backups are managed from the landing page. */
 function backupFooter(): HTMLElement {
   const button = (label: string, onClick: () => void) => {
     const node = document.createElement('button');
@@ -52,27 +63,63 @@ function backupFooter(): HTMLElement {
     file.value = '';
     if (!chosen) return;
     try {
-      const count = importAll(await chosen.text());
-      window.alert(`Restored ${count} saved item${count === 1 ? '' : 's'}.`);
+      const json = await chosen.text();
+      const count = await importCompleteBackup(json);
+      window.alert(`Merged ${count} saved item${count === 1 ? '' : 's'}.`);
     } catch {
       window.alert("That file isn't a Puzzle Practice backup.");
     }
   });
-  const save = button('Back up', () => {
-    const link = document.createElement('a');
-    link.href = URL.createObjectURL(new Blob([exportAll()], { type: 'application/json' }));
-    link.download = `puzzle-practice-${new Date().toISOString().slice(0, 10)}.json`;
-    link.click();
-    URL.revokeObjectURL(link.href);
-  });
-  const buttons = document.createElement('div');
-  buttons.className = 'panel-buttons';
-  buttons.append(save, button('Restore', () => file.click()), file);
+  const save = button('Back up', () => void (async () => {
+    try {
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(new Blob([await exportCompleteBackup()], { type: 'application/json' }));
+      link.download = `puzzle-practice-${new Date().toISOString().slice(0, 10)}.json`;
+      link.click();
+      window.setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+    } catch { window.alert('The complete backup could not be exported. Check browser storage and folder access.'); }
+  })());
+  const restore = button('Restore backup file', () => file.click());
+  const scores = button('Export scores', () => void (async () => {
+    try {
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(new Blob([await exportScoreHistory()], { type: 'application/json' }));
+      link.download = `puzzle-practice-scores-${new Date().toISOString().slice(0, 10)}.json`;
+      link.click();
+      window.setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+    } catch { window.alert('Scores could not be exported. Check browser storage and folder access.'); }
+  })());
+  const chooseFolder = button('Choose PC folder', () => void chooseBackupFolder());
+  const loadFolder = button('Load from folder', () => void loadFromBackupFolder());
+  const saveFolder = button('Save to folder', () => void saveToBackupFolder());
+  const folderButtons = document.createElement('div');
+  folderButtons.className = 'panel-buttons';
+  folderButtons.append(chooseFolder, loadFolder, saveFolder);
+  const fileButtons = document.createElement('div');
+  fileButtons.className = 'panel-buttons';
+  fileButtons.append(save, restore, scores, file);
+  const statusLine = el('p', { className: 'backup-status', role: 'status' });
+  statusLine.setAttribute('aria-live', 'polite');
+  const syncButtons = () => {
+    const status = getDataBackupStatus();
+    statusLine.textContent = status.message;
+    chooseFolder.disabled = !status.folderSupported || status.busy;
+    chooseFolder.textContent = status.folderSupported
+      ? status.folderSelected ? 'Choose another folder' : 'Choose PC folder'
+      : 'Folder backup unavailable';
+    loadFolder.hidden = !status.folderSelected || !status.folderBackupFound;
+    saveFolder.hidden = !status.folderSelected;
+    loadFolder.disabled = status.busy;
+    saveFolder.disabled = status.busy;
+  };
+  unsubscribeBackupStatus = subscribeDataBackupStatus(syncButtons);
+  syncButtons();
   const footer = document.createElement('footer');
   footer.className = 'about backup';
   footer.append(
-    el('p', {}, 'Scores, history and replays are saved in this browser only. Back them up to a file to keep them or move them to another browser.'),
-    buttons,
+    statusLine,
+    folderButtons,
+    fileButtons,
   );
   return footer;
 }
@@ -98,16 +145,13 @@ async function showPuzzle(id: string): Promise<void> {
       el('div', { className: 'stage' }, canvas, status),
       panel,
     ),
-    ...(meta.help || meta.credits
-      ? [
-          el(
-            'footer',
-            { className: 'about' },
-            ...(meta.help ? [el('p', { className: 'help' }, meta.help)] : []),
-            ...(meta.credits ? [el('p', { className: 'credits' }, meta.credits)] : []),
-          ),
-        ]
-      : []),
+    el(
+      'footer',
+      { className: 'about' },
+      el('p', { className: 'credits' }, 'Based on Puzzle Pirates, created by Three Rings Design and now operated by Grey Havens.'),
+      el('p', { className: 'credits' }, 'Adaptation by Jice.'),
+      el('p', { className: 'credits' }, 'Discord: jeyece.'),
+    ),
   );
   try {
     const factory = await entry.load();
@@ -126,6 +170,7 @@ async function showPuzzle(id: string): Promise<void> {
 }
 
 function route(): void {
+  unsubscribeBackupStatus();
   running?.stop();
   running = null;
   navigation++;
@@ -134,5 +179,6 @@ function route(): void {
   else showLanding();
 }
 
-window.addEventListener('hashchange', route);
-route();
+let dataReady = false;
+window.addEventListener('hashchange', () => { if (dataReady) route(); });
+void initializeDataBackups().finally(() => { dataReady = true; route(); });

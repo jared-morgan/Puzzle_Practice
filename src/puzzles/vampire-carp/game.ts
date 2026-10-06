@@ -871,7 +871,7 @@ export class Game {
 
   // ---- Each frame ----
 
-  update(now: number): void {
+  update(now: number, updateVisualEffects = true): void {
     this.now = now;
     const due = this.timers.filter((t) => t.at <= now);
     this.timers = this.timers.filter((t) => t.at > now);
@@ -886,19 +886,21 @@ export class Game {
         s.then();
       }
     }
-    for (const hs of this.holeSprites) {
-      if (hs.blink && now >= hs.blink.next) {
-        hs.blink.on = !hs.blink.on;
-        hs.blink.next = now + hs.blink.period;
-      }
-      for (const p of hs.pieces) {
-        const sh = p.sprite.shake;
-        if (sh && now >= sh.next) {
-          let o: Cell;
-          do o = [randInt(sh.amp * 2 + 1) - sh.amp, randInt(sh.amp * 2 + 1) - sh.amp];
-          while (o[0] === sh.offset[0] && o[1] === sh.offset[1]);
-          sh.offset = o;
-          sh.next = now + sh.period;
+    if (updateVisualEffects) {
+      for (const hs of this.holeSprites) {
+        if (hs.blink && now >= hs.blink.next) {
+          hs.blink.on = !hs.blink.on;
+          hs.blink.next = now + hs.blink.period;
+        }
+        for (const p of hs.pieces) {
+          const sh = p.sprite.shake;
+          if (sh && now >= sh.next) {
+            let o: Cell;
+            do o = [randInt(sh.amp * 2 + 1) - sh.amp, randInt(sh.amp * 2 + 1) - sh.amp];
+            while (o[0] === sh.offset[0] && o[1] === sh.offset[1]);
+            sh.offset = o;
+            sh.next = now + sh.period;
+          }
         }
       }
     }

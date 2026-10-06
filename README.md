@@ -8,8 +8,13 @@ Practice versions of Puzzle Pirates puzzles that run in the browser:
   sounds, with the Forage Simulator's puzzles, CI and Infinite (cursed isle) modes on top.
 - **Vampire Carp**: patch coffin holes with pentomino planks (the Vampire Lair's carpentry, rebuilt from the game).
 - **Blacksmithing**: strike squares to forge a sword, each piece deciding where you strike next.
+- **Swordfight (draft)**: fight 1–10 configurable TrainingBots or practise solo, using client sword
+  patterns and the cloned server's opponent settings. Includes seeded fights, targeting, score history
+  and replays. See [draft details](docs/swordfight-draft.md) for the current fidelity limits.
 
-Play at https://jared-morgan.github.io/Puzzle_Practice/.
+Play at [puzzle-practice.github.io/Puzzle_Practice](https://puzzle-practice.github.io/Puzzle_Practice/).
+
+Source: [puzzle-practice/Puzzle_Practice](https://github.com/puzzle-practice/Puzzle_Practice).
 
 The main score and relevant timer remain visible above Play, Settings and History. Settings
 include a shared 0–100 volume slider and an option to hide the timer. Finished sessions show
@@ -22,9 +27,26 @@ over the selected round. Gem rates and the one-second spawn delay are configurab
 Forage offers Puzzle, Gauntlet, Chaos and Normal, with optional round timers. Chaos keeps the
 normal move spacing but lifts the chest count, mix and per-board limits. Settings expose chest
 ratios and special-piece toggles. History includes replay play/pause, stop, a scrubber and time
-jumps, plus exact downloaded file sizes and the saved total. The latest ten replays are still
-kept in the browser; downloading files remains explicit. New recordings use version 2;
-version 1 recordings retain their original chest-entry and board-transition timings.
+jumps, plus compressed file sizes and the saved total. Replays for every puzzle are stored as
+individual gzip blobs in IndexedDB. The complete replay index stays available; only the ten
+most recently opened tapes are kept decoded in memory. Recordings include simulation frame
+times so playback speed and seeking preserve the order and timing of moves. Watching a replay
+does not save scores or personal bests, and leaving a puzzle finishes its active recording.
+
+The home page offers portable JSON backup downloads and optional automatic folder backups.
+Folder backups contain a small `puzzle-practice-backup.json` manifest and a `replays/` directory
+of individual `.json.gz` files. Keep both together when moving a folder backup. Existing replay
+files are copied only when their contents change; settings saves update the manifest. All backup
+operations share a queue, with Web Locks coordinating tabs where available. The prelaunch
+backup format is version 2; older experimental backup/replay formats are not imported.
+
+Scores are numeric records stored separately from replay payloads. The home page's **Export
+scores** downloads a small JSON file for future graphs, merging browser histories and accessible
+folder manifests without reading or decompressing replay files. Each row has `puzzle`,
+`settingsKey`, `at` (finish time in Unix milliseconds), `score`, extra `stats`, and an optional
+`replayFileId` matching the replay index's `id`. Games saved with replay recording off still have
+scores. Browser histories retain the latest 1,000 games per settings key; automatic backup
+manifests merge older scores without that cap. Keep automatic backups enabled for longer histories.
 
 Distilling Create mode has a numbered piece palette: hold 1–5 or select a piece and left-click
 to paint. Click the selected palette piece again to deselect it.
@@ -63,3 +85,5 @@ To add a puzzle, see [docs/adding-a-puzzle.md](docs/adding-a-puzzle.md).
 
 Every push to `main` is built, tested and deployed to GitHub Pages by
 `.github/workflows/pages.yml`. In the repository settings, **Pages → Source** must be **GitHub Actions**.
+The repository is owned by the `puzzle-practice` organization, and the deployed site is
+https://puzzle-practice.github.io/Puzzle_Practice/.
