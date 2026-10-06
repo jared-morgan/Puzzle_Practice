@@ -36,8 +36,8 @@ choice for each of these so the puzzle plays; each one is easy to change.
    to pick the column an upright sword starts in and which way it looks for room. I give them
    random ids, so placement looks varied, but real ids may follow a pattern.
 6. **How the game's own opponents play.** Their AI is on the server. The game's settings object
-   tells us a little: there's an AI skill level from 0 to 10, a "destruction percentage" per
-   skill level (base 7% to 60%, maximum 10% to 70%), a 40% chance that a skill-10 AI chains a
+   tells us a little: there's an AI skill level, a "destruction percentage" for skill 0, 10, 20 ... 100
+   (base 7% to 60%, maximum 10% to 70%), a 40% chance that a skill-100 AI chains a
    strike block, and AIs play more slowly once 1 to 4 players are targeting them. So the real AI
    is a dice roll on how much of its board it destroys, not a player.
    **Here both opponent types work that way.** The **Experimental** type: they don't play the puzzle and never fuse blocks.
@@ -57,7 +57,7 @@ choice for each of these so the puzzle plays; each one is easy to change.
    The default opponent type, **Ingame**, uses those values directly: each breaker
    destroys a random share of its own colour (only that colour) between the base and maximum
    destruction for its skill, sends that clear as a chained one (a Double) at the chain chance (40%
-   at skill 10, scaled by skill), and plays more slowly while you target it (25% by default, a guess at one
+   at skill 100, scaled by skill), and plays more slowly while you target it (25% by default, a guess at one
    of the four targeter steps). It plays a pair every 3 seconds when not targeted, at any skill.
 7. **Who opponents attack.** With several opponents, they all attack you.
 8. **Scores and ratings.** The game never scores a fight on your screen. Here the main score is damage sent

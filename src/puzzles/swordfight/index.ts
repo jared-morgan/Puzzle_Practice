@@ -77,9 +77,9 @@ const DEFAULTS: Settings = {
   cultists: 2,
   homunculi: 0,
   opponents: 2,
-  skill: 10,
+  aiSkill: 100,
   opponentType: 'game',
-  gameAi: gameSkillStyle(10),
+  gameAi: gameSkillStyle(100),
   ai: { pairMs: 3000, breakAverage: 40, variation: 41, heightBoost: 1.5, storeChance: 23, comboMax: 3, strikeShare: 85, pairsPerAttack: 1 },
   difficulty: 5,
   breakers: 18,
@@ -131,9 +131,12 @@ function validGameStyle(value: unknown): value is GameStyle {
 function upgrade(value: unknown): unknown {
   if (!value || typeof value !== 'object') return value;
   const s = { ...(value as Record<string, unknown>) };
-  if (!int(s.skill, 0, 10)) return value;
-  if (!validStyle(s.ai)) s.ai = skillStyle(s.skill as number);
-  if (!validGameStyle(s.gameAi)) s.gameAi = gameSkillStyle(s.skill as number);
+  // AI skill used to be 0-10; it's now 0-100.
+  if (!int(s.aiSkill, 0, 100) && int(s.skill, 0, 10)) s.aiSkill = (s.skill as number) * 10;
+  delete s.skill;
+  if (!int(s.aiSkill, 0, 100)) return value;
+  if (!validStyle(s.ai)) s.ai = skillStyle(s.aiSkill as number);
+  if (!validGameStyle(s.gameAi)) s.gameAi = gameSkillStyle(s.aiSkill as number);
   if (s.opponentType !== 'tally' && s.opponentType !== 'game') s.opponentType = 'game';
   // Before cultists and homunculi, opponents were one count with one sword: they become cultists.
   if (!int(s.cultists, 0, MAX_ENEMIES) || !int(s.homunculi, 0, MAX_ENEMIES)) {
@@ -149,15 +152,15 @@ function validSettings(value: unknown): value is Settings {
   if (!value || typeof value !== 'object') return false;
   const s = value as Record<string, unknown>;
   return int(s.cultists, 0, MAX_ENEMIES) && int(s.homunculi, 0, MAX_ENEMIES) && s.opponents === (s.cultists as number) + (s.homunculi as number) &&
-    int(s.opponents, 0, MAX_ENEMIES) && int(s.skill, 0, 10) && validStyle(s.ai) && validGameStyle(s.gameAi) &&
+    int(s.opponents, 0, MAX_ENEMIES) && int(s.aiSkill, 0, 100) && validStyle(s.ai) && validGameStyle(s.gameAi) &&
     (s.opponentType === 'tally' || s.opponentType === 'game') && int(s.difficulty, 0, 9) &&
     typeof s.breakers === 'number' && s.breakers >= 0 && s.breakers <= 100 && validSword(s.sword);
 }
 
 /** Whether the opponent's options are still exactly the AI skill preset. */
 const isPreset = (s: Settings) => s.opponentType === 'tally'
-  ? JSON.stringify(s.ai) === JSON.stringify(skillStyle(s.skill))
-  : JSON.stringify(s.gameAi) === JSON.stringify(gameSkillStyle(s.skill));
+  ? JSON.stringify(s.ai) === JSON.stringify(skillStyle(s.aiSkill))
+  : JSON.stringify(s.gameAi) === JSON.stringify(gameSkillStyle(s.aiSkill));
 
 interface Message {
   text: string;
@@ -206,7 +209,7 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
   const opponentKey = () => {
     if (!settings.opponents) return '-';
     const kind = settings.opponentType === 'game' ? 'game ' : '';
-    if (isPreset(settings)) return kind + String(settings.skill);
+    if (isPreset(settings)) return kind + String(settings.aiSkill);
     if (settings.opponentType === 'game') {
       const g = settings.gameAi;
       return `game custom ${g.pairMs}/${g.baseDestroy}/${g.maxDestroy}/${g.chainChance}/${g.targetedSlowdown}/${g.strikeShare}/${g.pairsPerAttack}`;
@@ -653,7 +656,7 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
     const sword = SWORD_NAMES[settings.sword[0]];
     const speed = `${Math.round(ROW_PX / startSpeed(settings.difficulty))}ms a row`;
     return settings.opponents
-      ? `${isPreset(settings) ? `AI skill ${settings.skill}` : 'Custom opponents'} · starting speed ${speed} · your ${sword.toLowerCase()} (Settings tab)`
+      ? `${isPreset(settings) ? `AI skill ${settings.aiSkill}` : 'Custom opponents'} · starting speed ${speed} · your ${sword.toLowerCase()} (Settings tab)`
       : `Starting speed ${speed} · your ${sword.toLowerCase()} (Settings tab)`;
   });
   session.button('Start', () => (running ? stop() : start()), {
@@ -707,7 +710,8 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
     { value: 'game', label: 'Ingame' },
     { value: 'tally', label: 'Experimental' },
   ] as Option<'tally' | 'game'>[], () => settings.opponentType, (t) => { settings.opponentType = t; save(); }, off);
-  foes.range('AI skill', () => settings.skill, (v) => { settings.skill = v; settings.ai = skillStyle(v); settings.gameAi = gameSkillStyle(v); save(); }, { ...off, min: 0, max: 10 });
+  foes.range('AI skill', () => settings.aiSkill, (v) => { settings.aiSkill = v; settings.ai = skillStyle(v); settings.gameAi = gameSkillStyle(v); save(); }, { ...off, min: 0, max: 100,
+    title: "The game's opponents have skill from 0 to 100; its destruction table has a value at every 10, blended in between." });
   foes.note(() => isPreset(settings)
     ? 'AI skill sets everything below; change any of it to make your own.'
     : 'Custom: AI skill sets everything below back to its preset.');
@@ -739,7 +743,7 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
   foes.range('Most destroyed (%)', () => settings.gameAi.maxDestroy, (v) => gai((a) => { a.maxDestroy = v; }), { ...gameOff, min: 0, max: 100,
     title: "The most of its colour a breaker destroys: the game's maximum destruction for the skill level. Each clear is somewhere in between." });
   foes.range('Chain chance (%)', () => settings.gameAi.chainChance, (v) => gai((a) => { a.chainChance = v; }), { ...gameOff, min: 0, max: 100,
-    title: "The chance a clear is sent as a chained one: a Double, with swords twice as long and twice the sprinkles. A breaker only ever clears its own colour. The game's is 40% at skill 10." });
+    title: "The chance a clear is sent as a chained one: a Double, with swords twice as long and twice the sprinkles. A breaker only ever clears its own colour. The game's is 40% at skill 100." });
   foes.range('Slower when targeted (%)', () => settings.gameAi.targetedSlowdown, (v) => gai((a) => { a.targetedSlowdown = v; }), { ...gameOff, min: 0, max: 300, step: 5,
     title: 'How much slower an opponent plays while you are targeting it. The game slows an AI from 1 targeter, and most at 4.' });
   foes.range('Strikes vs sprinkles (%)', () => settings.gameAi.strikeShare, (v) => gai((a) => { a.strikeShare = v; }), { ...gameOff, min: 0, max: 100,

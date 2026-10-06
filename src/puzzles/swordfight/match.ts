@@ -14,8 +14,8 @@ export interface MatchSettings {
   homunculi: number;
   /** cultists + homunculi. */
   opponents: number;
-  /** 0-10, the fight's AI skill level: a preset for `ai`. */
-  skill: number;
+  /** The AI skill, 0 to 100: a preset for `ai` and `gameAi`. */
+  aiSkill: number;
   /** Which kind of opponent: one that stores breakers for combos, or one on the game's AI numbers. */
   opponentType: 'tally' | 'game';
   /** How each kind plays. */
