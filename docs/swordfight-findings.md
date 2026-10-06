@@ -58,7 +58,7 @@ choice for each of these so the puzzle plays; each one is easy to change.
    destroys a random share of its colour between the base and maximum destruction for its skill,
    chains into another of its colours at the chain chance (40% at skill 10, scaled by skill, rolled
    again for each link), and plays more slowly while you target it (25% by default, a guess at one
-   of the four targeter steps). Its time per pair is my guess too.
+   of the four targeter steps). It plays a pair every 3 seconds when not targeted, at any skill.
 7. **Who opponents attack.** With several opponents, they all attack you.
 8. **Scores and ratings.** The game never scores a fight on your screen. Here the main score is damage sent
    (sprinkles plus each sword's squares), with your wins and losses per setting. Which number

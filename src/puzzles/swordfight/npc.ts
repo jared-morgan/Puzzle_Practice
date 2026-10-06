@@ -350,7 +350,8 @@ export interface GameStyle {
 /** The game's own numbers at an AI skill level: destruction, chain chance at skill 10 (40%), slowing when targeted. */
 export function gameSkillStyle(skill: number): GameStyle {
   return {
-    pairMs: 2000 - skill * 125,
+    // About one pair every 3 seconds with nobody targeting it, at every skill.
+    pairMs: 3000,
     baseDestroy: Math.round(BASE_DESTROY[skill] * 100),
     maxDestroy: Math.round(MAX_DESTROY[skill] * 100),
     chainChance: Math.round(40 * skill / 10),
