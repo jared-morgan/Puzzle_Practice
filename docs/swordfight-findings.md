@@ -40,7 +40,7 @@ choice for each of these so the puzzle plays; each one is easy to change.
    skill level (base 7% to 60%, maximum 10% to 70%), a 40% chance that a skill-10 AI chains a
    strike block, and AIs play more slowly once 1 to 4 players are targeting them. So the real AI
    is a dice roll on how much of its board it destroys, not a player.
-   **Here the opponents work that way:** they don't play the puzzle and never fuse blocks.
+   **Here both opponent types work that way.** The **Experimental** type: they don't play the puzzle and never fuse blocks.
    Each keeps its pairs stacked on its lowest column (ties in the order 1, 6, 2, 5, 3, 4) as a
    tally of colours. A breaker may be stored on its board; otherwise it clears a share of its
    colour, more the higher the board, taken evenly from the columns centre first, and its
@@ -54,7 +54,7 @@ choice for each of these so the puzzle plays; each one is easy to change.
    per pair, colour cleared, variation, height multiplier, chance to store breakers, combo size,
    strikes vs sprinkles, how often your attacks land) to set on its own. The time per pair,
    storing chance and combo size for each skill level are my guesses.
-   A second opponent type, **The game's AI numbers**, uses those values directly: each breaker
+   The default opponent type, **Ingame**, uses those values directly: each breaker
    destroys a random share of its own colour (only that colour) between the base and maximum
    destruction for its skill, sends that clear as a chained one (a Double) at the chain chance (40%
    at skill 10, scaled by skill), and plays more slowly while you target it (25% by default, a guess at one

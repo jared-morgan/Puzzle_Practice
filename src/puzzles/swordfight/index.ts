@@ -76,7 +76,7 @@ interface Settings extends MatchSettings {}
 const DEFAULTS: Settings = {
   opponents: 2,
   skill: 10,
-  opponentType: 'tally',
+  opponentType: 'game',
   gameAi: gameSkillStyle(10),
   ai: { pairMs: 3000, breakAverage: 40, variation: 41, heightBoost: 1.5, storeChance: 23, comboMax: 3, strikeShare: 85, pairsPerAttack: 1 },
   difficulty: 5,
@@ -135,7 +135,7 @@ function upgrade(value: unknown): unknown {
   if (!int(s.skill, 0, 10)) return value;
   if (!validStyle(s.ai)) s.ai = skillStyle(s.skill as number);
   if (!validGameStyle(s.gameAi)) s.gameAi = gameSkillStyle(s.skill as number);
-  if (s.opponentType !== 'tally' && s.opponentType !== 'game') s.opponentType = 'tally';
+  if (s.opponentType !== 'tally' && s.opponentType !== 'game') s.opponentType = 'game';
   return s;
 }
 
@@ -688,8 +688,8 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
   const off = { disabled: () => running };
   const foes = panel.settings.group('Opponents');
   foes.select('Opponent type', [
-    { value: 'tally', label: 'Stores breakers for combos' },
-    { value: 'game', label: "The game's AI numbers" },
+    { value: 'game', label: 'Ingame' },
+    { value: 'tally', label: 'Experimental' },
   ] as Option<'tally' | 'game'>[], () => settings.opponentType, (t) => { settings.opponentType = t; save(); }, off);
   foes.range('AI skill', () => settings.skill, (v) => { settings.skill = v; settings.ai = skillStyle(v); settings.gameAi = gameSkillStyle(v); save(); }, { ...off, min: 0, max: 10 });
   foes.note(() => isPreset(settings)
