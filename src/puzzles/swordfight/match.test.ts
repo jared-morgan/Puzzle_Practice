@@ -126,7 +126,10 @@ describe("the game-numbers opponents", () => {
 describe('a fight', () => {
   it('has cultists with spears and homunculi with trunks, in random colours', () => {
     const m = new Match({ ...settings, cultists: 2, homunculi: 1, opponents: 3 }, 9, 0);
-    expect(m.names).toEqual(['You', 'Cultist 1', 'Cultist 2', 'Homunculus']);
+    expect(m.names[0]).toBe('You');
+    expect(m.names.slice(1, 3).every((n) => /^\S+ Cultist$/.test(n))).toBe(true);
+    expect(m.names[3]).toMatch(/^\S+ Homunculus$/);
+    expect(new Set(m.names).size).toBe(4);
     expect(m.swords.slice(1).map((s) => s.type)).toEqual([16, 16, 17]);
     const colours = new Set<string>();
     for (let seed = 1; seed <= 20; seed++) for (const s of new Match({ ...settings, cultists: 2, homunculi: 1, opponents: 3 }, seed, 0).swords.slice(1)) colours.add(s.primary + '/' + s.secondary);
@@ -152,6 +155,30 @@ describe('a fight', () => {
   });
 });
 
+describe('knocked-out pirates', () => {
+  it('move to the bottom of their side and cannot be targeted', () => {
+    const m = new Match({ ...settings, cultists: 3, opponents: 3 }, 4, 0);
+    expect(m.rows).toEqual([[0], [1, 2, 3]]);
+    m.fighters[1].out = true;
+    m.update(50);
+    expect(m.rows[1]).toEqual([2, 3, 1]);
+    m.setTarget(1);
+    expect(m.target).not.toBe(1);
+    m.fighters[3].out = true;
+    m.update(100);
+    expect(m.rows[1]).toEqual([2, 1, 3]);
+    m.cycleTarget(1);
+    expect(m.target).toBe(2);
+  });
+
+  it('are named and look the same from the same seed', () => {
+    const a = new Match({ ...settings, cultists: 2, homunculi: 1, opponents: 3, swabbies: 2 }, 77, 0);
+    const b = new Match({ ...settings, cultists: 2, homunculi: 1, opponents: 3, swabbies: 2 }, 77, 0);
+    expect(a.names).toEqual(b.names);
+    expect(a.looks).toEqual(b.looks);
+  });
+});
+
 describe('AI skill from 0 to 100', () => {
   it("uses the game's destruction table at every 10 and blends in between", () => {
     expect(gameSkillStyle(60)).toMatchObject({ baseDestroy: 38, maxDestroy: 63, chainChance: 24 });
@@ -164,7 +191,10 @@ describe('AI skill from 0 to 100', () => {
 describe('allies', () => {
   it('fight on your side, attack the enemies and can win without you', () => {
     const m = new Match({ ...settings, cultists: 1, opponents: 1, thralls: 2, swabbies: 1, opponentType: 'game' }, 21, 0);
-    expect(m.names).toEqual(['You', 'Thrall 1', 'Thrall 2', 'Skilled swabbie', 'Cultist']);
+    expect(m.kinds).toEqual(['You', 'Thrall', 'Thrall', 'Skilled swabbie', 'Cultist']);
+    expect(m.names[1]).toMatch(/^\S+ Zombie$/);
+    expect(m.names[3]).toMatch(/^\S+ \S+$/);
+    expect(m.names[3]).not.toMatch(/Zombie|Cultist|Homunculus/);
     expect(m.teams).toEqual([0, 0, 0, 0, 1]);
     // Every ally targets the cultist; the cultist targets someone on your side.
     expect(m.targets.slice(1, 4)).toEqual([4, 4, 4]);

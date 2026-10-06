@@ -6,6 +6,8 @@ import { PyRandom } from '../../core/pyrandom';
 import type { Attack } from './attack';
 import { BREAKER } from './board';
 import { Fighter, type FighterHooks, type SoundName } from './fighter';
+import { type Look, lookFor } from './faces';
+import { CULTIST_PREFIXES, HOMUNCULUS_PREFIXES, SWABBIE_FEMALE_NAMES, SWABBIE_MALE_NAMES, SWABBIE_SURNAMES, THRALL_PREFIXES } from './names';
 import { GameNpc, type GameStyle, gameSkillStyle, Npc, type NpcStyle, skillStyle } from './npc';
 import { PLAIN_SWORDS, type Shaft, type Strike, Sword } from './strikes';
 
@@ -74,7 +76,19 @@ export interface MatchEvents {
 const SPEAR = 16;
 const TRUNK = 17;
 
-type Kind = 'Cultist' | 'Homunculus' | 'Thrall' | 'Skilled swabbie';
+export type Kind = 'You' | 'Cultist' | 'Homunculus' | 'Thrall' | 'Skilled swabbie';
+
+/** A name from the game's lists for a kind of pirate. */
+function nameFor(kind: Kind, female: boolean, rng: PyRandom): string {
+  const pick = (list: readonly string[]) => list[rng.randintN(0, list.length - 1)];
+  switch (kind) {
+    case 'Cultist': return `${pick(CULTIST_PREFIXES)} Cultist`;
+    case 'Homunculus': return `${pick(HOMUNCULUS_PREFIXES)} Homunculus`;
+    case 'Thrall': return `${pick(THRALL_PREFIXES)} Zombie`;
+    case 'Skilled swabbie': return `${pick(female ? SWABBIE_FEMALE_NAMES : SWABBIE_MALE_NAMES)} ${pick(SWABBIE_SURNAMES)}`;
+    default: return 'You';
+  }
+}
 
 /** An AI's style: the chosen kind's settings, with what its skill sets on top. */
 export function styleFor(settings: MatchSettings, skill: number): { tally: NpcStyle; game: GameStyle } {
@@ -90,6 +104,10 @@ export class Match {
   readonly fighters: Array<Fighter | Npc | GameNpc> = [];
   readonly swords: Sword[] = [];
   readonly names: string[] = [];
+  readonly kinds: Kind[] = [];
+  readonly looks: Look[] = [];
+  /** Each side's pirates top to bottom as their status rows show them: the knocked out move to the bottom. */
+  readonly rows: [number[], number[]] = [[], []];
   /** 0 for your side, 1 for the enemies. */
   readonly teams: number[] = [];
   /** Who each fighter is attacking (TeamPuzzleController targets); targets[0] is yours. */
@@ -107,27 +125,34 @@ export class Match {
     this.strikeIds = new PyRandom(seed ^ 0x5f3759df);
     this.picks = new PyRandom(seed ^ 0x1b873593);
     const colours = new PyRandom(seed ^ 0x2c1b3c6d);
+    const people = new PyRandom(seed ^ 0x68e31da4);
     // You, then your allies, then the enemies.
     const kinds: Kind[] = [
       ...Array<Kind>(settings.thralls).fill('Thrall'), ...Array<Kind>(settings.swabbies).fill('Skilled swabbie'),
       ...Array<Kind>(settings.cultists).fill('Cultist'), ...Array<Kind>(settings.homunculi).fill('Homunculus'),
     ];
-    const skills: Record<Kind, number> = {
+    const skills: Record<Exclude<Kind, 'You'>, number> = {
       Cultist: settings.cultistSkill, Homunculus: settings.homunculusSkill, Thrall: settings.thrallSkill, 'Skilled swabbie': settings.swabbieSkill,
     };
     for (let i = 0; i <= kinds.length; i++) {
       const dealer = new Dealer(seed, settings.breakers);
-      const kind = kinds[i - 1];
+      const kind: Kind = i === 0 ? 'You' : kinds[i - 1];
       let sword: [number, number, number] = settings.sword;
       if (i > 0) {
         const type = kind === 'Cultist' ? SPEAR : kind === 'Homunculus' ? TRUNK : PLAIN_SWORDS[colours.randintN(0, PLAIN_SWORDS.length - 1)];
         sword = [type, colours.randintN(0, 7), colours.randintN(0, 7)];
       }
       this.swords.push(new Sword(...sword));
-      const same = kinds.filter((k) => k === kind).length;
-      const nth = kinds.slice(0, i).filter((k) => k === kind).length;
-      this.names.push(i === 0 ? 'You' : same > 1 ? `${kind} ${nth}` : kind);
-      this.teams.push(i === 0 || kind === 'Thrall' || kind === 'Skilled swabbie' ? 0 : 1);
+      // Homunculi are all alike; the others are men or women, named from the game's lists, no two the same.
+      const female = kind !== 'You' && kind !== 'Homunculus' && people.random() < 0.5;
+      let name = nameFor(kind, female, people);
+      for (let tries = 0; tries < 20 && this.names.includes(name); tries++) name = nameFor(kind, female, people);
+      this.names.push(name);
+      this.kinds.push(kind);
+      this.looks.push(lookFor(kind, female, people));
+      const team = kind === 'You' || kind === 'Thrall' || kind === 'Skilled swabbie' ? 0 : 1;
+      this.teams.push(team);
+      this.rows[team].push(i);
       this.shaftIds.push(0);
       const hooks: FighterHooks = {
         sound: (name) => this.events.sound?.(name, i),
@@ -139,7 +164,7 @@ export class Match {
       };
       this.fighters.push(i === 0
         ? new Fighter(i, settings.difficulty, hooks, startedAt)
-        : this.ai(i, skills[kind], hooks, seed, startedAt));
+        : this.ai(i, skills[kind as Exclude<Kind, 'You'>], hooks, seed, startedAt));
     }
     for (let i = 0; i < this.fighters.length; i++) this.targets.push(-1);
     for (let i = 0; i < this.fighters.length; i++) this.retarget(i);
@@ -225,6 +250,9 @@ export class Match {
     for (const f of this.fighters) {
       if (!f.out || this.knockedOut.has(f.index)) continue;
       this.knockedOut.add(f.index);
+      const row = this.rows[this.teams[f.index]];
+      row.splice(row.indexOf(f.index), 1);
+      row.push(f.index);
       if (f.index === 0) {
         this.events.message?.('Ye be knocked out!', 0);
         this.events.sound?.('self_knocked_out', 0);

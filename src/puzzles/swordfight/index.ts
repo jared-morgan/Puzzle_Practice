@@ -20,12 +20,14 @@ import {
 } from './board';
 import { COL_PX, type Fighter, FAST_SPEED, ROW_PX, secondOf, startSpeed } from './fighter';
 import { type GameStyle, gameSkillStyle, type NpcStyle, skillStyle } from './npc';
+import { drawFace, FACE } from './faces';
 import { Match, type MatchSettings, styleFor } from './match';
 import { PLAIN_SWORDS, SWORD_COLOURS, SWORD_NAMES, isHorizontal } from './strikes';
 import delarobbUrl from './delarobb.ttf?url';
 
 const imageUrls = import.meta.glob<string>('./media/*.png', { eager: true, query: '?url', import: 'default' });
 const swordIconUrls = import.meta.glob<string>('./media/swords/*.png', { eager: true, query: '?url', import: 'default' });
+const faceUrls = import.meta.glob<string>('./media/faces/*.png', { eager: true, query: '?url', import: 'default' });
 const soundUrls = import.meta.glob<string>('./sounds/*.ogg', { eager: true, query: '?url', import: 'default' });
 
 const PUZZLE = 'swordfight';
@@ -50,6 +52,9 @@ const COLOUR_NAMES = ['red', 'green', 'blue', 'yellow'];
 const MESSAGE_MS = 1500;
 /** The eight sword colours (red, orange, yellow, green, blue, purple, white, black), for attacker dots. */
 const SWORD_RGB = ['#d22a1e', '#f08a1e', '#f2d22e', '#3fa535', '#2f63d6', '#8a3fc4', '#f4f4f4', '#202020'];
+/** Name colours (YoFaceLabel roles): yellow for most, red (role 12) for skilled swabbies. */
+const NAME_YELLOW = '#ffff00';
+const NAME_RED = '#ff1a2c';
 
 /** Every sound a variant may pick from (the game's sound list). */
 const SOUND_FILES: Record<string, string[]> = {
@@ -86,7 +91,7 @@ const DEFAULTS: Settings = {
   opponentType: 'game',
   gameAi: gameSkillStyle(60),
   ai: { pairMs: 3000, breakAverage: 40, variation: 41, heightBoost: 1.5, storeChance: 23, comboMax: 3, strikeShare: 85, pairsPerAttack: 1 },
-  difficulty: 5,
+  difficulty: 4,
   breakers: 18,
   sword: [16, 0, 0],
 };
@@ -186,7 +191,7 @@ function chunkVelocity(seed: number, i: number): [number, number] {
 }
 
 export default (async ({ screen, input, panel, store, ticks, setReplayTime }) => {
-  const [images, icons] = await Promise.all([Images.load(imageUrls), Images.load(swordIconUrls), loadFont(FONT, delarobbUrl)]);
+  const [images, icons, faceImages] = await Promise.all([Images.load(imageUrls), Images.load(swordIconUrls), Images.load(faceUrls), loadFont(FONT, delarobbUrl)]);
   const img = (name: string) => images.get(name);
   let replays!: ReplayRecorder;
   const sounds = new SoundBank(soundUrls, () => replays?.isSeeking ?? false);
@@ -300,8 +305,9 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
         // Clicking an opponent's status targets them.
         const [mx, my] = event.pos;
         if (mx >= RIGHT_X && mx < RIGHT_X + 136) {
+          // Rows as they're shown; the knocked out can't be targeted.
           const row = Math.floor((my - ROWS_Y) / ROW_H);
-          const enemies = match.fighters.map((f) => f.index).filter((i) => match!.teams[i] === 1);
+          const enemies = match.rows[1];
           if (row >= 0 && row < enemies.length) match.setTarget(enemies[row]);
         }
       }
@@ -503,21 +509,40 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
   }
 
   /**
-   * A pirate's status row, laid out as the game lays it out: name (over where the face goes), sword,
+   * A pirate's status row, laid out as the game lays it out: face with the name over it, sword,
    * small board and attacker dots, mirrored on the right. The small board has a gold outline (white
    * on your target) with a black line inside, on khaki (darker once knocked out).
    */
+  /** Each fight's faces, drawn once: standing and knocked out. */
+  const faces = new WeakMap<Match, Map<string, HTMLCanvasElement>>();
+  function faceOf(m: Match, index: number, out: boolean): HTMLCanvasElement {
+    let cache = faces.get(m);
+    if (!cache) faces.set(m, (cache = new Map()));
+    const key = `${index}${out ? 'out' : ''}`;
+    let face = cache.get(key);
+    if (!face) cache.set(key, (face = drawFace(m.looks[index], out, (name) => faceImages.get(name))));
+    return face;
+  }
+
+  /** Text in the game's outline style: black one pixel all round, then the colour (samskivert Label OUTLINE). */
+  function outlined(text: string, x: number, y: number, colour: string): void {
+    ctx.fillStyle = '#000';
+    for (const [dx, dy] of [[0, 0], [0, 1], [0, 2], [1, 0], [1, 2], [2, 0], [2, 1], [2, 2]]) ctx.fillText(text, x + dx - 1, y + dy - 1);
+    ctx.fillStyle = colour;
+    ctx.fillText(text, x, y);
+  }
+
   function drawStatus(m: Match, index: number, x: number, y: number, right: boolean): void {
     const f = m.fighters[index];
     const sword = m.swords[index];
-    const FACE = 60;
+    const SLOT = 60;
     const SWORD_W = 30;
     const SUMMARY_W = W * MINI + 4;
     const SUMMARY_H = H * MINI + 4;
     const DOTS = 13;
     // Left: face, sword, board, dots. Right: dots, board, sword, face.
     const parts = right ? ['dots', 'board', 'sword', 'face'] : ['face', 'sword', 'board', 'dots'];
-    const widths: Record<string, number> = { face: FACE, sword: SWORD_W, board: SUMMARY_W, dots: DOTS };
+    const widths: Record<string, number> = { face: SLOT, sword: SWORD_W, board: SUMMARY_W, dots: DOTS };
     const at: Record<string, number> = {};
     let px = x;
     for (const part of parts) {
@@ -551,24 +576,23 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
     // The sword.
     const icon = icons.has(`sword${sword.type}`) ? icons.get(`sword${sword.type}`) : null;
     if (icon) ctx.drawImage(icon, at.sword, y + Math.floor((ROW_H - icon.height) / 2));
-    // The name: yellow with a black outline, centred over the face, wrapped to its width.
-    ctx.font = 'bold 11px Arial, sans-serif';
+    // The face (passed out once knocked out, faded where the game has no such face), with the name
+    // over its top as YoFaceLabel draws it: 10pt, outlined, wrapped to the face's width.
+    const face = faceOf(m, index, f.out);
+    if (f.out && m.looks[index].out === m.looks[index].layers) ctx.globalAlpha = 0.6;
+    ctx.drawImage(face, at.face + (SLOT - FACE) / 2, y + 4);
+    ctx.globalAlpha = 1;
+    ctx.font = '10px Dialog, Arial, sans-serif';
     ctx.textBaseline = 'top';
     ctx.textAlign = 'center';
-    ctx.lineJoin = 'round';
-    ctx.lineWidth = 3;
-    ctx.strokeStyle = '#000';
-    ctx.fillStyle = f.out ? '#c8c8a0' : '#ffff00';
     const lines: string[] = [];
     for (const word of m.names[index].split(' ')) {
       const last = lines.length - 1;
-      if (last >= 0 && ctx.measureText(`${lines[last]} ${word}`).width <= FACE) lines[last] += ` ${word}`;
+      if (last >= 0 && ctx.measureText(`${lines[last]} ${word}`).width <= SLOT - 2) lines[last] += ` ${word}`;
       else lines.push(word);
     }
-    lines.forEach((line, i) => {
-      ctx.strokeText(line, at.face + FACE / 2, y + 2 + i * 12, FACE);
-      ctx.fillText(line, at.face + FACE / 2, y + 2 + i * 12, FACE);
-    });
+    const colour = m.kinds[index] === 'Skilled swabbie' ? NAME_RED : NAME_YELLOW;
+    lines.forEach((line, i) => outlined(line, at.face + SLOT / 2, y + 1 + i * 13, colour));
     // Attacker dots: one for each pirate attacking this one, in the colours of their sword.
     const attackers = m.targeters(index);
     let dy = y + 2;
@@ -631,13 +655,9 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
     }
     screen.blit(img('background'), 0, 0);
     drawNext(match.player);
-    // Your side on the left, you first; the enemies on the right.
-    let left = 0;
-    let right = 0;
-    for (let i = 0; i < match.fighters.length; i++) {
-      if (match.teams[i] === 0) drawStatus(match, i, LEFT_X, ROWS_Y + left++ * ROW_H, false);
-      else drawStatus(match, i, RIGHT_X, ROWS_Y + right++ * ROW_H, true);
-    }
+    // Your side on the left, you first; the enemies on the right; the knocked out at the bottom.
+    match.rows[0].forEach((i, row) => drawStatus(match!, i, LEFT_X, ROWS_Y + row * ROW_H, false));
+    match.rows[1].forEach((i, row) => drawStatus(match!, i, RIGHT_X, ROWS_Y + row * ROW_H, true));
     drawBoard(match.player, running ? now : match.settledAt || match.endedAt || now);
     if (finished && !match.result) banner('Stopped', 330);
     replays.drawOverlay(ctx);
