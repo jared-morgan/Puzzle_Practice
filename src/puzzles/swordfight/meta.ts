@@ -1,10 +1,11 @@
 import type { PuzzleMeta } from '../../core/puzzle';
+import thumbnail from './thumbnail.jpg?url';
 
 export default {
   title: 'Swordfight',
-  description: 'Build strikes and chain breakers against configurable TrainingBots. Practice alone or fight up to ten opponents.',
-  help: 'Left/Right move the pair. Up rotates counter-clockwise; Down rotates clockwise. Space drops. A/S change target. Escape pauses the training fight.',
-  width: 800,
-  height: 650,
+  description: 'Swordfighting rebuilt from the game: drop pairs, shatter them with breakers and fuse blocks into swords to strike your opponents, against training opponents or on your own.',
+  help: 'Left and right move the pair, down turns it clockwise and up anticlockwise, and holding Space drops it faster. With several opponents, A and S (or [ and ]) change who you attack, or click their status on the right. Keys can be changed on the Settings tab.',
+  width: 450,
   order: 6,
+  thumbnail,
 } satisfies PuzzleMeta;

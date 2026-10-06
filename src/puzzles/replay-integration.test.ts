@@ -14,7 +14,7 @@ vi.mock('../core/replay', async (original) => {
 });
 vi.mock('../core/assets', async (original) => ({
   ...await original<typeof import('../core/assets')>(),
-  Images: class { static async load() { return { get: () => ({ width: 450, height: 600 }) }; } },
+  Images: class { static async load() { return { get: () => ({ width: 450, height: 600 }), has: () => true }; } },
 }));
 vi.mock('../core/fonts', () => ({ loadFont: async () => {} }));
 vi.mock('../core/audio', () => ({ SoundBank: class { play() {} dispose() {} } }));
@@ -141,6 +141,7 @@ describe('puzzle completion during replay', () => {
     ['distilling', 30000, 20, { timerOn: true, timerSeconds: 0.01 }],
     ['vampire-carp', 121000, 1000, {}],
     ['forage', 12000, 20, { settings: { mode: 'ci', roundSeconds: 5 } }],
+    ['swordfight', 90000, 20, { settings: { opponents: 1, skill: 5, difficulty: 5, breakers: 12.5, sword: [2, 0, 0], enemySword: [6, 4, 2] } }],
   ] as const)('%s keeps player history unchanged through playback, seeking and Stop', async (puzzle, end, step, settings) => {
     const store = new Store(puzzle);
     if (puzzle === 'forage') vi.spyOn(Math, 'random').mockReturnValue(0.123456);
@@ -185,53 +186,5 @@ describe('puzzle completion during replay', () => {
     expect(JSON.parse(exportAll()).data).toEqual(data);
     expect(await listReplayFiles(puzzle)).toHaveLength(1);
     instance.dispose?.();
-  });
-});
-
-describe('Swordfight sessions', () => {
-  it.each(['button', 'navigation'] as const)('preserves scores and deterministic playback after %s dismissal while paused', async (ending) => {
-    const { DEFAULTS } = await import('./swordfight/match');
-    const store = new Store('swordfight');
-    store.set('settings', { ...DEFAULTS, enemies: 3, speed: 70, clearChance: 75, randomColors: true });
-    store.set('seed', '424242');
-    const { panel, buttons, setters, stats, results } = panelHarness();
-    let now = 0;
-    const screen = new Proxy({ ctx: canvasContext() }, { get: (target, key) => key === 'ctx' ? target.ctx : () => ({ width: 0, height: 0 }) });
-    const context = { screen, input: { mouse: [-1, -1] }, panel, store, ticks: () => now,
-      setReplayTime: (time: number | null) => { if (time !== null) now = time; } } as unknown as PuzzleContext;
-    const instance = await (await import('./swordfight/index')).default(context);
-    buttons.get('Play::Start')!();
-    now = 250; instance.frame([{ type: 'keydown', key: 'ArrowLeft' }, { type: 'keydown', key: 'Space' }]);
-    now = 700; buttons.get('Play:Opponent:Bot 2')!();
-    now = 1200; instance.frame([{ type: 'keydown', key: 'ArrowDown' }, { type: 'keydown', key: 'Space' }]);
-    now = 6000; instance.frame([]);
-    buttons.get('Play::Pause')!();
-    now = 12000; instance.frame([]);
-    if (ending === 'button') buttons.get('Play::Start')!();
-    else instance.dispose?.();
-    const expectedStats = stats(), expectedResults = results();
-    await replayWrites.idle();
-    const data = JSON.parse(exportAll()).data;
-    const histories = Object.entries(data).filter(([key]) => key.includes(':history:'));
-    expect(histories).toHaveLength(1);
-    expect(histories[0][1]).toEqual([expect.objectContaining({ outcome: 'Dismissed', aided: 1, duration: 6000, seed: '424242', score: expect.any(Number), replayId: expect.any(String) })]);
-    const [replay] = await listReplayFiles('swordfight');
-    expect(replay).toBeDefined();
-    if (ending === 'button') {
-      const recorder = captured.recorders[0];
-      const perf = vi.spyOn(performance, 'now').mockReturnValue(0);
-      expect(await recorder.playAt(replay.at, replay.runId)).toBe(true);
-      perf.mockReturnValue(replay.duration); instance.frame([]);
-      expect(stats()).toEqual(expectedStats); expect(results()).toEqual(expectedResults);
-      expect(JSON.parse(exportAll()).data).toEqual(data);
-      setters.get('History:Replays:Jump to (s)')!(replay.duration / 1000);
-      buttons.get('History:Replays:Jump')!();
-      await vi.waitFor(() => expect(recorder.isSeeking).toBe(false));
-      expect(stats()).toEqual(expectedStats);
-      buttons.get('History:Replays:Stop')!();
-      instance.dispose?.();
-    }
-    expect(JSON.parse(exportAll()).data).toEqual(data);
-    expect(await listReplayFiles('swordfight')).toHaveLength(1);
   });
 });
