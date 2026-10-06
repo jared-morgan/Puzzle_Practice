@@ -49,10 +49,46 @@ export function playOut(board: Board): { attack: Attack; chain: number } {
 
 /** What the bot values; tuned by playing practice games on its own. */
 export const WEIGHTS = { attack: 8, chain: 4, height: 4.5, tallest: 0.6, middle: 40, same: 3, mixed: 1, block: 2 };
+type Weights = typeof WEIGHTS;
+
+/** Everything that makes the bot harder or easier. AI skill (0-10) is a preset of these. */
+export interface BotStyle {
+  /** How long it looks at each pair before moving it, in ms (varies by a quarter either way). */
+  thinkMs: number;
+  /** How often it misjudges, 0-100: noise on its scores up to a quarter of their spread at 100. */
+  mistakes: number;
+  /** How many of its best spots it checks against the next pair; 0 doesn't look ahead. */
+  lookAhead: number;
+  /** Drops the pair fast once it's in place. */
+  fastDrop: boolean;
+  /** Percent of the normal weight it puts on attacking now, on building blocks and colour groups, and on keeping its stack low. */
+  attack: number;
+  build: number;
+  safety: number;
+}
+
+export function skillStyle(skill: number): BotStyle {
+  return {
+    thinkMs: 1400 - skill * 120,
+    mistakes: (10 - skill) * 10,
+    lookAhead: skill >= 4 ? Math.min(7, 2 + Math.floor(skill / 2)) : 0,
+    fastDrop: true,
+    attack: 100,
+    build: 100,
+    safety: 100,
+  };
+}
+
+function weightsFor(style: BotStyle): Weights {
+  const a = style.attack / 100;
+  const b = style.build / 100;
+  const s = style.safety / 100;
+  const w = WEIGHTS;
+  return { attack: w.attack * a, chain: w.chain * a, height: w.height * s, tallest: w.tallest * s, middle: w.middle * s, same: w.same * b, mixed: w.mixed * b, block: w.block * b };
+}
 
 /** How good a board is to be left with. */
-function judge(board: Board, attack: Attack, chain: number): number {
-  const k = WEIGHTS;
+function judge(board: Board, attack: Attack, chain: number, k: Weights): number {
   const levels = board.columnLevels();
   let score = attackSize(attack) * k.attack + chain * k.chain;
   const tallest = Math.max(...levels);
@@ -89,7 +125,7 @@ interface Option {
 }
 
 /** Every spot a pair can reach from where it is, played out and judged (turning first, then stepping sideways, as the bot presses the keys). */
-function options(start: Board, col0: number, row0: number, orient0: number, pieces: readonly number[]): Option[] {
+function options(start: Board, col0: number, row0: number, orient0: number, pieces: readonly number[], k: Weights): Option[] {
   const found: Option[] = [];
   for (let turns = 0; turns < 4; turns++) {
     let state: [number, number, number] | null = [orient0, col0, row0];
@@ -114,7 +150,7 @@ function options(start: Board, col0: number, row0: number, orient0: number, piec
           if (rest.rows[i] >= 0 && board.inBounds(rest.cols[i], rest.rows[i])) board.set(rest.cols[i], rest.rows[i], pieces[i]);
         }
         const { attack, chain } = playOut(board);
-        found.push({ turns, shift: col - col0, board, attack, chain, score: judge(board, attack, chain) });
+        found.push({ turns, shift: col - col0, board, attack, chain, score: judge(board, attack, chain, k) });
       }
     }
   }
@@ -122,28 +158,29 @@ function options(start: Board, col0: number, row0: number, orient0: number, piec
 }
 
 /** The bot's pick for the falling pair, or null. Skilled bots also look at the next pair. */
-export function choose(fighter: Fighter, skill: number, rng: PyRandom): Placement | null {
+export function choose(fighter: Fighter, style: BotStyle, rng: PyRandom): Placement | null {
+  const k = weightsFor(style);
   const pair = fighter.pair;
   if (!pair) return null;
-  const first = options(fighter.board, pair.col, pair.row, pair.orient, pair.pieces);
+  const first = options(fighter.board, pair.col, pair.row, pair.orient, pair.pieces, k);
   if (!first.length) return null;
   const next = fighter.next;
-  if (next && skill >= 4) {
+  if (next && style.lookAhead > 0) {
     // Look ahead at the most promising few: what's the best the next pair can do after each?
-    const ahead = Math.min(first.length, 2 + Math.floor(skill / 2));
+    const ahead = Math.min(first.length, style.lookAhead);
     const ranked = [...first].sort((a, b) => b.score - a.score).slice(0, ahead);
     const floor = Math.min(...first.map((o) => o.score));
     for (const o of first) if (!ranked.includes(o)) o.score = floor - 1000;
     for (const o of ranked) {
-      const replies = options(o.board, 3, o.board.isRowEmpty(1) ? 0 : -1, NORTH, next);
+      const replies = options(o.board, 3, o.board.isRowEmpty(1) ? 0 : -1, NORTH, next, k);
       const best = replies.length ? Math.max(...replies.map((r) => r.score)) : o.score - 1000;
-      o.score = attackSize(o.attack) * WEIGHTS.attack + best;
+      o.score = attackSize(o.attack) * k.attack + best;
     }
   }
-  // Less skilled bots misjudge: noise on every score, up to a quarter of the spread at skill 0.
+  // Mistakes: noise on every score, up to a quarter of the spread at 100.
   const scores = first.map((o) => o.score).filter((n) => n > -Infinity);
   const spread = Math.max(...scores) - Math.min(...scores);
-  const noise = (spread * (10 - skill)) / 40;
+  const noise = (spread * style.mistakes) / 400;
   let best = first[0];
   let bestScore = -Infinity;
   for (const o of first) {
@@ -156,16 +193,13 @@ export function choose(fighter: Fighter, skill: number, rng: PyRandom): Placemen
   return { turns: best.turns, shift: best.shift, score: best.score };
 }
 
-/** How long the bot looks at a pair before moving it. */
-export const thinkMs = (skill: number) => 1400 - skill * 120;
-
 /** Drives one fighter: waits, turns and moves the pair to its pick, then drops it. */
 export class Bot {
   private plannedFor: object | null = null;
   private actAt = 0;
   private plan: Placement | null = null;
 
-  constructor(readonly fighter: Fighter, readonly skill: number, private readonly rng: PyRandom) {}
+  constructor(readonly fighter: Fighter, readonly style: BotStyle, private readonly rng: PyRandom) {}
 
   update(now: number): void {
     const f = this.fighter;
@@ -173,8 +207,8 @@ export class Bot {
     if (!pair || f.out) return;
     if (this.plannedFor !== pair) {
       this.plannedFor = pair;
-      this.plan = choose(f, this.skill, this.rng);
-      this.actAt = now + thinkMs(this.skill) * (0.75 + this.rng.random() * 0.5);
+      this.plan = choose(f, this.style, this.rng);
+      this.actAt = now + this.style.thinkMs * (0.75 + this.rng.random() * 0.5);
       f.setFast(false, now);
       return;
     }
@@ -182,7 +216,7 @@ export class Bot {
       for (let t = 0; t < this.plan.turns; t++) f.rotate(true, now);
       const dir = Math.sign(this.plan.shift);
       for (let s = 0; s < Math.abs(this.plan.shift); s++) f.move(dir, now);
-      f.setFast(true, now);
+      if (this.style.fastDrop) f.setFast(true, now);
       this.plan = null;
     }
   }

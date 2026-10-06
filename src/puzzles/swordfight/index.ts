@@ -19,6 +19,7 @@ import {
   blockPiece, blockTile, colour, DAMAGE, DAMAGE_HINT, EMPTY, H, isBlock, isBreaker, kind, METAL, RUM, SWORD, swordTile, W,
 } from './board';
 import { COL_PX, type Fighter, FAST_SPEED, ROW_PX, secondOf, startSpeed } from './fighter';
+import { type BotStyle, skillStyle } from './ai';
 import { Match, type MatchSettings } from './match';
 import { PLAIN_SWORDS, SWORD_COLOURS, SWORD_NAMES, isHorizontal } from './strikes';
 import delarobbUrl from './delarobb.ttf?url';
@@ -72,6 +73,7 @@ interface Settings extends MatchSettings {}
 const DEFAULTS: Settings = {
   opponents: 1,
   skill: 5,
+  ai: skillStyle(5),
   difficulty: 5,
   breakers: 12.5,
   sword: [2, 0, 0],
@@ -103,13 +105,32 @@ function validSword(value: unknown): value is [number, number, number] {
     value.slice(1).every((n) => Number.isInteger(n) && n >= 0 && n < 8);
 }
 
+const inRange = (v: unknown, lo: number, hi: number) => typeof v === 'number' && Number.isFinite(v) && v >= lo && v <= hi;
+const int = (v: unknown, lo: number, hi: number) => Number.isInteger(v) && inRange(v, lo, hi);
+
+function validStyle(value: unknown): value is BotStyle {
+  if (!value || typeof value !== 'object') return false;
+  const s = value as Record<string, unknown>;
+  return inRange(s.thinkMs, 0, 10000) && inRange(s.mistakes, 0, 100) && int(s.lookAhead, 0, 20) && typeof s.fastDrop === 'boolean' &&
+    inRange(s.attack, 0, 1000) && inRange(s.build, 0, 1000) && inRange(s.safety, 0, 1000);
+}
+
+/** Settings from before the opponent's options were separate get them from their AI skill. */
+function upgrade(value: unknown): unknown {
+  if (!value || typeof value !== 'object' || 'ai' in value) return value;
+  const s = value as Record<string, unknown>;
+  return int(s.skill, 0, 10) ? { ...s, ai: skillStyle(s.skill as number) } : value;
+}
+
 function validSettings(value: unknown): value is Settings {
   if (!value || typeof value !== 'object') return false;
   const s = value as Record<string, unknown>;
-  const int = (v: unknown, lo: number, hi: number) => Number.isInteger(v) && (v as number) >= lo && (v as number) <= hi;
-  return int(s.opponents, 0, 6) && int(s.skill, 0, 10) && int(s.difficulty, 0, 9) &&
+  return int(s.opponents, 0, 6) && int(s.skill, 0, 10) && validStyle(s.ai) && int(s.difficulty, 0, 9) &&
     typeof s.breakers === 'number' && s.breakers >= 0 && s.breakers <= 100 && validSword(s.sword) && validSword(s.enemySword);
 }
+
+/** Whether the opponent's options are still exactly the AI skill preset. */
+const isPreset = (s: Settings) => JSON.stringify(s.ai) === JSON.stringify(skillStyle(s.skill));
 
 interface Message {
   text: string;
@@ -139,8 +160,8 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
     if (files) sounds.play(files[soundPick.randintN(0, files.length - 1)]);
   };
 
-  const saved = store.get<unknown>('settings', DEFAULTS);
-  let settings: Settings = validSettings(saved) ? { ...saved } : { ...DEFAULTS };
+  const saved = upgrade(store.get<unknown>('settings', DEFAULTS));
+  let settings: Settings = structuredClone(validSettings(saved) ? saved : DEFAULTS);
   const seeds = new PyRandom();
   seeds.seedFromCrypto();
 
@@ -152,16 +173,22 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
   /** Left and right held, repeating 7 times a second after 300ms (PuzzlePanel's key bindings). */
   const held = { left: 0, right: 0, leftNext: 0, rightNext: 0 };
 
-  const settingsKey = () => `${settings.opponents}:${settings.opponents ? settings.skill : '-'}:${settings.difficulty}:${settings.breakers}`;
+  const opponentKey = () => {
+    if (!settings.opponents) return '-';
+    if (isPreset(settings)) return String(settings.skill);
+    const a = settings.ai;
+    return `custom ${a.thinkMs}/${a.mistakes}/${a.lookAhead}/${a.fastDrop ? 1 : 0}/${a.attack}/${a.build}/${a.safety}`;
+  };
+  const settingsKey = () => `${settings.opponents}:${opponentKey()}:${settings.difficulty}:${settings.breakers}`;
   const record = store.get<Record<string, { wins: number; losses: number; best: number }>>('record', {});
 
   function start(seed?: number): void {
     const s = seed ?? seeds.randintN(1, 2 ** 31 - 1);
-    if (seed === undefined) replays.begin({ ...settings }, { seed: s });
+    if (seed === undefined) replays.begin(structuredClone(settings), { seed: s });
     const now = ticks();
     messages = [];
     held.left = held.right = 0;
-    match = new Match({ ...settings }, s, now, {
+    match = new Match(structuredClone(settings), s, now, {
       sound: (name, fighter) => { if (fighter === 0) play(name); },
       message: (text, fighter) => { if (fighter === 0) messages.push({ text, start: ticks(), ms: text.includes('knocked') ? 3000 : text.startsWith('Ye be') ? 4000 : MESSAGE_MS }); },
     });
@@ -530,7 +557,7 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
     const sword = SWORD_NAMES[settings.sword[0]];
     const speed = `${Math.round(ROW_PX / startSpeed(settings.difficulty))}ms a row`;
     return settings.opponents
-      ? `AI skill ${settings.skill} · starting speed ${speed} · your ${sword.toLowerCase()} (Settings tab)`
+      ? `${isPreset(settings) ? `AI skill ${settings.skill}` : 'Custom opponents'} · starting speed ${speed} · your ${sword.toLowerCase()} (Settings tab)`
       : `Starting speed ${speed} · your ${sword.toLowerCase()} (Settings tab)`;
   });
   session.button('Start', () => (running ? stop() : start()), {
@@ -572,8 +599,27 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
   function save(): void {
     store.set('settings', settings);
   }
+  const off = { disabled: () => running };
+  const foes = panel.settings.group('Opponents');
+  foes.range('AI skill', () => settings.skill, (v) => { settings.skill = v; settings.ai = skillStyle(v); save(); }, { ...off, min: 0, max: 10 });
+  foes.note(() => isPreset(settings)
+    ? 'AI skill sets everything below; change any of it to make your own.'
+    : 'Custom: AI skill sets everything below back to its preset.');
+  const ai = (change: (a: BotStyle) => void) => { change(settings.ai); save(); };
+  foes.number('Reaction time (ms)', () => settings.ai.thinkMs, (v) => ai((a) => { a.thinkMs = v; }), { ...off, min: 0, max: 10000, step: 50,
+    title: 'How long an opponent looks at each pair before moving it (varies by a quarter either way).' });
+  foes.range('Mistakes (%)', () => settings.ai.mistakes, (v) => ai((a) => { a.mistakes = v; }), { ...off, min: 0, max: 100,
+    title: 'How often an opponent misjudges where to put a pair.' });
+  foes.number('Look ahead', () => settings.ai.lookAhead, (v) => ai((a) => { a.lookAhead = v; }), { ...off, min: 0, max: 20,
+    title: "How many of its best spots an opponent checks against the next pair. 0 means it doesn't look ahead." });
+  foes.range('Attacking (%)', () => settings.ai.attack, (v) => ai((a) => { a.attack = v; }), { ...off, min: 0, max: 300, step: 10,
+    title: 'How much an opponent values sending an attack now.' });
+  foes.range('Building (%)', () => settings.ai.build, (v) => ai((a) => { a.build = v; }), { ...off, min: 0, max: 300, step: 10,
+    title: 'How much an opponent values fusing blocks and grouping colours for bigger attacks later.' });
+  foes.range('Keeping low (%)', () => settings.ai.safety, (v) => ai((a) => { a.safety = v; }), { ...off, min: 0, max: 300, step: 10,
+    title: 'How much an opponent values a low stack and a clear fourth column.' });
+  foes.toggle('Drop fast once in place', () => settings.ai.fastDrop, (on) => ai((a) => { a.fastDrop = on; }), off);
   const game = panel.settings.group('Fight');
-  game.range('AI skill', () => settings.skill, (v) => { settings.skill = v; save(); }, { min: 0, max: 10, disabled: () => running });
   game.select('Starting speed', Array.from({ length: 10 }, (_, d) => ({ value: d, label: `${d}: ${Math.round(ROW_PX / startSpeed(d))}ms a row` })),
     () => settings.difficulty, (d) => { settings.difficulty = d; save(); }, { disabled: () => running });
   game.number('Breaker chance (%)', () => settings.breakers, (v) => { settings.breakers = v; save(); }, { min: 0, max: 100, step: 0.5, disabled: () => running });
@@ -587,17 +633,20 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
     g.select('Colour 1', colourOptions, () => settings[which][1], (c) => { settings[which] = [settings[which][0], c, settings[which][2]]; save(); }, { disabled: () => running || settings[which][0] === 127 });
     g.select('Colour 2', colourOptions, () => settings[which][2], (c) => { settings[which] = [settings[which][0], settings[which][1], c]; save(); }, { disabled: () => running || settings[which][0] === 127 });
   }
-  panel.settings.group('Reset').button('Reset to defaults', () => { settings = { ...DEFAULTS }; save(); }, { disabled: () => running });
+  panel.settings.group('Reset').button('Reset to defaults', () => { settings = structuredClone(DEFAULTS); save(); }, { disabled: () => running });
 
   const replaySettingsCodec: ReplaySettingsCodec = {
-    currentVersion: 1,
+    currentVersion: 2,
     simulatorVersion: 1,
-    migrate: (version, value) => (version === 1 && validSettings(value) ? value : null),
+    migrate: (version, value) => {
+      const upgraded = version === 1 ? upgrade(value) : value;
+      return (version === 1 || version === 2) && validSettings(upgraded) ? upgraded : null;
+    },
   };
   let savedSettings: Settings | null = null;
   replays = new ReplayRecorder(PUZZLE, store, panel, ticks, (tape: PuzzleReplay) => {
-    savedSettings ??= { ...settings };
-    settings = { ...(tape.settings as Settings) };
+    savedSettings ??= structuredClone(settings);
+    settings = structuredClone(upgrade(tape.settings) as Settings);
     const seed = (tape.seed as { seed?: unknown })?.seed;
     if (typeof seed !== 'number') throw new Error('Invalid Swordfight replay seed');
     start(seed);

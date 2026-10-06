@@ -42,8 +42,9 @@ choice for each of these so the puzzle plays; each one is easy to change.
    the real AI seems to be a dice roll on how much of its board it destroys, not a player.
    **Here the training opponent plays a real board under the same rules as you**: it tries
    every spot each pair can reach, plays it out, and picks a good one; from skill 4 it also
-   looks at the next pair. Skill sets how quickly it moves (1.4s down to 0.2s per pair) and how
-   often it misjudges. Would you rather have the dice-roll style, or keep this? How did the
+   looks at the next pair. Skill is a preset: the Settings tab also shows each part of it (reaction
+   time, mistakes, look ahead, how much it values attacking, building and keeping low, and fast
+   dropping) to set on its own. Would you rather have the dice-roll style, or keep this? How did the
    real NPCs feel to fight?
 7. **Who opponents attack.** With several opponents, they all attack you.
 8. **Scores and ratings.** The client never scores a fight. Here the main score is damage sent

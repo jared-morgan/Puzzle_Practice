@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { PyRandom } from '../../core/pyrandom';
-import { Bot } from './ai';
+import { Bot, skillStyle } from './ai';
 import { attackFor, swordFor } from './attack';
 import { Board, BREAKER, findClear } from './board';
 import { Match, type MatchSettings } from './match';
 
-const settings: MatchSettings = { opponents: 1, skill: 6, difficulty: 5, breakers: 12.5, sword: [2, 0, 0], enemySword: [6, 4, 2] };
+const settings: MatchSettings = { opponents: 1, skill: 6, ai: skillStyle(6), difficulty: 5, breakers: 12.5, sword: [2, 0, 0], enemySword: [6, 4, 2] };
 
 describe('attacks (YPPedia)', () => {
   it('turns blocks into swords', () => {
@@ -32,7 +32,7 @@ describe('attacks (YPPedia)', () => {
 
 function play(seed: number, player: boolean, until = 10 * 60_000) {
   const m = new Match(settings, seed, 0);
-  const me = player ? new Bot(m.player, 8, new PyRandom(seed + 1)) : null;
+  const me = player ? new Bot(m.player, skillStyle(8), new PyRandom(seed + 1)) : null;
   let now = 0;
   while (!m.result && now < until) {
     now += 16;

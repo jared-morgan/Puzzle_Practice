@@ -3,7 +3,7 @@
 // does this part and isn't in the client, so the dealing and the timing of attacks are choices made
 // here (see docs/swordfight-client-findings.md).
 import { PyRandom } from '../../core/pyrandom';
-import { Bot } from './ai';
+import { Bot, type BotStyle } from './ai';
 import type { Attack } from './attack';
 import { BREAKER } from './board';
 import { Fighter, type FighterHooks, type SoundName } from './fighter';
@@ -12,8 +12,10 @@ import { type Shaft, type Strike, Sword } from './strikes';
 export interface MatchSettings {
   /** 0 is practice on your own. */
   opponents: number;
-  /** 0-10, the client's AI skill level. */
+  /** 0-10, the client's AI skill level: a preset for `ai`. */
   skill: number;
+  /** How the opponents play. */
+  ai: BotStyle;
   /** The puzzle difficulty that sets the starting speed (0.01 x (difficulty + 1) pixels per ms). */
   difficulty: number;
   /** Chance a dealt piece is a breaker, in percent. */
@@ -89,7 +91,7 @@ export class Match {
       };
       const fighter = new Fighter(i, settings.difficulty, hooks, startedAt);
       this.fighters.push(fighter);
-      if (i > 0) this.bots.push(new Bot(fighter, settings.skill, new PyRandom(seed + i * 7919)));
+      if (i > 0) this.bots.push(new Bot(fighter, settings.ai, new PyRandom(seed + i * 7919)));
     }
   }
 
