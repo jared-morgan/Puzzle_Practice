@@ -20,16 +20,19 @@ import {
 } from './board';
 import { COL_PX, type Fighter, FAST_SPEED, ROW_PX, secondOf, startSpeed } from './fighter';
 import { type GameStyle, gameSkillStyle, type NpcStyle, skillStyle } from './npc';
-import { Match, type MatchSettings } from './match';
+import { drawFace, FACE } from './faces';
+import { Match, type MatchSettings, styleFor } from './match';
 import { PLAIN_SWORDS, SWORD_COLOURS, SWORD_NAMES, isHorizontal } from './strikes';
 import delarobbUrl from './delarobb.ttf?url';
 
 const imageUrls = import.meta.glob<string>('./media/*.png', { eager: true, query: '?url', import: 'default' });
 const swordIconUrls = import.meta.glob<string>('./media/swords/*.png', { eager: true, query: '?url', import: 'default' });
+const faceUrls = import.meta.glob<string>('./media/faces/*.png', { eager: true, query: '?url', import: 'default' });
 const soundUrls = import.meta.glob<string>('./sounds/*.ogg', { eager: true, query: '?url', import: 'default' });
 
 const PUZZLE = 'swordfight';
 const WIDTH = 450;
+const HEIGHT = 600;
 const BOARD_X = 143;
 const BOARD_Y = 62;
 const BOARD_W = W * COL_PX;
@@ -50,6 +53,9 @@ const COLOUR_NAMES = ['red', 'green', 'blue', 'yellow'];
 const MESSAGE_MS = 1500;
 /** The eight sword colours (red, orange, yellow, green, blue, purple, white, black), for attacker dots. */
 const SWORD_RGB = ['#d22a1e', '#f08a1e', '#f2d22e', '#3fa535', '#2f63d6', '#8a3fc4', '#f4f4f4', '#202020'];
+/** Name colours (YoFaceLabel roles): yellow for most, red (role 12) for skilled swabbies. */
+const NAME_YELLOW = '#ffff00';
+const NAME_RED = '#ff1a2c';
 
 /** Every sound a variant may pick from (the game's sound list). */
 const SOUND_FILES: Record<string, string[]> = {
@@ -66,7 +72,7 @@ const SOUND_FILES: Record<string, string[]> = {
   strike_land_big: ['strike_land_big', 'strike_land_big2'], strike_land_huge: ['strike_land_huge', 'strike_land_huge2'],
   danger_sprinkle: ['danger_sprinkle'], danger: ['danger'], danger_big: ['danger_big'], danger_huge: ['danger_huge'],
   opponent_knocked_out: ['opponent_knocked_out', 'opponent_knocked_out2'],
-  self_knocked_out: ['self_knocked_out', 'self_knocked_out2'],
+  self_knocked_out: ['self_knocked_out', 'self_knocked_out2'], teammate_knocked_out: ['teammate_knocked_out'],
   win: ['win'], lose: ['lose'], fanfare: ['fanfare'],
 };
 
@@ -74,21 +80,27 @@ interface Settings extends MatchSettings {}
 
 /** Jared's settings from 6 October 2026. */
 const DEFAULTS: Settings = {
+  cultists: 2,
+  homunculi: 0,
   opponents: 2,
-  skill: 10,
+  thralls: 0,
+  swabbies: 0,
+  cultistSkill: 60,
+  homunculusSkill: 60,
+  thrallSkill: 50,
+  swabbieSkill: 50,
   opponentType: 'game',
-  gameAi: gameSkillStyle(10),
+  gameAi: gameSkillStyle(60),
   ai: { pairMs: 3000, breakAverage: 40, variation: 41, heightBoost: 1.5, storeChance: 23, comboMax: 3, strikeShare: 85, pairsPerAttack: 1 },
-  difficulty: 5,
+  difficulty: 1,
   breakers: 18,
   sword: [16, 0, 0],
-  enemySword: [16, 4, 2],
 };
 
-const OPPONENTS: Option<number>[] = [
-  { value: 0, label: 'None (practice)' },
-  ...[1, 2, 3, 4, 5, 6].map((n) => ({ value: n, label: n === 1 ? '1 opponent' : `${n} opponents` })),
-];
+/** At most this many enemies, and allies, in a fight. */
+const MAX_ENEMIES = 6;
+const MAX_ALLIES = 5;
+const SKILLS = ['cultistSkill', 'homunculusSkill', 'thrallSkill', 'swabbieSkill'] as const;
 
 const KEYS = [
   { id: 'left', label: 'Move left', defaultKey: 'ArrowLeft' },
@@ -132,25 +144,37 @@ function validGameStyle(value: unknown): value is GameStyle {
 function upgrade(value: unknown): unknown {
   if (!value || typeof value !== 'object') return value;
   const s = { ...(value as Record<string, unknown>) };
-  if (!int(s.skill, 0, 10)) return value;
-  if (!validStyle(s.ai)) s.ai = skillStyle(s.skill as number);
-  if (!validGameStyle(s.gameAi)) s.gameAi = gameSkillStyle(s.skill as number);
+  // One AI skill for everyone became a skill for each kind of pirate.
+  const old = int(s.aiSkill, 0, 100) ? (s.aiSkill as number) : int(s.skill, 0, 10) ? (s.skill as number) * 10 : 60;
+  delete s.skill;
+  delete s.aiSkill;
+  if (!validStyle(s.ai)) s.ai = skillStyle(old);
+  if (!validGameStyle(s.gameAi)) s.gameAi = gameSkillStyle(old);
+  for (const k of SKILLS) if (!int(s[k], 0, 100)) s[k] = DEFAULTS[k];
+  if (!int(s.thralls, 0, MAX_ALLIES) || !int(s.swabbies, 0, MAX_ALLIES)) {
+    s.thralls = 0;
+    s.swabbies = 0;
+  }
   if (s.opponentType !== 'tally' && s.opponentType !== 'game') s.opponentType = 'game';
+  // Before cultists and homunculi, opponents were one count with one sword: they become cultists.
+  if (!int(s.cultists, 0, MAX_ENEMIES) || !int(s.homunculi, 0, MAX_ENEMIES)) {
+    s.cultists = int(s.opponents, 0, MAX_ENEMIES) ? s.opponents : 0;
+    s.homunculi = 0;
+  }
+  s.opponents = (s.cultists as number) + (s.homunculi as number);
+  delete s.enemySword;
   return s;
 }
 
 function validSettings(value: unknown): value is Settings {
   if (!value || typeof value !== 'object') return false;
   const s = value as Record<string, unknown>;
-  return int(s.opponents, 0, 6) && int(s.skill, 0, 10) && validStyle(s.ai) && validGameStyle(s.gameAi) &&
+  return int(s.cultists, 0, MAX_ENEMIES) && int(s.homunculi, 0, MAX_ENEMIES) && s.opponents === (s.cultists as number) + (s.homunculi as number) &&
+    int(s.opponents, 0, MAX_ENEMIES) && int(s.thralls, 0, MAX_ALLIES) && int(s.swabbies, 0, MAX_ALLIES) &&
+    (s.thralls as number) + (s.swabbies as number) <= MAX_ALLIES && SKILLS.every((k) => int(s[k], 0, 100)) && validStyle(s.ai) && validGameStyle(s.gameAi) &&
     (s.opponentType === 'tally' || s.opponentType === 'game') && int(s.difficulty, 0, 9) &&
-    typeof s.breakers === 'number' && s.breakers >= 0 && s.breakers <= 100 && validSword(s.sword) && validSword(s.enemySword);
+    typeof s.breakers === 'number' && s.breakers >= 0 && s.breakers <= 100 && validSword(s.sword);
 }
-
-/** Whether the opponent's options are still exactly the AI skill preset. */
-const isPreset = (s: Settings) => s.opponentType === 'tally'
-  ? JSON.stringify(s.ai) === JSON.stringify(skillStyle(s.skill))
-  : JSON.stringify(s.gameAi) === JSON.stringify(gameSkillStyle(s.skill));
 
 interface Message {
   text: string;
@@ -168,7 +192,7 @@ function chunkVelocity(seed: number, i: number): [number, number] {
 }
 
 export default (async ({ screen, input, panel, store, ticks, setReplayTime }) => {
-  const [images, icons] = await Promise.all([Images.load(imageUrls), Images.load(swordIconUrls), loadFont(FONT, delarobbUrl)]);
+  const [images, icons, faceImages] = await Promise.all([Images.load(imageUrls), Images.load(swordIconUrls), Images.load(faceUrls), loadFont(FONT, delarobbUrl)]);
   const img = (name: string) => images.get(name);
   let replays!: ReplayRecorder;
   const sounds = new SoundBank(soundUrls, () => replays?.isSeeking ?? false);
@@ -193,21 +217,16 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
   let startedAt = 0;
   let messages: Message[] = [];
   let hideOpponents = store.get<boolean>('hideOpponents', true);
+  let showQueues = store.get<boolean>('showQueues', false);
   /** Left and right held, repeating 7 times a second after 300ms (PuzzlePanel's key bindings). */
   const held = { left: 0, right: 0, leftNext: 0, rightNext: 0 };
 
+  /** Fights are kept apart by who's in them, how good they are, and how the AI plays. */
   const opponentKey = () => {
-    if (!settings.opponents) return '-';
-    const kind = settings.opponentType === 'game' ? 'game ' : '';
-    if (isPreset(settings)) return kind + String(settings.skill);
-    if (settings.opponentType === 'game') {
-      const g = settings.gameAi;
-      return `game custom ${g.pairMs}/${g.baseDestroy}/${g.maxDestroy}/${g.chainChance}/${g.targetedSlowdown}/${g.strikeShare}/${g.pairsPerAttack}`;
-    }
-    const a = settings.ai;
-    return `custom ${a.pairMs}/${a.breakAverage}/${a.variation}/${a.heightBoost}/${a.storeChance}/${a.comboMax}/${a.strikeShare}/${a.pairsPerAttack}`;
+    const style = settings.opponentType === 'game' ? settings.gameAi : settings.ai;
+    return `${settings.opponentType} ${SKILLS.map((k) => settings[k]).join('/')} ${JSON.stringify(style)}`;
   };
-  const settingsKey = () => `${settings.opponents}:${opponentKey()}:${settings.difficulty}:${settings.breakers}`;
+  const settingsKey = () => `${settings.cultists}c${settings.homunculi}h${settings.thralls}t${settings.swabbies}s:${opponentKey()}:${settings.difficulty}:${settings.breakers}`;
   const record = store.get<Record<string, { wins: number; losses: number; best: number }>>('record', {});
 
   function start(seed?: number): void {
@@ -288,8 +307,10 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
         // Clicking an opponent's status targets them.
         const [mx, my] = event.pos;
         if (mx >= RIGHT_X && mx < RIGHT_X + 136) {
+          // Rows as they're shown; the knocked out can't be targeted.
           const row = Math.floor((my - ROWS_Y) / ROW_H);
-          if (row >= 0 && row < settings.opponents) match.setTarget(row + 1);
+          const enemies = match.rows[1];
+          if (row >= 0 && row < enemies.length) match.setTarget(enemies[row]);
         }
       }
     }
@@ -490,21 +511,40 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
   }
 
   /**
-   * A pirate's status row, laid out as the game lays it out: name (over where the face goes), sword,
+   * A pirate's status row, laid out as the game lays it out: face with the name over it, sword,
    * small board and attacker dots, mirrored on the right. The small board has a gold outline (white
    * on your target) with a black line inside, on khaki (darker once knocked out).
    */
+  /** Each fight's faces, drawn once: standing and knocked out. */
+  const faces = new WeakMap<Match, Map<string, HTMLCanvasElement>>();
+  function faceOf(m: Match, index: number, out: boolean): HTMLCanvasElement {
+    let cache = faces.get(m);
+    if (!cache) faces.set(m, (cache = new Map()));
+    const key = `${index}${out ? 'out' : ''}`;
+    let face = cache.get(key);
+    if (!face) cache.set(key, (face = drawFace(m.looks[index], out, (name) => faceImages.get(name))));
+    return face;
+  }
+
+  /** Text in the game's outline style: black one pixel all round, then the colour (samskivert Label OUTLINE). */
+  function outlined(text: string, x: number, y: number, colour: string): void {
+    ctx.fillStyle = '#000';
+    for (const [dx, dy] of [[0, 0], [0, 1], [0, 2], [1, 0], [1, 2], [2, 0], [2, 1], [2, 2]]) ctx.fillText(text, x + dx - 1, y + dy - 1);
+    ctx.fillStyle = colour;
+    ctx.fillText(text, x, y);
+  }
+
   function drawStatus(m: Match, index: number, x: number, y: number, right: boolean): void {
     const f = m.fighters[index];
     const sword = m.swords[index];
-    const FACE = 60;
+    const SLOT = 60;
     const SWORD_W = 30;
     const SUMMARY_W = W * MINI + 4;
     const SUMMARY_H = H * MINI + 4;
     const DOTS = 13;
     // Left: face, sword, board, dots. Right: dots, board, sword, face.
     const parts = right ? ['dots', 'board', 'sword', 'face'] : ['face', 'sword', 'board', 'dots'];
-    const widths: Record<string, number> = { face: FACE, sword: SWORD_W, board: SUMMARY_W, dots: DOTS };
+    const widths: Record<string, number> = { face: SLOT, sword: SWORD_W, board: SUMMARY_W, dots: DOTS };
     const at: Record<string, number> = {};
     let px = x;
     for (const part of parts) {
@@ -517,7 +557,7 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
     const by = y + Math.floor((ROW_H - SUMMARY_H) / 2);
     ctx.fillStyle = f.out ? '#92974a' : '#b1ab92';
     ctx.fillRect(bx, by, SUMMARY_W, SUMMARY_H);
-    if (hideOpponents && index > 0) {
+    if (hideOpponents && m.teams[index] === 1) {
       // Hidden: only how high each column is, in dark red, as the game shows other pirates without their boards.
       ctx.fillStyle = f.out ? '#94552a' : '#9e0b0e';
       const levels = f.board.columnLevels();
@@ -530,34 +570,41 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
         }
       }
     }
-    ctx.strokeStyle = index === m.target && index > 0 && !f.out ? '#ffffff' : '#c1b016';
+    ctx.strokeStyle = index === m.target && !f.out ? '#ffffff' : '#c1b016';
     ctx.lineWidth = 1;
     ctx.strokeRect(bx + 0.5, by + 0.5, SUMMARY_W - 1, SUMMARY_H - 1);
     ctx.strokeStyle = '#000';
     ctx.strokeRect(bx + 1.5, by + 1.5, SUMMARY_W - 3, SUMMARY_H - 3);
     // The sword.
     const icon = icons.has(`sword${sword.type}`) ? icons.get(`sword${sword.type}`) : null;
-    if (icon) ctx.drawImage(icon, at.sword, y + Math.floor((ROW_H - icon.height) / 2));
-    // The name: yellow with a black outline, centred over the face, wrapped to its width.
-    ctx.font = 'bold 11px Arial, sans-serif';
+    if (icon) {
+      const iy = y + Math.floor((ROW_H - icon.height) / 2);
+      ctx.drawImage(icon, at.sword, iy);
+      const [mx, my] = input.mouse;
+      if (mx >= at.sword && mx < at.sword + SWORD_W && my >= y && my < y + ROW_H) hoveredSword = index;
+    }
+    // The face (passed out once knocked out, faded where the game has no such face), with the name
+    // over its top as YoFaceLabel draws it: 10pt, outlined, wrapped to the face's width.
+    const face = faceOf(m, index, f.out);
+    if (f.out && m.looks[index].out === m.looks[index].layers) ctx.globalAlpha = 0.6;
+    ctx.drawImage(face, at.face + (SLOT - FACE) / 2, y + 4);
+    ctx.globalAlpha = 1;
+    ctx.font = '10px Dialog, Arial, sans-serif';
     ctx.textBaseline = 'top';
     ctx.textAlign = 'center';
-    ctx.lineJoin = 'round';
-    ctx.lineWidth = 3;
-    ctx.strokeStyle = '#000';
-    ctx.fillStyle = f.out ? '#c8c8a0' : '#ffff00';
     const lines: string[] = [];
     for (const word of m.names[index].split(' ')) {
       const last = lines.length - 1;
-      if (last >= 0 && ctx.measureText(`${lines[last]} ${word}`).width <= FACE) lines[last] += ` ${word}`;
+      if (last >= 0 && ctx.measureText(`${lines[last]} ${word}`).width <= SLOT - 2) lines[last] += ` ${word}`;
       else lines.push(word);
     }
-    lines.forEach((line, i) => {
-      ctx.strokeText(line, at.face + FACE / 2, y + 2 + i * 12, FACE);
-      ctx.fillText(line, at.face + FACE / 2, y + 2 + i * 12, FACE);
-    });
+    const colour = m.kinds[index] === 'Skilled swabbie' ? NAME_RED : NAME_YELLOW;
+    // With attack queues shown, an enemy still standing shows attacks:pieces waiting for it instead.
+    const queue = showQueues && m.teams[index] === 1 && !f.out && 'queue' in f ? f.queue : null;
+    if (queue) lines.splice(0, lines.length, `${queue.attacks}:${queue.blocks}`);
+    lines.forEach((line, i) => outlined(line, at.face + SLOT / 2, y + 1 + i * 13, colour));
     // Attacker dots: one for each pirate attacking this one, in the colours of their sword.
-    const attackers = index === 0 ? m.alive() : m.target === index && !m.player.out ? [0] : [];
+    const attackers = m.targeters(index);
     let dy = y + 2;
     const groups = Math.floor(attackers.length / 5);
     for (let i = 0; i < groups; i++) {
@@ -566,7 +613,7 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
     }
     dy++;
     for (const from of attackers.slice(groups * 5)) {
-      const [, primary, secondary] = from === 0 ? m.settings.sword : m.settings.enemySword;
+      const { primary, secondary } = m.swords[from];
       const cx = (right ? at.dots + 1 : at.dots + DOTS - 6 - 2) + 3;
       const cy = dy + 3;
       ctx.fillStyle = SWORD_RGB[secondary];
@@ -579,6 +626,32 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
       ctx.fill();
       dy += 9;
     }
+    ctx.restore();
+  }
+
+  /** The sword under the mouse, found while drawing the status rows. */
+  let hoveredSword = -1;
+
+  /** A tooltip by the mouse with a sword's name and colours (primary, then secondary). */
+  function swordTip(m: Match, index: number): void {
+    const sword = m.swords[index];
+    const [p, s] = [SWORD_COLOURS[sword.primary], SWORD_COLOURS[sword.secondary].toLowerCase()];
+    const text = `${sword.name}: ${sword.primary === sword.secondary ? p : `${p} and ${s}`}`;
+    ctx.save();
+    ctx.font = '11px Arial, sans-serif';
+    ctx.textBaseline = 'top';
+    ctx.textAlign = 'left';
+    const w = Math.ceil(ctx.measureText(text).width) + 8;
+    const [mx, my] = input.mouse;
+    const x = Math.max(0, Math.min(WIDTH - w, mx + 10));
+    const y = my + 18 + 17 > HEIGHT ? my - 20 : my + 18;
+    ctx.fillStyle = '#fffbe0';
+    ctx.fillRect(x, y, w, 17);
+    ctx.strokeStyle = '#000';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x + 0.5, y + 0.5, w - 1, 16);
+    ctx.fillStyle = '#000';
+    ctx.fillText(text, x + 4, y + 3);
     ctx.restore();
   }
 
@@ -618,10 +691,13 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
     }
     screen.blit(img('background'), 0, 0);
     drawNext(match.player);
-    drawStatus(match, 0, LEFT_X, ROWS_Y, false);
-    for (let i = 1; i < match.fighters.length; i++) drawStatus(match, i, RIGHT_X, ROWS_Y + (i - 1) * ROW_H, true);
+    // Your side on the left, you first; the enemies on the right; the knocked out at the bottom.
+    hoveredSword = -1;
+    match.rows[0].forEach((i, row) => drawStatus(match!, i, LEFT_X, ROWS_Y + row * ROW_H, false));
+    match.rows[1].forEach((i, row) => drawStatus(match!, i, RIGHT_X, ROWS_Y + row * ROW_H, true));
     drawBoard(match.player, running ? now : match.settledAt || match.endedAt || now);
     if (finished && !match.result) banner('Stopped', 330);
+    if (hoveredSword >= 0) swordTip(match, hoveredSword);
     replays.drawOverlay(ctx);
   }
 
@@ -632,16 +708,41 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
   panel.controls(PUZZLE, KEYS);
 
   const session = panel.session();
-  session.select('Opponents', OPPONENTS, () => settings.opponents, (n) => { settings.opponents = n; save(); }, { disabled: () => running });
+  // Cultists and homunculi, up to six between them; none is practice on your own.
+  const enemies = (cultists: number, homunculi: number) => {
+    settings.cultists = cultists;
+    settings.homunculi = Math.min(homunculi, MAX_ENEMIES - cultists);
+    settings.opponents = settings.cultists + settings.homunculi;
+    save();
+  };
+  const counts = (): Option<number>[] => Array.from({ length: MAX_ENEMIES + 1 }, (_, n) => ({ value: n, label: String(n) }));
+  session.select('Cultists (spears)', counts(), () => settings.cultists, (n) => enemies(n, Math.min(settings.homunculi, MAX_ENEMIES - n)), { disabled: () => running });
+  session.select('Homunculi (trunks)', counts(), () => settings.homunculi, (n) => enemies(Math.min(settings.cultists, MAX_ENEMIES - n), n), { disabled: () => running });
+  // Allies on your side: thralls and skilled swabbies, up to five between them.
+  const allies = (thralls: number, swabbies: number) => {
+    settings.thralls = thralls;
+    settings.swabbies = Math.min(swabbies, MAX_ALLIES - thralls);
+    save();
+  };
+  const allyCounts = (): Option<number>[] => Array.from({ length: MAX_ALLIES + 1 }, (_, n) => ({ value: n, label: String(n) }));
+  session.select('Thralls (allies)', allyCounts(), () => settings.thralls, (n) => allies(n, Math.min(settings.swabbies, MAX_ALLIES - n)), { disabled: () => running || !settings.opponents });
+  session.select('Skilled swabbies (allies)', allyCounts(), () => settings.swabbies, (n) => allies(Math.min(settings.thralls, MAX_ALLIES - n), n), { disabled: () => running || !settings.opponents });
   session.note(() => {
     const sword = SWORD_NAMES[settings.sword[0]];
     const speed = `${Math.round(ROW_PX / startSpeed(settings.difficulty))}ms a row`;
     return settings.opponents
-      ? `${isPreset(settings) ? `AI skill ${settings.skill}` : 'Custom opponents'} · starting speed ${speed} · your ${sword.toLowerCase()} (Settings tab)`
+      ? `Skill: cultists ${settings.cultistSkill}, homunculi ${settings.homunculusSkill}, thralls ${settings.thrallSkill}, swabbies ${settings.swabbieSkill} · starting speed ${speed} · your ${sword.toLowerCase()} (Settings tab)`
       : `Starting speed ${speed} · your ${sword.toLowerCase()} (Settings tab)`;
   });
-  session.button('Start', () => (running ? stop() : start()), {
-    variant: 'primary', disabled: () => !!replays?.isPlaying, label: () => (running ? 'Stop' : finished ? 'Fight again' : 'Start'),
+  // Starting while a replay is open closes it and starts a fight of your own.
+  session.button('Start', () => {
+    if (replays.isPlaying) {
+      replays.stop();
+      if (!replays.isPlaying) start();
+    } else if (running) stop();
+    else start();
+  }, {
+    variant: 'primary', label: () => (replays?.isPlaying ? 'Start' : running ? 'Stop' : finished ? 'Fight again' : 'Start'),
   });
   session.button('View stats', () => { showResults = !showResults; }, {
     hidden: () => !finished || !match?.result, label: () => (showResults ? 'View board' : 'View stats'),
@@ -685,30 +786,36 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
   panel.settings.group('Opponent screens').toggle('Hide opponent screens', () => hideOpponents, (on) => { hideOpponents = on; store.set('hideOpponents', on); }, {
     title: 'Shows red boxes where an opponent has pieces, instead of the pieces themselves.',
   });
+  panel.settings.group('Opponent screens').toggle('Show attack queues', () => showQueues, (on) => { showQueues = on; store.set('showQueues', on); }, {
+    title: "Replaces each enemy's name with the attacks waiting to land on it and how many pieces they hold, as attacks:pieces (5:30 is five attacks of 30 pieces).",
+  });
   const off = { disabled: () => running };
   const foes = panel.settings.group('Opponents');
   foes.select('Opponent type', [
     { value: 'game', label: 'Ingame' },
     { value: 'tally', label: 'Experimental' },
   ] as Option<'tally' | 'game'>[], () => settings.opponentType, (t) => { settings.opponentType = t; save(); }, off);
-  foes.range('AI skill', () => settings.skill, (v) => { settings.skill = v; settings.ai = skillStyle(v); settings.gameAi = gameSkillStyle(v); save(); }, { ...off, min: 0, max: 10 });
-  foes.note(() => isPreset(settings)
-    ? 'AI skill sets everything below; change any of it to make your own.'
-    : 'Custom: AI skill sets everything below back to its preset.');
+  // Each kind of pirate has its own skill, 0 to 100, which sets how much its breakers destroy.
+  const skillLabels: Record<(typeof SKILLS)[number], string> = { cultistSkill: 'Cultist skill', homunculusSkill: 'Homunculus skill', thrallSkill: 'Thrall skill', swabbieSkill: 'Skilled swabbie skill' };
+  for (const k of SKILLS) {
+    foes.range(skillLabels[k], () => settings[k], (v) => { settings[k] = v; save(); }, { ...off, min: 0, max: 100,
+      title: "0 to 100, as the game's own pirates. It sets how much of its colour a breaker destroys (the game's table has a value at every 10, blended between) and, for Ingame, the chain chance." });
+  }
+  foes.note(() => {
+    const at = (skill: number) => {
+      const st = styleFor(settings, skill);
+      return settings.opponentType === 'game'
+        ? `${st.game.baseDestroy}-${st.game.maxDestroy}% destroyed, ${st.game.chainChance}% chained`
+        : `${st.tally.breakAverage}% cleared, height x${st.tally.heightBoost}, stores ${st.tally.storeChance}%, combo ${st.tally.comboMax}`;
+    };
+    return `Cultists: ${at(settings.cultistSkill)}. Homunculi: ${at(settings.homunculusSkill)}. Thralls: ${at(settings.thrallSkill)}. Skilled swabbies: ${at(settings.swabbieSkill)}.`;
+  });
   const ai = (change: (a: NpcStyle) => void) => { change(settings.ai); save(); };
   const tallyOff = { disabled: () => running, hidden: () => settings.opponentType !== 'tally' };
   foes.number('Time per pair (ms)', () => settings.ai.pairMs, (v) => ai((a) => { a.pairMs = v; }), { ...tallyOff, min: 50, max: 20000, step: 50,
     title: 'How fast an opponent plays: how often it is dealt a pair.' });
-  foes.range('Colour cleared (%)', () => settings.ai.breakAverage, (v) => ai((a) => { a.breakAverage = v; }), { ...tallyOff, min: 0, max: 100,
-    title: 'How much of its colour a breaker clears on an empty board, on average.' });
   foes.range('Variation (±%)', () => settings.ai.variation, (v) => ai((a) => { a.variation = v; }), { ...tallyOff, min: 0, max: 50,
     title: 'How far a clear varies from that, either way.' });
-  foes.number('Height multiplier', () => settings.ai.heightBoost, (v) => ai((a) => { a.heightBoost = v; }), { ...tallyOff, min: 0, max: 10, step: 0.1,
-    title: 'How much more a breaker clears on a full board than an empty one, rising with the board: 2 doubles it at the top, 1 keeps it the same.' });
-  foes.range('Stores breakers (%)', () => settings.ai.storeChance, (v) => ai((a) => { a.storeChance = v; }), { ...tallyOff, min: 0, max: 100,
-    title: 'The chance a breaker is kept on its board to go off with its next clear.' });
-  foes.number('Combo (stored breakers)', () => settings.ai.comboMax, (v) => ai((a) => { a.comboMax = v; }), { ...tallyOff, min: 0, max: 20,
-    title: 'How many stored breakers it can keep and use with one clear, each the next link of a chain.' });
   foes.range('Strikes vs sprinkles (%)', () => settings.ai.strikeShare, (v) => ai((a) => { a.strikeShare = v; }), { ...tallyOff, min: 0, max: 100,
     formatValue: (v) => (v === 0 ? 'all sprinkles' : v === 100 ? 'all strikes' : `${v}% strikes`), outputWidth: 13,
     title: 'Its style: how much of each clear it sends as swords, the rest as sprinkles. 50 is an even mix.' });
@@ -718,14 +825,8 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
   const gai = (change: (a: GameStyle) => void) => { change(settings.gameAi); save(); };
   foes.number('Time per pair (ms)', () => settings.gameAi.pairMs, (v) => gai((a) => { a.pairMs = v; }), { ...gameOff, min: 50, max: 20000, step: 50,
     title: 'How fast an opponent plays when you are not targeting it: how often it is dealt a pair.' });
-  foes.range('Least destroyed (%)', () => settings.gameAi.baseDestroy, (v) => gai((a) => { a.baseDestroy = v; }), { ...gameOff, min: 0, max: 100,
-    title: "The least of its colour a breaker destroys: the game's base destruction for the skill level." });
-  foes.range('Most destroyed (%)', () => settings.gameAi.maxDestroy, (v) => gai((a) => { a.maxDestroy = v; }), { ...gameOff, min: 0, max: 100,
-    title: "The most of its colour a breaker destroys: the game's maximum destruction for the skill level. Each clear is somewhere in between." });
-  foes.range('Chain chance (%)', () => settings.gameAi.chainChance, (v) => gai((a) => { a.chainChance = v; }), { ...gameOff, min: 0, max: 100,
-    title: "The chance a clear is sent as a chained one: a Double, with swords twice as long and twice the sprinkles. A breaker only ever clears its own colour. The game's is 40% at skill 10." });
   foes.range('Slower when targeted (%)', () => settings.gameAi.targetedSlowdown, (v) => gai((a) => { a.targetedSlowdown = v; }), { ...gameOff, min: 0, max: 300, step: 5,
-    title: 'How much slower an opponent plays while you are targeting it. The game slows an AI from 1 targeter, and most at 4.' });
+    title: 'How much slower an AI plays for each pirate attacking it, up to 4. The game slows an AI from 1 targeter, and most at 4.' });
   foes.range('Strikes vs sprinkles (%)', () => settings.gameAi.strikeShare, (v) => gai((a) => { a.strikeShare = v; }), { ...gameOff, min: 0, max: 100,
     formatValue: (v) => (v === 0 ? 'all sprinkles' : v === 100 ? 'all strikes' : `${v}% strikes`), outputWidth: 13,
     title: 'Its style: how much of each clear it sends as swords, the rest as sprinkles. 50 is an even mix.' });
@@ -739,7 +840,7 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
 
   const swordOptions: Option<number>[] = PLAIN_SWORDS.map((t) => ({ value: t, label: SWORD_NAMES[t] }));
   const colourOptions: Option<number>[] = SWORD_COLOURS.map((name, i) => ({ value: i, label: name }));
-  for (const [title, which] of [['Your sword', 'sword'], ["Opponents' sword", 'enemySword']] as const) {
+  for (const [title, which] of [['Your sword', 'sword']] as const) {
     const g = panel.settings.group(title);
     g.select('Sword', swordOptions, () => settings[which][0], (t) => { settings[which] = [t, settings[which][1], settings[which][2]]; save(); }, { disabled: () => running });
     g.select('Colour 1', colourOptions, () => settings[which][1], (c) => { settings[which] = [settings[which][0], c, settings[which][2]]; save(); }, { disabled: () => running || settings[which][0] === 127 });
@@ -748,12 +849,12 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
   panel.settings.group('Reset').button('Reset to defaults', () => { settings = structuredClone(DEFAULTS); save(); }, { disabled: () => running });
 
   const replaySettingsCodec: ReplaySettingsCodec = {
-    currentVersion: 4,
+    currentVersion: 6,
     simulatorVersion: 2,
     // Earlier recordings had an opponent that played the board, so they can't be replayed.
     migrate: (version, value) => {
-      const upgraded = version === 3 ? upgrade(value) : value;
-      return (version === 3 || version === 4) && validSettings(upgraded) ? upgraded : null;
+      const upgraded = version < 6 ? upgrade(value) : value;
+      return version >= 3 && version <= 6 && validSettings(upgraded) ? upgraded : null;
     },
   };
   let savedSettings: Settings | null = null;

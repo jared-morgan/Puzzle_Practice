@@ -494,6 +494,8 @@ export class ReplayRecorder {
   }
   cancel(): void { this.recording = null; this.pendingMouse = null; }
   get isPlaying(): boolean { return !!this.playback || this.restoring; }
+  /** Closes the replay being watched, e.g. when the player starts a game of their own. */
+  stop(): void { if (this.playback || this.loading) this.stopPlayback(); }
   get isPaused(): boolean { return !!this.playback?.paused; }
   get isSeeking(): boolean { return this.seeking; }
   get isAdvancing(): boolean { return this.advancing; }

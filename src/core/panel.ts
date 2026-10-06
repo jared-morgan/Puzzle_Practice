@@ -3,12 +3,13 @@
 // host calls `sync()` after every frame, so controls follow the game's state (values, disabled,
 // hidden) without the puzzle pushing updates.
 //
-// Play, Settings and History are always available, followed by mode, clock and main score.
+// Play, Settings and History are always available.
 //
-//   Shared    tabs, session choices (Mode), clock, then main score.
-//   Play      Start / Stop and any other controls that matter during a game.
+//   Play      session choices (Mode) with Start / Stop, the clock and main score, then any other
+//             controls that matter during a game.
 //   Settings  everything chosen before a game: the rest of the game's options, then Look and
 //             Sound last.
+//   History   past games and replays only.
 //
 //   panel.clock(() => (timed ? { label: 'Time left', ms: left, countdown: true } : null));
 //   const session = panel.session();
@@ -205,9 +206,9 @@ export class Panel {
       p.tab.classList.toggle('is-active', on);
       p.tab.setAttribute('aria-selected', String(on));
     }
-    const settingsOpen = name === 'Settings';
-    this.sessionElement.hidden = settingsOpen;
-    this.liveElement.hidden = settingsOpen;
+    // Session choices, Start, the clock and the score belong to Play; History shows only history.
+    this.sessionElement.hidden = name !== 'Play';
+    this.liveElement.hidden = name !== 'Play';
     this.sync();
   }
 
@@ -227,12 +228,12 @@ export class Panel {
     return this.play.group(title, options);
   }
 
-  /** Session controls follow the tabs and precede the timer and main score. */
+  /** Session controls follow the tabs on the Play tab and precede the timer and main score. */
   session(title?: string, options: GroupOptions = {}): Group {
     return this.sessionPage.group(title, options);
   }
 
-  /** The main score stays visible when browsing Settings or History. */
+  /** The main score, on the Play tab. */
   score(title = 'Score', options: GroupOptions = {}): Group {
     return this.live.group(title, options);
   }

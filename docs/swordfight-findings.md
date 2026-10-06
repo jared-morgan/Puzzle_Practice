@@ -14,7 +14,10 @@ choice for each of these so the puzzle plays; each one is easy to change.
 1. **How fast the pair falls at the start.** The game starts it at `0.01 x (difficulty + 1)`
    pixels per ms (rows are 40px), where the server sends the difficulty. Difficulty 0 is 4
    seconds a row and 9 is 400ms. I don't know which difficulty real fights use, or whether it
-   depends on the opponent. **Default here: 5, which is 667ms a row.** It's a setting.
+   depends on the opponent. Nothing in the game's files sets it for swordfights: the other puzzles
+   have difficulty levels 0 to 8 that players pick in their options (capped by experience), but
+   Swordfight isn't one of them. **Default here: 1, which is 2 seconds a row, from Jared's memory of
+   the game.** The setting offers 0 (4 seconds) to 9 (400ms).
 2. **How pairs are dealt.** The server sends the pieces, six pairs at a time. I don't know the
    colour odds, how often a breaker comes, or whether everyone in a fight gets the same pairs.
    **Here: each piece is one of the four colours at random, 12.5% are breakers (a setting), and
@@ -36,8 +39,8 @@ choice for each of these so the puzzle plays; each one is easy to change.
    to pick the column an upright sword starts in and which way it looks for room. I give them
    random ids, so placement looks varied, but real ids may follow a pattern.
 6. **How the game's own opponents play.** Their AI is on the server. The game's settings object
-   tells us a little: there's an AI skill level from 0 to 10, a "destruction percentage" per
-   skill level (base 7% to 60%, maximum 10% to 70%), a 40% chance that a skill-10 AI chains a
+   tells us a little: there's an AI skill level, a "destruction percentage" for skill 0, 10, 20 ... 100
+   (base 7% to 60%, maximum 10% to 70%), a 40% chance that a skill-100 AI chains a
    strike block, and AIs play more slowly once 1 to 4 players are targeting them. So the real AI
    is a dice roll on how much of its board it destroys, not a player.
    **Here both opponent types work that way.** The **Experimental** type: they don't play the puzzle and never fuse blocks.
@@ -57,16 +60,27 @@ choice for each of these so the puzzle plays; each one is easy to change.
    The default opponent type, **Ingame**, uses those values directly: each breaker
    destroys a random share of its own colour (only that colour) between the base and maximum
    destruction for its skill, sends that clear as a chained one (a Double) at the chain chance (40%
-   at skill 10, scaled by skill), and plays more slowly while you target it (25% by default, a guess at one
+   at skill 100, scaled by skill), and plays more slowly while you target it (25% by default, a guess at one
    of the four targeter steps). It plays a pair every 3 seconds when not targeted, at any skill.
-7. **Who opponents attack.** With several opponents, they all attack you.
+7. **Who opponents attack.** Each AI picks a random pirate on the other side, and picks again when
+   that one is knocked out. Thralls and skilled swabbies fight on your side.
 8. **Scores and ratings.** The game never scores a fight on your screen. Here the main score is damage sent
    (sprinkles plus each sword's squares), with your wins and losses per setting. Which number
    would you like to practise against?
 9. **Sounds are Ogg files**, straight from the game. They're being converted to MP3 for every
    puzzle separately.
-10. **Smaller looks.** The game shows each pirate's face and recolours the sword icons to the
-    sword's colours; I show names and the plain icons. The incoming-strike sparks and the piece
+10. **Faces and names.** Faces are put together from the game's face parts and recoloured with its
+    skin, hair and dye colours, picked at random: cultists wear the cultist face paint (women add the
+    top knot), homunculi are the homunculus face, thralls are zombies in the enthralled mask, and
+    skilled swabbies wear the mercenary head and shako. Knocked-out cultists, homunculi and you show
+    the passed-out face. Names come from the game's name lists: "{prefix} Cultist", "{prefix}
+    Homunculus", "{prefix} Zombie" for thralls (the game also names a thrall "{owner}'s Thrall"),
+    and a first name and surname for skilled swabbies. Which parts the game's own cultists and
+    swabbies wear is my reading of the part names. Names are drawn as the game draws them over a
+    face: 10pt, outlined in black, yellow, with skilled swabbies in red (role 12).
+    The game recolours the sword icons to the sword's colours; I show the plain icons. Hovering a sword shows its name
+    and colours. A toggle (Settings, Opponent screens) replaces enemies' names with the attacks
+    waiting to land on them, as attacks:pieces; the game doesn't show this. The incoming-strike sparks and the piece
     explosions are close copies, not exact.
 11. **Not built yet:** Duelling (the game has it, with a second full-size board), and the
     special seas: Atlantean (aqua pieces), Haunted (purple pieces that turn to metal), sanguine

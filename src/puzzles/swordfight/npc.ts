@@ -36,17 +36,27 @@ export interface NpcStyle {
   pairsPerAttack: number;
 }
 
-/** The fight's AI skill levels, 0-10: the least and most of its board an opponent destroys. */
+/** The least and most of its board an opponent destroys at AI skill 0, 10, 20 ... 100. */
 const BASE_DESTROY = [0.07, 0.08, 0.13, 0.18, 0.24, 0.3, 0.38, 0.43, 0.5, 0.55, 0.6];
 const MAX_DESTROY = [0.1, 0.25, 0.37, 0.47, 0.52, 0.6, 0.63, 0.65, 0.69, 0.69, 0.7];
 
-export function skillStyle(skill: number): NpcStyle {
+/** A destruction table's value at any skill from 0 to 100, blending the entries either side. */
+export function destroyAt(table: readonly number[], skill: number): number {
+  const at = Math.max(0, Math.min(100, skill)) / 10;
+  const below = Math.floor(at);
+  const above = Math.min(below + 1, table.length - 1);
+  return table[below] + (table[above] - table[below]) * (at - below);
+}
+
+/** The experimental opponent's preset for an AI skill from 0 to 100. */
+export function skillStyle(aiSkill: number): NpcStyle {
+  const skill = aiSkill / 10;
   return {
-    pairMs: 2000 - skill * 125,
-    breakAverage: Math.round(100 * BASE_DESTROY[skill]),
+    pairMs: Math.round(2000 - skill * 125),
+    breakAverage: Math.round(100 * destroyAt(BASE_DESTROY, aiSkill)),
     variation: 15,
-    heightBoost: Math.round((MAX_DESTROY[skill] / BASE_DESTROY[skill]) * 10) / 10,
-    storeChance: 10 + skill * 4,
+    heightBoost: Math.round((destroyAt(MAX_DESTROY, aiSkill) / destroyAt(BASE_DESTROY, aiSkill)) * 10) / 10,
+    storeChance: Math.round(10 + skill * 4),
     comboMax: Math.floor(skill / 3),
     strikeShare: 50,
     pairsPerAttack: 3,
@@ -84,6 +94,11 @@ abstract class TallyNpc<S extends BaseStyle> {
 
   constructor(readonly index: number, readonly style: S, protected readonly rng: PyRandom, protected readonly hooks: NpcHooks, started: number) {
     this.nextAt = started + style.pairMs;
+  }
+
+  /** Attacks waiting to land on it, and how many pieces they hold between them. */
+  get queue(): { attacks: number; blocks: number } {
+    return { attacks: this.incoming.length, blocks: this.incoming.reduce((n, a) => n + a, 0) };
   }
 
   receive(shaft: Shaft): void {
@@ -346,20 +361,20 @@ export interface GameStyle {
   maxDestroy: number;
   /** Chance a clear is sent as a chained one (a Double, so its swords are twice as long and sprinkles double), in percent. */
   chainChance: number;
-  /** How much slower it plays while you target it, in percent. */
+  /** How much slower it plays for each pirate attacking it (up to 4), in percent. */
   targetedSlowdown: number;
   strikeShare: number;
   pairsPerAttack: number;
 }
 
-/** The game's own numbers at an AI skill level: destruction, chain chance at skill 10 (40%), slowing when targeted. */
+/** The game's own numbers at an AI skill from 0 to 100: destruction, chain chance (40% at 100), slowing when targeted. */
 export function gameSkillStyle(skill: number): GameStyle {
   return {
     // About one pair every 3 seconds with nobody targeting it, at every skill.
     pairMs: 3000,
-    baseDestroy: Math.round(BASE_DESTROY[skill] * 100),
-    maxDestroy: Math.round(MAX_DESTROY[skill] * 100),
-    chainChance: Math.round(40 * skill / 10),
+    baseDestroy: Math.round(destroyAt(BASE_DESTROY, skill) * 100),
+    maxDestroy: Math.round(destroyAt(MAX_DESTROY, skill) * 100),
+    chainChance: Math.round((40 * skill) / 100),
     // The game starts slowing an AI at 1 targeter and is slowest at 4: one of 4 steps of up to double.
     targetedSlowdown: 25,
     strikeShare: 50,
@@ -372,11 +387,12 @@ export function gameSkillStyle(skill: number): GameStyle {
  * own colour only, and at the chain chance that clear is sent as a chained one (a Double).
  */
 export class GameNpc extends TallyNpc<GameStyle> {
-  /** Whether you're targeting it, which slows it down. */
-  targeted: () => boolean = () => false;
+  /** How many pirates are attacking it, which slows it down. */
+  targeted: () => number = () => 0;
 
   protected interval(): number {
-    return this.style.pairMs * (this.targeted() ? 1 + this.style.targetedSlowdown / 100 : 1);
+    // Slower for each pirate attacking it, up to the game's 4 targeters.
+    return this.style.pairMs * (1 + (this.style.targetedSlowdown / 100) * Math.min(this.targeted(), 4));
   }
 
   protected breakPercent(): number {
