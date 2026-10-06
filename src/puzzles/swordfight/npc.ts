@@ -162,6 +162,11 @@ abstract class TallyNpc<S extends BaseStyle> {
    */
   protected abstract breaker(c: number, breaks: number[], plain: number[]): void;
 
+  /** Which link of a chain the ith break of a pair is: the nth break is the nth link. */
+  protected link(i: number): number {
+    return i + 1;
+  }
+
   /** How full the board is, 0 to 1. */
   protected fill(): number {
     return this.board.cells.filter((p) => p !== EMPTY).length / (W * H);
@@ -224,7 +229,7 @@ abstract class TallyNpc<S extends BaseStyle> {
     }
     this.stats.shattered += breaks.reduce((n, b) => n + b, 0);
     this.stats.bestChain = Math.max(this.stats.bestChain, breaks.length);
-    breaks.forEach((cleared, i) => this.send(cleared, i + 1));
+    breaks.forEach((cleared, i) => this.send(cleared, this.link(i)));
     this.checkOut();
     if (!this.out) this.landIncoming();
   }
@@ -339,7 +344,7 @@ export interface GameStyle {
   /** The least and most of its colour a breaker destroys, in percent (the game's base and maximum destruction). */
   baseDestroy: number;
   maxDestroy: number;
-  /** Chance a clear chains into another colour, in percent; rolled again for each further link. */
+  /** Chance a clear is sent as a chained one (a Double, so its swords are twice as long and sprinkles double), in percent. */
   chainChance: number;
   /** How much slower it plays while you target it, in percent. */
   targetedSlowdown: number;
@@ -364,7 +369,7 @@ export function gameSkillStyle(skill: number): GameStyle {
 
 /**
  * The game-numbers opponent: each breaker destroys between the base and maximum destruction of its
- * colour, then may chain into the other colours it holds, one more each time the chain chance comes up.
+ * own colour only, and at the chain chance that clear is sent as a chained one (a Double).
  */
 export class GameNpc extends TallyNpc<GameStyle> {
   /** Whether you're targeting it, which slows it down. */
@@ -379,15 +384,17 @@ export class GameNpc extends TallyNpc<GameStyle> {
     return Math.min(baseDestroy, maxDestroy) + this.rng.random() * Math.abs(maxDestroy - baseDestroy);
   }
 
+  /** Each break's chain link, rolled as it's made. */
+  private links: number[] = [];
+
+  /** A breaker clears only its own colour; the chain chance makes that clear count as a Double. */
   protected breaker(c: number, breaks: number[]): void {
+    if (!breaks.length) this.links = [];
     breaks.push(this.shatter(c) + 1);
-    const used = new Set([c]);
-    while (this.rng.random() * 100 < this.style.chainChance) {
-      const others = [0, 1, 2, 3].filter((o) => !used.has(o) && this.count(o) > 0);
-      if (!others.length) break;
-      const next = others[this.rng.randintN(0, others.length - 1)];
-      used.add(next);
-      breaks.push(this.shatter(next));
-    }
+    this.links.push(this.rng.random() * 100 < this.style.chainChance ? 2 : 1);
+  }
+
+  protected link(i: number): number {
+    return this.links[i] ?? 1;
   }
 }

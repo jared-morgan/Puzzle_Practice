@@ -102,11 +102,17 @@ describe("the game-numbers opponents", () => {
     }
   });
 
-  it('chain into their other colours', () => {
-    const pairs: Array<[number, number]> = [...Array.from({ length: 10 }, (): [number, number] => [0, 1]), [BREAKER, 2]];
-    const npc = new GameNpc(1, { ...gameSkillStyle(5), pairMs: 100, chainChance: 100 }, new PyRandom(1), { nextPair: () => pairs.shift()!, attack: () => {} }, 0);
-    npc.update(1100);
-    expect(npc.stats.bestChain).toBe(2);
+  it("clear only the breaker's colour, sending some clears as chained", () => {
+    const sent: number[] = [];
+    for (const chain of [0, 100]) {
+      const pairs: Array<[number, number]> = [...Array.from({ length: 10 }, (): [number, number] => [0, 1]), [BREAKER, 2]];
+      const style = { ...gameSkillStyle(5), pairMs: 100, baseDestroy: 100, maxDestroy: 100, chainChance: chain, strikeShare: 0 };
+      const npc = new GameNpc(1, style, new PyRandom(1), { nextPair: () => pairs.shift()!, attack: (a) => sent.push(a.sprinkles) }, 0);
+      npc.update(1100);
+      expect(npc.board.cells.filter((p) => p === 1).length).toBe(10);
+      expect(npc.board.cells.filter((p) => p === 0).length).toBe(0);
+    }
+    expect(sent[1]).toBe(sent[0] * 2);
   });
 
   it('play more slowly while targeted', () => {

@@ -723,7 +723,7 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
   foes.range('Most destroyed (%)', () => settings.gameAi.maxDestroy, (v) => gai((a) => { a.maxDestroy = v; }), { ...gameOff, min: 0, max: 100,
     title: "The most of its colour a breaker destroys: the game's maximum destruction for the skill level. Each clear is somewhere in between." });
   foes.range('Chain chance (%)', () => settings.gameAi.chainChance, (v) => gai((a) => { a.chainChance = v; }), { ...gameOff, min: 0, max: 100,
-    title: "The chance a clear chains into another of its colours, rolled again for each further link. The game's is 40% at skill 10." });
+    title: "The chance a clear is sent as a chained one: a Double, with swords twice as long and twice the sprinkles. A breaker only ever clears its own colour. The game's is 40% at skill 10." });
   foes.range('Slower when targeted (%)', () => settings.gameAi.targetedSlowdown, (v) => gai((a) => { a.targetedSlowdown = v; }), { ...gameOff, min: 0, max: 300, step: 5,
     title: 'How much slower an opponent plays while you are targeting it. The game slows an AI from 1 targeter, and most at 4.' });
   foes.range('Strikes vs sprinkles (%)', () => settings.gameAi.strikeShare, (v) => gai((a) => { a.strikeShare = v; }), { ...gameOff, min: 0, max: 100,
