@@ -356,7 +356,7 @@ export interface GameStyle {
   maxDestroy: number;
   /** Chance a clear is sent as a chained one (a Double, so its swords are twice as long and sprinkles double), in percent. */
   chainChance: number;
-  /** How much slower it plays while you target it, in percent. */
+  /** How much slower it plays for each pirate attacking it (up to 4), in percent. */
   targetedSlowdown: number;
   strikeShare: number;
   pairsPerAttack: number;
@@ -382,11 +382,12 @@ export function gameSkillStyle(skill: number): GameStyle {
  * own colour only, and at the chain chance that clear is sent as a chained one (a Double).
  */
 export class GameNpc extends TallyNpc<GameStyle> {
-  /** Whether you're targeting it, which slows it down. */
-  targeted: () => boolean = () => false;
+  /** How many pirates are attacking it, which slows it down. */
+  targeted: () => number = () => 0;
 
   protected interval(): number {
-    return this.style.pairMs * (this.targeted() ? 1 + this.style.targetedSlowdown / 100 : 1);
+    // Slower for each pirate attacking it, up to the game's 4 targeters.
+    return this.style.pairMs * (1 + (this.style.targetedSlowdown / 100) * Math.min(this.targeted(), 4));
   }
 
   protected breakPercent(): number {

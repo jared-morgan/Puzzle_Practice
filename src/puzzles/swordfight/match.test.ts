@@ -5,7 +5,7 @@ import { attackFor, swordFor } from './attack';
 import { Board, BREAKER, findClear } from './board';
 import { Match, type MatchSettings } from './match';
 
-const settings: MatchSettings = { cultists: 1, homunculi: 0, opponents: 1, aiSkill: 60, opponentType: 'tally', ai: skillStyle(60), gameAi: gameSkillStyle(60), difficulty: 5, breakers: 12.5, sword: [2, 0, 0] };
+const settings: MatchSettings = { cultists: 1, homunculi: 0, opponents: 1, thralls: 0, swabbies: 0, cultistSkill: 60, homunculusSkill: 60, thrallSkill: 50, swabbieSkill: 50, opponentType: 'tally', ai: skillStyle(60), gameAi: gameSkillStyle(60), difficulty: 5, breakers: 12.5, sword: [2, 0, 0] };
 
 describe('attacks (YPPedia)', () => {
   it('turns blocks into swords', () => {
@@ -117,7 +117,7 @@ describe("the game-numbers opponents", () => {
 
   it('play more slowly while targeted', () => {
     const npc = new GameNpc(1, { ...gameSkillStyle(50), pairMs: 1000, targetedSlowdown: 100 }, new PyRandom(1), { nextPair: () => [0, 1], attack: () => {} }, 0);
-    npc.targeted = () => true;
+    npc.targeted = () => 1;
     npc.update(10_000);
     expect(npc.stats.pairs).toBe(5);
   });
@@ -158,5 +158,20 @@ describe('AI skill from 0 to 100', () => {
     expect(gameSkillStyle(70)).toMatchObject({ baseDestroy: 43, maxDestroy: 65, chainChance: 28 });
     expect(gameSkillStyle(65)).toMatchObject({ baseDestroy: 41, maxDestroy: 64, chainChance: 26 });
     expect(gameSkillStyle(100)).toMatchObject({ baseDestroy: 60, maxDestroy: 70, chainChance: 40 });
+  });
+});
+
+describe('allies', () => {
+  it('fight on your side, attack the enemies and can win without you', () => {
+    const m = new Match({ ...settings, cultists: 1, opponents: 1, thralls: 2, swabbies: 1, opponentType: 'game' }, 21, 0);
+    expect(m.names).toEqual(['You', 'Thrall 1', 'Thrall 2', 'Skilled swabbie', 'Cultist']);
+    expect(m.teams).toEqual([0, 0, 0, 0, 1]);
+    // Every ally targets the cultist; the cultist targets someone on your side.
+    expect(m.targets.slice(1, 4)).toEqual([4, 4, 4]);
+    expect(m.teams[m.targets[4]]).toBe(0);
+    let now = 0;
+    while (!m.result && now < 20 * 60_000) { now += 50; m.update(now); }
+    expect(m.result).not.toBeNull();
+    expect(m.fighters[4].stats.received).toBeGreaterThan(0);
   });
 });
