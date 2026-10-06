@@ -169,6 +169,8 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
   let match: Match | null = null;
   let running = false;
   let finished = false;
+  /** The fight's stats cover the board only once asked for; until then the board stays on show. */
+  let showResults = false;
   let startedAt = 0;
   let messages: Message[] = [];
   let hideOpponents = store.get<boolean>('hideOpponents', true);
@@ -196,6 +198,7 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
     });
     running = true;
     finished = false;
+    showResults = false;
     startedAt = now;
     play('fanfare');
   }
@@ -574,6 +577,9 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
   session.button('Start', () => (running ? stop() : start()), {
     variant: 'primary', disabled: () => !!replays?.isPlaying, label: () => (running ? 'Stop' : finished ? 'Fight again' : 'Start'),
   });
+  session.button('View stats', () => { showResults = !showResults; }, {
+    hidden: () => !finished || !match?.result, label: () => (showResults ? 'View board' : 'View stats'),
+  });
   const targeting = () => running && !!match && settings.opponents > 1;
   panel.group(undefined, { hidden: () => !targeting() }).note(() => targeting() ? `Attacking ${match!.names[match!.target]}: press A / S or click a pirate on the right to change.` : '');
 
@@ -582,7 +588,7 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
     ['Damage sent', match ? String(match.player.stats.sent) : '0', String(recordNow().best || '—')],
     ...(settings.opponents ? [['Wins', String(recordNow().wins), `of ${recordNow().wins + recordNow().losses}`]] : []),
   ]);
-  panel.results(() => finished && match && match.result ? {
+  panel.results(() => finished && showResults && match && match.result ? {
     title: settings.opponents ? (match.result === 'won' ? 'Ye be the victor!' : 'Ye be defeated!') : 'Practice results',
     rows: [
       ['Result', outcome()],
