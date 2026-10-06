@@ -8,9 +8,8 @@ Practice versions of Puzzle Pirates puzzles that run in the browser:
   sounds, with the Forage Simulator's puzzles, CI and Infinite (cursed isle) modes on top.
 - **Vampire Carp**: patch coffin holes with pentomino planks (the Vampire Lair's carpentry, rebuilt from the game).
 - **Blacksmithing**: strike squares to forge a sword, each piece deciding where you strike next.
-- **Swordfight (draft)**: fight 1–10 configurable TrainingBots or practise solo, using client sword
-  patterns and the cloned server's opponent settings. Includes seeded fights, targeting, score history
-  and replays. See [draft details](docs/swordfight-draft.md) for the current fidelity limits.
+- **Swordfight**: drop pairs, shatter them with breakers and fuse blocks into swords, against training
+  opponents or on your own (rebuilt from the game; see [what the client tells us](docs/swordfight-client-findings.md)).
 
 Play at [puzzle-practice.github.io/Puzzle_Practice](https://puzzle-practice.github.io/Puzzle_Practice/).
 

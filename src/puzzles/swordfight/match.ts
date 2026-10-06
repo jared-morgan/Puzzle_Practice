@@ -1,134 +1,162 @@
-import { TrainingBot, aiInterval, type AiSettings } from './ai';
-import { type Attack, attackSize, type Pair, type Piece, PieceStream, SwordBoard, W, H } from './logic';
-import { type Sword, swordPattern } from './patterns';
-import { JavaRandom } from './random';
+// A fight: you (fighter 0) against training opponents, or on your own. Deals the pairs, passes each
+// finished cascade's attack to its target, and decides when the fight is over. The game's server
+// does this part and isn't in the client, so the dealing and the timing of attacks are choices made
+// here (see docs/swordfight-client-findings.md).
+import { PyRandom } from '../../core/pyrandom';
+import { Bot, type BotStyle } from './ai';
+import type { Attack } from './attack';
+import { BREAKER } from './board';
+import { Fighter, type FighterHooks, type SoundName } from './fighter';
+import { type Shaft, type Strike, Sword } from './strikes';
 
-export interface Settings extends AiSettings {
-  enemies: number; sword: number; color1: number; color2: number; randomColors: boolean; mode: 'Fight' | 'Practice';
+export interface MatchSettings {
+  /** 0 is practice on your own. */
+  opponents: number;
+  /** 0-10, the client's AI skill level: a preset for `ai`. */
+  skill: number;
+  /** How the opponents play. */
+  ai: BotStyle;
+  /** The puzzle difficulty that sets the starting speed (0.01 x (difficulty + 1) pixels per ms). */
+  difficulty: number;
+  /** Chance a dealt piece is a breaker, in percent. */
+  breakers: number;
+  /** Your sword and the opponents' (type, primary colour, secondary colour). */
+  sword: [number, number, number];
+  enemySword: [number, number, number];
 }
-export const DEFAULTS: Settings = { speed: 0, clearChance: 35, comboChance: 0, breakAverage: 50,
-  enemies: 1, sword: 127, color1: 0, color2: 0, randomColors: false, mode: 'Fight' };
-export function validSettings(value: unknown): value is Settings {
-  if (!value || typeof value !== 'object') return false;
-  const s = value as Settings;
-  return [s.speed, s.clearChance, s.comboChance, s.breakAverage].every(n => Number.isInteger(n) && n >= 0 && n <= 100) &&
-    Number.isInteger(s.enemies) && s.enemies >= 1 && s.enemies <= 10 &&
-    [127, 6, 2, 9, 18, 17, 11, 12, 0].includes(s.sword) &&
-    [s.color1, s.color2].every(n => Number.isInteger(n) && n >= 0 && n < 8) && typeof s.randomColors === 'boolean' &&
-    ['Fight', 'Practice'].includes(s.mode);
+
+/** Each fighter gets the same pairs in the same order, from a generator seeded alike. */
+class Dealer {
+  private readonly rng: PyRandom;
+  private readonly queue: Array<[number, number]> = [];
+
+  constructor(seed: number, private readonly breakerChance: number) {
+    this.rng = new PyRandom(seed);
+  }
+
+  private piece(): number {
+    const c = this.rng.randintN(0, 3);
+    return this.rng.random() * 100 < this.breakerChance ? c | BREAKER : c;
+  }
+
+  private fill(): void {
+    while (this.queue.length < 2) this.queue.push([this.piece(), this.piece()]);
+  }
+
+  next(): [number, number] {
+    this.fill();
+    return this.queue.shift()!;
+  }
+
+  peek(): [number, number] {
+    this.fill();
+    return this.queue[0];
+  }
 }
-export interface Falling { pair: Pair; x: number; y: number; rotation: number; }
-const offsets = [[0, -1], [1, 0], [0, 1], [-1, 0]] as const;
+
+export interface MatchEvents {
+  sound?(name: SoundName | 'self_knocked_out' | 'opponent_knocked_out' | 'win' | 'lose' | 'fanfare', fighter: number): void;
+  message?(text: string, fighter: number): void;
+}
+
 export class Match {
-  readonly player = new SwordBoard();
-  readonly pieces: PieceStream;
-  readonly bots: TrainingBot[];
-  readonly swords: Sword[];
-  readonly patterns: number[][][];
-  incoming: Array<{ attack: Attack; seat: number; id: number }> = [];
-  falling: Falling | null = null;
-  next: Pair;
-  nextAi: number[];
-  nextFall = 400;
-  elapsed = 0;
-  target = 0;
-  pairs = 0;
-  cleared = 0;
-  sent = 0;
-  received = 0;
-  maxChain = 0;
-  lastChain = 0;
-  result: 'Won' | 'Lost' | 'Dismissed' | null = null;
-  private attackId = 0;
-  constructor(readonly settings: Settings, readonly seed: string) {
-    if (!validSettings(settings) || !/^-?\d{1,20}$/.test(seed)) throw new Error('Invalid Swordfight setup');
-    this.pieces = new PieceStream(seed);
-    const colors = new JavaRandom(BigInt(seed) ^ 0x434f4c4f5253n);
-    const count = settings.mode === 'Practice' ? 0 : settings.enemies;
-    this.bots = Array.from({ length: count }, (_, i) => new TrainingBot(seed, i + 1, settings));
-    this.swords = Array.from({ length: count + 1 }, (_, i) => ({ type: settings.sword,
-      color1: i && settings.randomColors ? colors.int(8) : settings.color1,
-      color2: i && settings.randomColors ? colors.int(8) : settings.color2 }));
-    this.patterns = this.swords.map(swordPattern);
-    this.nextAi = this.bots.map(() => aiInterval(settings.speed));
-    this.next = this.pieces.pair(); this.spawn();
-  }
-  private spawn(): void {
-    if (this.player.topOut()) { this.result = 'Lost'; this.falling = null; return; }
-    this.falling = { pair: this.next, x: 3, y: 0, rotation: 0 }; this.next = this.pieces.pair();
-    this.nextFall = this.elapsed + this.fallInterval();
-  }
-  private fallInterval(): number { return Math.max(160, 400 - Math.floor(this.pairs / 10) * 13); }
-  positions(falling = this.falling): Array<{ x: number; y: number; piece: Piece }> {
-    if (!falling) return [];
-    const [dx, dy] = offsets[falling.rotation];
-    return [{ x: falling.x, y: falling.y, piece: falling.pair[0] }, { x: falling.x + dx, y: falling.y + dy, piece: falling.pair[1] }];
-  }
-  private fits(f: Falling): boolean { return this.positions(f).every(p => p.x >= 0 && p.x < W && p.y < H && (p.y < 0 || !this.player.get(p.x, p.y))); }
-  move(dx: number): void {
-    if (!this.falling || this.result) return;
-    const next = { ...this.falling, x: this.falling.x + dx }; if (this.fits(next)) this.falling = next;
-  }
-  rotate(clockwise: boolean): void {
-    if (!this.falling || this.result) return;
-    for (const [dx, dy] of [[0, 0], [-1, 0], [1, 0], [0, -1]]) {
-      const next = { ...this.falling, rotation: (this.falling.rotation + (clockwise ? 1 : 3)) % 4,
-        x: this.falling.x + dx, y: this.falling.y + dy };
-      if (this.fits(next)) { this.falling = next; return; }
+  readonly fighters: Fighter[] = [];
+  readonly swords: Sword[] = [];
+  readonly bots: Bot[] = [];
+  readonly names: string[] = [];
+  /** Who you're attacking (TeamPuzzleController targets). */
+  target = 1;
+  result: 'won' | 'lost' | null = null;
+  endedAt = 0;
+  private readonly strikeIds: PyRandom;
+  private readonly shaftIds: number[] = [];
+  private readonly knockedOut = new Set<number>();
+
+  constructor(readonly settings: MatchSettings, readonly seed: number, readonly startedAt: number, private readonly events: MatchEvents = {}) {
+    this.strikeIds = new PyRandom(seed ^ 0x5f3759df);
+    const count = 1 + settings.opponents;
+    for (let i = 0; i < count; i++) {
+      const dealer = new Dealer(seed, settings.breakers);
+      const [type, primary, secondary] = i === 0 ? settings.sword : settings.enemySword;
+      this.swords.push(new Sword(type, primary, secondary));
+      this.names.push(i === 0 ? 'You' : `Bot ${i}`);
+      this.shaftIds.push(0);
+      const hooks: FighterHooks = {
+        sound: (name) => this.events.sound?.(name, i),
+        message: (text) => this.events.message?.(text, i),
+        attack: (attack) => this.send(i, attack),
+        nextPair: () => dealer.next(),
+        peekPair: () => dealer.peek(),
+        swordOf: (from) => this.swords[from] ?? null,
+      };
+      const fighter = new Fighter(i, settings.difficulty, hooks, startedAt);
+      this.fighters.push(fighter);
+      if (i > 0) this.bots.push(new Bot(fighter, settings.ai, new PyRandom(seed + i * 7919)));
     }
   }
-  drop(): void {
-    if (!this.falling || this.result) return;
-    while (this.fits({ ...this.falling, y: this.falling.y + 1 })) this.falling.y++;
-    this.lock();
+
+  get player(): Fighter {
+    return this.fighters[0];
   }
-  landing(): Falling | null {
-    if (!this.falling) return null;
-    const ghost = { ...this.falling }; while (this.fits({ ...ghost, y: ghost.y + 1 })) ghost.y++;
-    return ghost;
+
+  /** The opponents still standing. */
+  alive(): number[] {
+    return this.fighters.filter((f) => f.index > 0 && !f.out).map((f) => f.index);
   }
-  chooseTarget(seat: number): void { if (this.bots[seat] && !this.bots[seat].board.topOut()) this.target = seat; }
-  cycleTarget(direction: number): void {
-    for (let i = 1; i <= this.bots.length; i++) {
-      const seat = (this.target + direction * i + this.bots.length * i) % this.bots.length;
-      if (!this.bots[seat].board.topOut()) { this.target = seat; return; }
-    }
+
+  /** Steps the target through the opponents still in (target_next_player / target_prev_player). */
+  cycleTarget(step: number): void {
+    const alive = this.alive();
+    if (!alive.length) return;
+    const at = alive.indexOf(this.target);
+    this.target = alive[((at < 0 ? 0 : at + step) % alive.length + alive.length) % alive.length];
   }
-  private lock(): void {
-    const positions = this.positions();
-    if (positions.some(p => p.y < 0)) { this.result = 'Lost'; this.falling = null; return; }
-    this.player.age();
-    for (const p of positions) this.player.cells[p.y][p.x] = p.piece;
-    this.pairs++;
-    const clear = this.player.resolve(); this.cleared += clear.cleared; this.maxChain = Math.max(this.maxChain, clear.maxChain); this.lastChain = clear.maxChain;
-    for (const attack of clear.attacks) { const amount = attackSize(attack); this.sent += amount; this.bots[this.target]?.incoming.push(amount); }
-    const incoming = this.incoming.shift();
-    if (incoming) { this.received += attackSize(incoming.attack); this.player.receive(incoming.attack, this.patterns[incoming.seat + 1], incoming.id); }
-    this.spawn();
+
+  setTarget(index: number): void {
+    if (this.alive().includes(index)) this.target = index;
   }
-  advance(to: number): void {
+
+  private send(from: number, attack: Attack): void {
     if (this.result) return;
-    if (this.bots.length && this.bots.every(bot => bot.board.topOut())) {
-      this.result = 'Won'; this.falling = null; return;
-    }
-    to = Math.max(this.elapsed, to);
-    while (!this.result) {
-      const nextAi = Math.min(...this.nextAi.map((at, seat) => this.bots[seat].board.topOut() ? Infinity : at));
-      const next = Math.min(nextAi, this.nextFall); if (next > to) break;
-      this.elapsed = next;
-      if (nextAi <= this.nextFall) {
-        const seat = this.nextAi.findIndex((at, i) => at === next && !this.bots[i].board.topOut());
-        if (seat < 0) throw new Error('Invalid opponent schedule');
-        this.nextAi[seat] += aiInterval(this.settings.speed);
-        for (const attack of this.bots[seat].step()) if (attackSize(attack)) this.incoming.push({ attack, seat, id: this.attackId++ });
-        if (this.bots[this.target]?.board.topOut()) this.cycleTarget(1);
-        if (this.bots.every(bot => bot.board.topOut())) { this.result = 'Won'; this.falling = null; }
-      } else {
-        if (this.falling && this.fits({ ...this.falling, y: this.falling.y + 1 })) { this.falling.y++; this.nextFall += this.fallInterval(); }
-        else this.lock();
+    const to = from === 0 ? this.target : 0;
+    const target = this.fighters[to];
+    if (!target || target.out || to === from) return;
+    this.shaftIds[from] = (this.shaftIds[from] + 1) & 0xff;
+    const strikes: Strike[] = attack.swords.map(([width, height]) => ({
+      id: this.strikeIds.randintN(0, 255), width, height, x: 0, y: 0, orient: 0, pieces: [],
+    }));
+    const shaft: Shaft = { from, id: this.shaftIds[from], strikes, sprinkles: attack.sprinkles };
+    target.receive(shaft);
+  }
+
+  update(now: number): void {
+    // The fight ends with the boards as they are.
+    if (this.result) return;
+    for (const bot of this.bots) bot.update(now);
+    for (const f of this.fighters) f.update(now);
+    for (const f of this.fighters) {
+      if (f.out && !this.knockedOut.has(f.index)) {
+        this.knockedOut.add(f.index);
+        if (f.index === 0) {
+          this.events.message?.('Ye be knocked out!', 0);
+          this.events.sound?.('self_knocked_out', 0);
+        } else if (!this.result) {
+          if (f.index === this.target) this.events.message?.(`${this.names[f.index]} was knocked out!`, 0);
+          this.events.sound?.('opponent_knocked_out', 0);
+        }
       }
     }
-    if (!this.result) this.elapsed = to;
+    if (!this.alive().includes(this.target)) this.cycleTarget(1);
+    if (this.result) return;
+    if (this.player.out) this.finish('lost', now);
+    else if (this.settings.opponents > 0 && !this.alive().length) this.finish('won', now);
   }
-  dismiss(): void { if (!this.result) { this.result = 'Dismissed'; this.falling = null; } }
+
+  private finish(result: 'won' | 'lost', now: number): void {
+    this.result = result;
+    this.endedAt = now;
+    if (this.settings.opponents === 0) return;
+    this.events.message?.(result === 'won' ? 'Ye be the victor!' : 'Ye be defeated!', 0);
+    this.events.sound?.(result === 'won' ? 'win' : 'lose', 0);
+  }
 }
