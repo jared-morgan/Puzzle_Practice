@@ -33,7 +33,7 @@ function showLanding(): void {
     el(
       'a',
       { className: 'card', href: `#/${id}` },
-      ...(meta.thumbnail ? [el('img', { src: meta.thumbnail, alt: '', className: 'thumb' })] : []),
+      ...(meta.thumbnail ? [el('img', { src: meta.thumbnail, alt: '', className: 'thumb', width: 360, height: 270, decoding: 'async' })] : []),
       el('h2', {}, meta.title),
     ),
   );

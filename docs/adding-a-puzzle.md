@@ -24,7 +24,7 @@ This copies `src/puzzles/_template` (a small working Lights Out game) to
 | `credits` | Original authors, shown under the game. |
 | `order` | Position on the landing page (lower first). |
 | `width`, `height` | Canvas size in game pixels. Defaults to 800×600. Size it to the game alone; settings go in the panel. |
-| `thumbnail` | Card image: `import thumbnail from './thumbnail.jpg?url'`. |
+| `thumbnail` | Card image, 360×270 WebP: `import thumbnail from './thumbnail.webp?url'`. |
 
 `index.ts` default-exports a function that receives a `PuzzleContext` and returns `{ frame, dispose? }`.
 `frame(events)` runs up to 60 times a second, like a pygame main loop body with `clock.tick(60)`:

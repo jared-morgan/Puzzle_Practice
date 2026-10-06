@@ -1,5 +1,5 @@
 import type { PuzzleMeta } from '../../core/puzzle';
-import thumbnail from './thumbnail.jpg?url';
+import thumbnail from './thumbnail.webp?url';
 
 export default {
   title: 'Vampire Carp',
