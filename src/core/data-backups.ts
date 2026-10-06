@@ -165,6 +165,9 @@ async function importDirectory(directory: FileSystemDirectoryHandle, backup: Dir
 export async function initializeDataBackups(): Promise<void> {
   if (initialized) return;
   initialized = true;
+  // Ask the browser to keep scores and replays under storage pressure (Safari otherwise drops
+  // site data after a week without a visit). Browsers may decline; nothing else depends on it.
+  void navigator.storage?.persist?.().catch(() => false);
   // Restore before enabling autosave so loading cannot overwrite its own source.
   await exclusive(async () => {
     try {

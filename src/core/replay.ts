@@ -347,7 +347,7 @@ export class ReplayRecorder {
       { value: 2, label: '2×' }, { value: 4, label: '4×' },
     ], () => this.replaySpeed, (speed) => {
       this.replaySpeed = speed; if (this.playback) this.playback.speed = speed;
-    }, { disabled: () => !this.playback });
+    });
     group.number('Jump to (s)', () => this.jumpSeconds, (seconds) => {
       this.jumpSeconds = Math.max(0, Math.min((this.currentTape()?.duration ?? 0) / 1000, seconds));
     }, { min: 0, step: 0.1, disabled: () => !this.tapes.length || this.loading });
