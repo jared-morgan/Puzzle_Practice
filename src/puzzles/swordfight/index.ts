@@ -72,14 +72,15 @@ const SOUND_FILES: Record<string, string[]> = {
 
 interface Settings extends MatchSettings {}
 
+/** Jared's settings from 6 October 2026. */
 const DEFAULTS: Settings = {
-  opponents: 1,
-  skill: 5,
-  ai: skillStyle(5),
+  opponents: 2,
+  skill: 10,
+  ai: { pairMs: 3000, breakAverage: 40, variation: 41, heightBoost: 1.5, storeChance: 23, comboMax: 3, strikeShare: 85, pairsPerAttack: 1 },
   difficulty: 5,
-  breakers: 12.5,
-  sword: [2, 0, 0],
-  enemySword: [6, 4, 2],
+  breakers: 18,
+  sword: [16, 0, 0],
+  enemySword: [16, 4, 2],
 };
 
 const OPPONENTS: Option<number>[] = [
