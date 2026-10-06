@@ -1,5 +1,5 @@
-// Writes src/puzzles/swordfight/sword-parity.json from the real client's Swordfight classes:
-//   settle   random pairs dropped onto a board, then the board settled the way sword/client/s.o
+// Writes src/puzzles/swordfight/sword-parity.json from the game's own Swordfight code:
+//   settle   random pairs dropped onto a board, then the board settled the way the game's
 //            does it (drop/a/f falling with sword/a/l, sword/a/e joining, sword/a/a clearing),
 //            with the board after every step
 //   strikes  sword/a/i placing incoming strikes when the pair appears, then again as they land
@@ -9,10 +9,10 @@
 // board.test.ts and strikes.test.ts replay the same inputs on the TypeScript port.
 //
 // Build 20260909165753. From D:\Documents\PP_Clone (Git Bash):
-//   JB=tools/jdk21/jdk-21.0.12.1+1/bin; CP=client/app/code/yoclient-dop.jar
+//   JB=tools/jdk21/jdk-21.0.12.1+1/bin; CP=<the game's main code jar>
 //   "$JB/javac.exe" -cp $CP -d /tmp/sp work/pp-swordfight/scripts/parity/SwordParity.java
 //   "$JB/java.exe" -cp "$CP;/tmp/sp" SwordParity > work/pp-swordfight/src/puzzles/swordfight/sword-parity.json
-// The client's sword/a package shares its name with a class, which javac can't refer to, so its
+// The game's sword/a package shares its name with a class, which javac can't refer to, so its
 // classes are reached by reflection.
 import com.threerings.piracy.item.data.Sword;
 import com.threerings.piracy.puzzle.sword.data.ShaftInfo;

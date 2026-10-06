@@ -1,11 +1,11 @@
-// Swordfight's board rules, ported from the Puzzle Pirates client (build 20260909165753):
+// Swordfight's board rules, ported from Puzzle Pirates (build 20260909165753):
 //   pieces         sword/a/g (the piece bit layout) and sword/data/e (strike tile offsets)
 //   board          puzzle/drop/data/DropBoard + sword/data/SwordBoard
 //   falling        puzzle/drop/a/f with sword/a/l's rules (blocks fall as one)
 //   joining        sword/a/e and sword/a/f (fusing same-coloured pieces into blocks)
 //   clearing       sword/a/a, b, c, d (breakers shattering connected pieces)
-// The code follows the client's loops and their order closely, quirks included, so boards
-// develop exactly as they do in the game. Rows count down from the top (row 0) as in the client.
+// The code follows the game's loops and their order closely, quirks included, so boards
+// develop exactly as they do in the game. Rows count down from the top (row 0) as in the game.
 
 export const W = 6;
 export const H = 13;
@@ -142,13 +142,13 @@ export interface Block {
   h: number;
 }
 
-/** BlockList.a: whether (x, y) is in a block. The client compares x <= left here, not >=; kept as is. */
+/** BlockList.a: whether (x, y) is in a block. The game compares x <= left here, not >=; kept as is. */
 export function blockListHas(blocks: readonly Block[], x: number, y: number): Block | null {
   for (const b of blocks) if (x <= b.x && y <= b.y && x <= b.x + b.w - 1 && y >= b.y - b.h + 1) return b;
   return null;
 }
 
-/** Orientations are the client's compass directions: where the second piece of a pair sits. */
+/** Orientations are the game's compass directions: where the second piece of a pair sits. */
 export const WEST = 1;
 export const NORTH = 3;
 export const EAST = 5;
@@ -178,7 +178,7 @@ export class Board {
     this.cells.set(other.cells);
   }
 
-  /** Like the client, an index past the board reads as empty; one that wraps reads the wrapped cell. */
+  /** Like the game, an index past the board reads as empty; one that wraps reads the wrapped cell. */
   get(x: number, y: number): number {
     const i = y * W + x;
     return i >= 0 && i < W * H ? this.cells[i] : EMPTY;
@@ -514,7 +514,7 @@ function canRoot(p: number): boolean {
 
 /**
  * Finds the new blocks to fuse, bottom row first (sword/a/e.a). Works on a copy; returns the blocks
- * in the order the client fuses them, or [] when nothing new forms.
+ * in the order the game fuses them, or [] when nothing new forms.
  */
 export function findJoins(source: Board): Block[] {
   const board = source.clone();
@@ -547,7 +547,7 @@ export interface Shattered {
   x: number;
   y: number;
   piece: number;
-  /** Steps out from the breaker: the client shatters each step 75ms after the last. */
+  /** Steps out from the breaker: the game shatters each step 75ms after the last. */
   depth: number;
 }
 

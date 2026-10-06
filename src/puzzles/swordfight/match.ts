@@ -1,21 +1,23 @@
 // A fight: you (fighter 0) against training opponents, or on your own. Deals the pairs, passes each
-// finished cascade's attack to its target, and decides when the fight is over. The game's server
-// does this part and isn't in the client, so the dealing and the timing of attacks are choices made
-// here (see docs/swordfight-client-findings.md).
+// attack to its target, and decides when the fight is over. How pairs are dealt and when attacks
+// are sent are choices made here (see docs/swordfight-findings.md).
 import { PyRandom } from '../../core/pyrandom';
-import { Bot, type BotStyle } from './ai';
 import type { Attack } from './attack';
 import { BREAKER } from './board';
 import { Fighter, type FighterHooks, type SoundName } from './fighter';
+import { GameNpc, type GameStyle, Npc, type NpcStyle } from './npc';
 import { type Shaft, type Strike, Sword } from './strikes';
 
 export interface MatchSettings {
   /** 0 is practice on your own. */
   opponents: number;
-  /** 0-10, the client's AI skill level: a preset for `ai`. */
+  /** 0-10, the fight's AI skill level: a preset for `ai`. */
   skill: number;
-  /** How the opponents play. */
-  ai: BotStyle;
+  /** Which kind of opponent: one that stores breakers for combos, or one on the game's AI numbers. */
+  opponentType: 'tally' | 'game';
+  /** How each kind plays. */
+  ai: NpcStyle;
+  gameAi: GameStyle;
   /** The puzzle difficulty that sets the starting speed (0.01 x (difficulty + 1) pixels per ms). */
   difficulty: number;
   /** Chance a dealt piece is a breaker, in percent. */
@@ -59,15 +61,19 @@ export interface MatchEvents {
   message?(text: string, fighter: number): void;
 }
 
+/** Names for the opponents. */
+const BOT_NAMES = ['TrainingBot', 'Bilgerat', 'Barnacle', 'Scurvydog', 'Grogbelly', 'Plankwalker'];
+
 export class Match {
-  readonly fighters: Fighter[] = [];
+  readonly fighters: Array<Fighter | Npc | GameNpc> = [];
   readonly swords: Sword[] = [];
-  readonly bots: Bot[] = [];
   readonly names: string[] = [];
   /** Who you're attacking (TeamPuzzleController targets). */
   target = 1;
   result: 'won' | 'lost' | null = null;
   endedAt = 0;
+  /** When the boards had finished moving after the fight ended. */
+  settledAt = 0;
   private readonly strikeIds: PyRandom;
   private readonly shaftIds: number[] = [];
   private readonly knockedOut = new Set<number>();
@@ -79,7 +85,7 @@ export class Match {
       const dealer = new Dealer(seed, settings.breakers);
       const [type, primary, secondary] = i === 0 ? settings.sword : settings.enemySword;
       this.swords.push(new Sword(type, primary, secondary));
-      this.names.push(i === 0 ? 'You' : `Bot ${i}`);
+      this.names.push(i === 0 ? 'You' : BOT_NAMES[(i - 1) % BOT_NAMES.length]);
       this.shaftIds.push(0);
       const hooks: FighterHooks = {
         sound: (name) => this.events.sound?.(name, i),
@@ -89,14 +95,23 @@ export class Match {
         peekPair: () => dealer.peek(),
         swordOf: (from) => this.swords[from] ?? null,
       };
-      const fighter = new Fighter(i, settings.difficulty, hooks, startedAt);
-      this.fighters.push(fighter);
-      if (i > 0) this.bots.push(new Bot(fighter, settings.ai, new PyRandom(seed + i * 7919)));
+      this.fighters.push(i === 0
+        ? new Fighter(i, settings.difficulty, hooks, startedAt)
+        : this.opponent(i, hooks, seed, startedAt));
     }
   }
 
+  private opponent(i: number, hooks: FighterHooks, seed: number, startedAt: number): Npc | GameNpc {
+    const rng = new PyRandom(seed + i * 7919);
+    const npcHooks = { nextPair: hooks.nextPair, attack: hooks.attack! };
+    if (this.settings.opponentType === 'tally') return new Npc(i, this.settings.ai, rng, npcHooks, startedAt);
+    const npc = new GameNpc(i, this.settings.gameAi, rng, npcHooks, startedAt);
+    npc.targeted = () => this.target === i;
+    return npc;
+  }
+
   get player(): Fighter {
-    return this.fighters[0];
+    return this.fighters[0] as Fighter;
   }
 
   /** The opponents still standing. */
@@ -130,9 +145,14 @@ export class Match {
   }
 
   update(now: number): void {
-    // The fight ends with the boards as they are.
-    if (this.result) return;
-    for (const bot of this.bots) bot.update(now);
+    // After the fight, your board finishes falling and clearing, then everything stops.
+    if (this.result) {
+      if (this.settledAt) return;
+      const player = this.player;
+      player.update(now);
+      if (player.out || (!player.pair && player.idle(now))) this.settledAt = now;
+      return;
+    }
     for (const f of this.fighters) f.update(now);
     for (const f of this.fighters) {
       if (f.out && !this.knockedOut.has(f.index)) {
@@ -155,6 +175,7 @@ export class Match {
   private finish(result: 'won' | 'lost', now: number): void {
     this.result = result;
     this.endedAt = now;
+    this.player.halted = true;
     if (this.settings.opponents === 0) return;
     this.events.message?.(result === 'won' ? 'Ye be the victor!' : 'Ye be defeated!', 0);
     this.events.sound?.(result === 'won' ? 'win' : 'lose', 0);

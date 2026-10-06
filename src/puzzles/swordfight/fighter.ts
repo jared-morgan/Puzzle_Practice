@@ -1,8 +1,8 @@
 // One player's board in play: the falling pair, the board settling, clears and incoming attacks.
-// Ported from the client's controllers: puzzle/drop/client/c (the drop puzzle loop and the falling
-// pair's moves, turns and bounce), puzzle/drop/client/i and a (falling sprites), and
-// sword/client/s (Swordfight's evolve order, chains, attacks landing and the speed-up).
-// Times are in milliseconds and every change happens at a time worked out from the client's speeds,
+// Ported from the game's controllers: the drop puzzle loop and the falling pair's moves, turns
+// and bounce, the falling sprites, and Swordfight's evolve order, chains, attacks landing and
+// the speed-up.
+// Times are in milliseconds and every change happens at a time worked out from the game's speeds,
 // so the same inputs at the same times always play out the same way.
 import { type Attack, addAttack, attackFor, attackSize, emptyAttack } from './attack';
 import {
@@ -15,7 +15,7 @@ export const COL_PX = 27;
 export const ROW_PX = 40;
 /** Holding the drop key (s.b(true)). */
 export const FAST_SPEED = 0.8;
-/** Pieces settling and attacks coming in move at 1.5 times the fast drop (drop/client/d, s.x). */
+/** Pieces settling and attacks coming in move at 1.5 times the fast drop. */
 export const SETTLE_SPEED = 1.5 * FAST_SPEED;
 /** The fastest the pair ever falls (s.z). */
 export const MAX_SPEED = 0.25;
@@ -45,7 +45,7 @@ export interface Pair {
   speed: number;
   /** Bouncing on landing: still for an eighth of a row's fall before it settles. */
   bounceAt: number;
-  /** Turns that may still lift it a row (drop/client/a.e). */
+  /** Turns that may still lift it a row. */
   kicks: number;
 }
 
@@ -127,6 +127,8 @@ export class Fighter {
   speed: number;
   fast = false;
   out = false;
+  /** The fight is over: what's moving finishes, but no new pair comes. */
+  halted = false;
   /** Clears since the pair landed (s.B). */
   chain = 0;
   incoming: Shaft[] = [];
@@ -220,7 +222,7 @@ export class Fighter {
     }
   }
 
-  // ---- The falling pair (puzzle/drop/client/c and i) ----
+  // ---- The falling pair ----
 
   private rows(p: Pair): [number, number] {
     return [p.row, secondOf(p)[1]];
@@ -569,7 +571,7 @@ export class Fighter {
   }
 
   private spawn(now: number): void {
-    if (this.pair || this.out) return;
+    if (this.pair || this.out || this.halted) return;
     // Knocked out when the top of the fourth column is filled as the next pair is due.
     if (this.board.get(3, 0) !== EMPTY) {
       this.out = true;

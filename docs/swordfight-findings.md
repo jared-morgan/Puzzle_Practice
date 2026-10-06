@@ -1,17 +1,17 @@
-# Swordfight: what the client tells us, and what it doesn't
+# Swordfight: what the game tells us, and what it doesn't
 
-Source: decompiled client build 20260909165753, package `com.threerings.piracy.puzzle.sword`
+Source: the game's own code (build 20260909165753), package `com.threerings.piracy.puzzle.sword`
 (decompiled into `run/decompiled/sword-src/`), the drop-puzzle classes it builds on
 (`run/decompiled/drop-src/`), `item/data/Sword` (`run/decompiled/sword-misc-src/`), the
 `yohoho-puzzle-sword` media bundle for art and sound, `rsrc/en/i18n/puzzle/sword.properties`, and
 YPPedia's Swordfighting pages. The practice version is `src/puzzles/swordfight/`.
 
-## Part 1: what I couldn't get from the client (where your help is needed)
+## Part 1: what I couldn't get from the game (where your help is needed)
 
-The server class `SwordManager` isn't shipped, so everything it decides is missing. I made a
+The server's code (`SwordManager`) isn't available, so everything it decides is missing. I made a
 choice for each of these so the puzzle plays; each one is easy to change.
 
-1. **How fast the pair falls at the start.** The client starts at `0.01 x (difficulty + 1)`
+1. **How fast the pair falls at the start.** The game starts it at `0.01 x (difficulty + 1)`
    pixels per ms (rows are 40px), where the server sends the difficulty. Difficulty 0 is 4
    seconds a row and 9 is 400ms. I don't know which difficulty real fights use, or whether it
    depends on the opponent. **Default here: 5, which is 667ms a row.** It's a setting.
@@ -27,42 +27,55 @@ choice for each of these so the puzzle plays; each one is easy to change.
    - whether the chain multiplier is applied before or after the 2x2 and 3x3 special cases
      (here: before, so a 2x2 in a Double is a 2x4 upright sword), and
    - what happens to a sword longer than the board (here: it's sent whole and the part that
-     doesn't fit is cut off, as the client does when it draws it).
+     doesn't fit is cut off, as the game does when it draws it).
 4. **When an attack is sent.** I send one attack when your board has finished settling, with
    everything from the whole chain in it. The server might send one per clear instead. Since
-   the client only lands one attack per pair you place, this changes how quickly a big chain
+   the game only lands one attack per pair you place, this changes how quickly a big chain
    hurts your opponent.
-5. **Strike and attack numbers.** Each sword the server sends has an id, and the client uses it
+5. **Strike and attack numbers.** Each sword the server sends has an id, and the game uses it
    to pick the column an upright sword starts in and which way it looks for room. I give them
    random ids, so placement looks varied, but real ids may follow a pattern.
-6. **How the game's own opponents play.** Their AI is on the server. The client's settings
-   object tells us a little: there's an AI skill level from 0 to 10, a "destruction percentage"
-   per skill level (base 7% to 60%, maximum 10% to 70%), a 40% chance that a skill-10 AI
-   chains a strike block, and AIs play more slowly once 1 to 4 players are targeting them. So
-   the real AI seems to be a dice roll on how much of its board it destroys, not a player.
-   **Here the training opponent plays a real board under the same rules as you**: it tries
-   every spot each pair can reach, plays it out, and picks a good one; from skill 4 it also
-   looks at the next pair. Skill is a preset: the Settings tab also shows each part of it (reaction
-   time, mistakes, look ahead, how much it values attacking, building and keeping low, and fast
-   dropping) to set on its own. Would you rather have the dice-roll style, or keep this? How did the
-   real NPCs feel to fight?
+6. **How the game's own opponents play.** Their AI is on the server. The game's settings object
+   tells us a little: there's an AI skill level from 0 to 10, a "destruction percentage" per
+   skill level (base 7% to 60%, maximum 10% to 70%), a 40% chance that a skill-10 AI chains a
+   strike block, and AIs play more slowly once 1 to 4 players are targeting them. So the real AI
+   is a dice roll on how much of its board it destroys, not a player.
+   **Here the opponents work that way:** they don't play the puzzle and never fuse blocks.
+   Each keeps its pairs stacked on its lowest column (ties in the order 1, 6, 2, 5, 3, 4) as a
+   tally of colours. A breaker may be stored on its board; otherwise it clears a share of its
+   colour, more the higher the board, taken evenly from the columns centre first, and its
+   stored breakers go off with it as the next links of a chain. Each clear is sent as an attack,
+   split between swords and sprinkles by the opponent's style. Your attacks land on top of its
+   columns as plain pieces, at most once every few of its pairs. An opponent is knocked out like
+   you, when the top of its fourth column fills. Opponent screens are hidden by default (red
+   boxes where it has pieces).
+   AI skill is a preset: its clear share on an empty board is the base destruction for that
+   level, rising towards the maximum as the board fills. The Settings tab shows every part (time
+   per pair, colour cleared, variation, height multiplier, chance to store breakers, combo size,
+   strikes vs sprinkles, how often your attacks land) to set on its own. The time per pair,
+   storing chance and combo size for each skill level are my guesses.
+   A second opponent type, **The game's AI numbers**, uses those values directly: each breaker
+   destroys a random share of its own colour (only that colour) between the base and maximum
+   destruction for its skill, sends that clear as a chained one (a Double) at the chain chance (40%
+   at skill 10, scaled by skill), and plays more slowly while you target it (25% by default, a guess at one
+   of the four targeter steps). It plays a pair every 3 seconds when not targeted, at any skill.
 7. **Who opponents attack.** With several opponents, they all attack you.
-8. **Scores and ratings.** The client never scores a fight. Here the main score is damage sent
+8. **Scores and ratings.** The game never scores a fight on your screen. Here the main score is damage sent
    (sprinkles plus each sword's squares), with your wins and losses per setting. Which number
    would you like to practise against?
-9. **Sounds are Ogg files**, straight from the game. Safari may not play them; the other puzzles
-   use MP3s. There's no converter on this PC. If you can add one (or send MP3s), I'll switch.
-10. **Smaller looks.** The client shows each pirate's face and recolours the sword icons to the
+9. **Sounds are Ogg files**, straight from the game. They're being converted to MP3 for every
+   puzzle separately.
+10. **Smaller looks.** The game shows each pirate's face and recolours the sword icons to the
     sword's colours; I show names and the plain icons. The incoming-strike sparks and the piece
     explosions are close copies, not exact.
-11. **Not built yet:** Duelling (the client has it, with a second full-size board), and the
+11. **Not built yet:** Duelling (the game has it, with a second full-size board), and the
     special seas: Atlantean (aqua pieces), Haunted (purple pieces that turn to metal), sanguine
     pieces, and sea battles' rum and damage rows.
 
 **The easiest help:** your sense of how fast pairs fell at the start and how often breakers came,
 and what you want the opponent to be like.
 
-## Part 2: things the client does tell us (maybe new to you)
+## Part 2: things the game does tell us (maybe new to you)
 
 ### Controls
 - Left and right repeat 7 times a second after a 300ms hold. **Down turns clockwise, up turns
@@ -121,7 +134,7 @@ and what you want the opponent to be like.
 
 ## Checked
 
-`board.test.ts` replays cases recorded from the real client classes by
+`board.test.ts` replays cases recorded from the game's own code by
 `scripts/parity/SwordParity.java` and matches every one: 36 random games settled step by step
 (falling, fusing, clearing, chains), 150 attacks placed when the pair appears and again as they
 land, 60 sprinkle spreads, 351 sword colourings and 300 turns and moves. `match.test.ts` checks

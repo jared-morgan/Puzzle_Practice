@@ -3,9 +3,9 @@ import { Board, EMPTY, fall, findClear, findJoins } from './board';
 import { sprinkleColumns, type Strike, StrikePlacer, Sword } from './strikes';
 import parity from './sword-parity.json';
 
-// Cases recorded from the real client classes by scripts/parity/SwordParity.java.
+// Cases recorded from the game's own code by scripts/parity/SwordParity.java.
 
-/** One evolve step the way Fighter (and sword/client/s.o) does it, applied at once. */
+/** One evolve step the way Fighter (and the game) does it, applied at once. */
 function step(board: Board, chain: { n: number }): string | null {
   if (fall(board).length) return 'fall';
   const joins = findJoins(board);
@@ -20,7 +20,7 @@ function step(board: Board, chain: { n: number }): string | null {
   return `clear:${clear.loose}:${clear.blocks.length}`;
 }
 
-describe('settling matches the client', () => {
+describe('settling matches the game', () => {
   parity.settle.forEach((game, g) => {
     it(`game ${g}`, () => {
       for (const turn of game) {
@@ -39,7 +39,7 @@ describe('settling matches the client', () => {
 type Recorded = { id: number; w: number; h: number; x: number; y: number; orient: number; pieces: (number[] | null)[] | null };
 const shown = (s: Strike): Recorded => ({ id: s.id, w: s.width, h: s.height, x: s.x, y: s.y, orient: s.orient, pieces: s.pieces.map((p) => p ?? null) });
 
-describe('strikes are placed as the client places them', () => {
+describe('strikes are placed as the game places them', () => {
   parity.strikes.forEach((c, n) => {
     it(`attack ${n}`, () => {
       const sword = new Sword(c.sword[0], c.sword[1], c.sword[2]);
@@ -54,13 +54,13 @@ describe('strikes are placed as the client places them', () => {
 });
 
 describe('sprinkles', () => {
-  it('spread over the columns as the client spreads them', () => {
+  it('spread over the columns as the game spreads them', () => {
     for (const c of parity.sprinkles) expect(sprinkleColumns([...c.levels], c.count, c.shaft)).toEqual(c.added);
   });
 });
 
 describe('sword patterns', () => {
-  it('colour every square as the client does', () => {
+  it('colour every square as the game does', () => {
     for (const c of parity.swords) {
       const sword = new Sword(c.sword[0], c.sword[1], c.sword[2]);
       c.strike.forEach((row, y) => row.forEach((colour, x) => expect(sword.shaftPiece(x, y, true)).toBe(colour)));
@@ -70,7 +70,7 @@ describe('sword patterns', () => {
 });
 
 describe('turning and moving the pair', () => {
-  it('matches the client', () => {
+  it('matches the game', () => {
     for (const c of parity.turns) {
       const board = new Board(c.board);
       const turned = board.turnPair(c.row, c.col, c.orient, c.clockwise, c.progress, c.kick);
