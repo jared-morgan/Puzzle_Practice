@@ -58,6 +58,9 @@ export interface MatchEvents {
   message?(text: string, fighter: number): void;
 }
 
+/** Names for the opponents. */
+const BOT_NAMES = ['TrainingBot', 'Bilgerat', 'Barnacle', 'Scurvydog', 'Grogbelly', 'Plankwalker'];
+
 export class Match {
   readonly fighters: Array<Fighter | Npc> = [];
   readonly swords: Sword[] = [];
@@ -66,6 +69,8 @@ export class Match {
   target = 1;
   result: 'won' | 'lost' | null = null;
   endedAt = 0;
+  /** When the boards had finished moving after the fight ended. */
+  settledAt = 0;
   private readonly strikeIds: PyRandom;
   private readonly shaftIds: number[] = [];
   private readonly knockedOut = new Set<number>();
@@ -77,7 +82,7 @@ export class Match {
       const dealer = new Dealer(seed, settings.breakers);
       const [type, primary, secondary] = i === 0 ? settings.sword : settings.enemySword;
       this.swords.push(new Sword(type, primary, secondary));
-      this.names.push(i === 0 ? 'You' : `Bot ${i}`);
+      this.names.push(i === 0 ? 'You' : BOT_NAMES[(i - 1) % BOT_NAMES.length]);
       this.shaftIds.push(0);
       const hooks: FighterHooks = {
         sound: (name) => this.events.sound?.(name, i),
@@ -128,8 +133,14 @@ export class Match {
   }
 
   update(now: number): void {
-    // The fight ends with the boards as they are.
-    if (this.result) return;
+    // After the fight, your board finishes falling and clearing, then everything stops.
+    if (this.result) {
+      if (this.settledAt) return;
+      const player = this.player;
+      player.update(now);
+      if (player.out || (!player.pair && player.idle(now))) this.settledAt = now;
+      return;
+    }
     for (const f of this.fighters) f.update(now);
     for (const f of this.fighters) {
       if (f.out && !this.knockedOut.has(f.index)) {
@@ -152,6 +163,7 @@ export class Match {
   private finish(result: 'won' | 'lost', now: number): void {
     this.result = result;
     this.endedAt = now;
+    this.player.halted = true;
     if (this.settings.opponents === 0) return;
     this.events.message?.(result === 'won' ? 'Ye be the victor!' : 'Ye be defeated!', 0);
     this.events.sound?.(result === 'won' ? 'win' : 'lose', 0);

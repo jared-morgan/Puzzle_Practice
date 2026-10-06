@@ -127,6 +127,8 @@ export class Fighter {
   speed: number;
   fast = false;
   out = false;
+  /** The fight is over: what's moving finishes, but no new pair comes. */
+  halted = false;
   /** Clears since the pair landed (s.B). */
   chain = 0;
   incoming: Shaft[] = [];
@@ -569,7 +571,7 @@ export class Fighter {
   }
 
   private spawn(now: number): void {
-    if (this.pair || this.out) return;
+    if (this.pair || this.out || this.halted) return;
     // Knocked out when the top of the fourth column is filled as the next pair is due.
     if (this.board.get(3, 0) !== EMPTY) {
       this.out = true;

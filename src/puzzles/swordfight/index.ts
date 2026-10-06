@@ -48,6 +48,8 @@ const FONT = 'Delarobb';
 const COLOUR_NAMES = ['red', 'green', 'blue', 'yellow'];
 /** Floating messages show for 1.5s, knock-outs 3s, the result 4s (s.d, s.a_). */
 const MESSAGE_MS = 1500;
+/** The eight sword colours (red, orange, yellow, green, blue, purple, white, black), for attacker dots. */
+const SWORD_RGB = ['#d22a1e', '#f08a1e', '#f2d22e', '#3fa535', '#2f63d6', '#8a3fc4', '#f4f4f4', '#202020'];
 
 /** Every sound a variant may pick from (the game's sound list). */
 const SOUND_FILES: Record<string, string[]> = {
@@ -194,7 +196,7 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
     held.left = held.right = 0;
     match = new Match(structuredClone(settings), s, now, {
       sound: (name, fighter) => { if (fighter === 0) play(name); },
-      message: (text, fighter) => { if (fighter === 0) messages.push({ text, start: ticks(), ms: text.includes('knocked') ? 3000 : text.startsWith('Ye be') ? 4000 : MESSAGE_MS }); },
+      message: (text, fighter) => { if (fighter === 0) messages.push({ text, start: ticks(), ms: text.includes('knocked') ? 3000 : text.startsWith('Ye be') && !text.includes('knocked') ? Infinity : MESSAGE_MS }); },
     });
     running = true;
     finished = false;
@@ -245,7 +247,7 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
   // ---- Input ----
 
   function handle(events: InputEvent[], now: number): void {
-    if (!match || !running) return;
+    if (!match || !running || match.result) return;
     const f = match.player;
     for (const event of events) {
       if (event.type === 'keydown') {
@@ -465,54 +467,96 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
     drawPiece(next[0], NEXT_X, NEXT_Y + ROW_PX);
   }
 
-  /** A pirate's status row: name, sword and a small copy of their board (SwordPlayerStatusView). */
+  /**
+   * A pirate's status row, laid out as the game lays it out: name (over where the face goes), sword,
+   * small board and attacker dots, mirrored on the right. The small board has a gold outline (white
+   * on your target) with a black line inside, on khaki (darker once knocked out).
+   */
   function drawStatus(m: Match, index: number, x: number, y: number, right: boolean): void {
     const f = m.fighters[index];
     const sword = m.swords[index];
-    ctx.save();
-    if (right && index === m.target && !f.out) {
-      ctx.fillStyle = 'rgba(255, 230, 120, 0.35)';
-      ctx.fillRect(x, y, 136, ROW_H - 2);
-      ctx.strokeStyle = 'rgba(255, 230, 120, 0.9)';
-      ctx.strokeRect(x + 0.5, y + 0.5, 135, ROW_H - 3);
+    const FACE = 60;
+    const SWORD_W = 30;
+    const SUMMARY_W = W * MINI + 4;
+    const SUMMARY_H = H * MINI + 4;
+    const DOTS = 13;
+    // Left: face, sword, board, dots. Right: dots, board, sword, face.
+    const parts = right ? ['dots', 'board', 'sword', 'face'] : ['face', 'sword', 'board', 'dots'];
+    const widths: Record<string, number> = { face: FACE, sword: SWORD_W, board: SUMMARY_W, dots: DOTS };
+    const at: Record<string, number> = {};
+    let px = x;
+    for (const part of parts) {
+      at[part] = px;
+      px += widths[part];
     }
-    const boardX = right ? x + 14 : x + 134 - 14 - (W * MINI + 4);
-    const swordX = right ? boardX + W * MINI + 8 : boardX - 34;
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
-    ctx.fillRect(boardX, y + 2, W * MINI + 4, H * MINI + 4);
-    for (let r = 0; r < H; r++) {
-      for (let c = 0; c < W; c++) {
-        const p = f.board.get(c, r);
-        // Hidden opponents show only where their pieces are, as red boxes.
-        if (hideOpponents && index > 0) {
-          if (p !== EMPTY) {
-            ctx.fillStyle = '#c0281e';
-            ctx.fillRect(boardX + 2 + c * MINI, y + 4 + r * MINI, MINI, MINI);
-          }
-          continue;
+    ctx.save();
+    // The small board.
+    const bx = at.board;
+    const by = y + Math.floor((ROW_H - SUMMARY_H) / 2);
+    ctx.fillStyle = f.out ? '#92974a' : '#b1ab92';
+    ctx.fillRect(bx, by, SUMMARY_W, SUMMARY_H);
+    if (hideOpponents && index > 0) {
+      // Hidden: only how high each column is, in dark red, as the game shows other pirates without their boards.
+      ctx.fillStyle = f.out ? '#94552a' : '#9e0b0e';
+      const levels = f.board.columnLevels();
+      levels.forEach((h, c) => { if (h) ctx.fillRect(bx + 2 + c * MINI, by + SUMMARY_H - h * MINI - 2, MINI, h * MINI); });
+    } else {
+      for (let r = 0; r < H; r++) {
+        for (let c = 0; c < W; c++) {
+          const tile = tileOf(f.board.get(c, r), true);
+          if (tile) ctx.drawImage(img(tile[0]), tile[1] * MINI, 0, MINI, MINI, bx + 2 + c * MINI, by + 2 + r * MINI, MINI, MINI);
         }
-        const tile = tileOf(p, true);
-        if (tile) ctx.drawImage(img(tile[0]), tile[1] * MINI, 0, MINI, MINI, boardX + 2 + c * MINI, y + 4 + r * MINI, MINI, MINI);
       }
     }
+    ctx.strokeStyle = index === m.target && index > 0 && !f.out ? '#ffffff' : '#c1b016';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(bx + 0.5, by + 0.5, SUMMARY_W - 1, SUMMARY_H - 1);
+    ctx.strokeStyle = '#000';
+    ctx.strokeRect(bx + 1.5, by + 1.5, SUMMARY_W - 3, SUMMARY_H - 3);
+    // The sword.
     const icon = icons.has(`sword${sword.type}`) ? icons.get(`sword${sword.type}`) : null;
-    if (icon) ctx.drawImage(icon, swordX, y + 2);
-    ctx.font = '11px sans-serif';
+    if (icon) ctx.drawImage(icon, at.sword, y + Math.floor((ROW_H - icon.height) / 2));
+    // The name: yellow with a black outline, centred over the face, wrapped to its width.
+    ctx.font = 'bold 11px Arial, sans-serif';
     ctx.textBaseline = 'top';
-    ctx.textAlign = right ? 'right' : 'left';
+    ctx.textAlign = 'center';
+    ctx.lineJoin = 'round';
     ctx.lineWidth = 3;
     ctx.strokeStyle = '#000';
-    ctx.fillStyle = f.out ? '#aaa' : '#fff';
-    const nameX = right ? x + 134 : x + 2;
-    ctx.strokeText(m.names[index], nameX, y + 4);
-    ctx.fillText(m.names[index], nameX, y + 4);
-    if (f.out) {
-      ctx.fillStyle = 'rgba(0,0,0,0.35)';
-      ctx.fillRect(boardX, y + 2, W * MINI + 4, H * MINI + 4);
+    ctx.fillStyle = f.out ? '#c8c8a0' : '#ffff00';
+    const lines: string[] = [];
+    for (const word of m.names[index].split(' ')) {
+      const last = lines.length - 1;
+      if (last >= 0 && ctx.measureText(`${lines[last]} ${word}`).width <= FACE) lines[last] += ` ${word}`;
+      else lines.push(word);
     }
-    // Attacker dots: who is attacking this pirate.
-    const attackers = index === 0 ? m.alive().length : m.target === index && !m.player.out ? 1 : 0;
-    for (let i = 0; i < attackers; i++) ctx.drawImage(img('dot'), right ? x + 2 : x + 126, y + 20 + i * 7);
+    lines.forEach((line, i) => {
+      ctx.strokeText(line, at.face + FACE / 2, y + 2 + i * 12, FACE);
+      ctx.fillText(line, at.face + FACE / 2, y + 2 + i * 12, FACE);
+    });
+    // Attacker dots: one for each pirate attacking this one, in the colours of their sword.
+    const attackers = index === 0 ? m.alive() : m.target === index && !m.player.out ? [0] : [];
+    let dy = y + 2;
+    const groups = Math.floor(attackers.length / 5);
+    for (let i = 0; i < groups; i++) {
+      ctx.drawImage(img('group_dot'), right ? at.dots + 1 : at.dots + DOTS - 9 - 1, dy);
+      dy += 10;
+    }
+    dy++;
+    for (const from of attackers.slice(groups * 5)) {
+      const [, primary, secondary] = from === 0 ? m.settings.sword : m.settings.enemySword;
+      const cx = (right ? at.dots + 1 : at.dots + DOTS - 6 - 2) + 3;
+      const cy = dy + 3;
+      ctx.fillStyle = SWORD_RGB[secondary];
+      ctx.beginPath();
+      ctx.arc(cx, cy, 4, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = SWORD_RGB[primary];
+      ctx.beginPath();
+      ctx.arc(cx, cy, 2, 0, Math.PI * 2);
+      ctx.fill();
+      dy += 9;
+    }
     ctx.restore();
   }
 
@@ -540,7 +584,7 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
       handle(events, now);
       if (match && running) {
         match.update(now);
-        if (match.result) stop();
+        if (match.settledAt) stop();
       }
     }
     if (replays.isSeeking || replays.isAdvancing) return;
@@ -554,14 +598,14 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
     drawNext(match.player);
     drawStatus(match, 0, LEFT_X, ROWS_Y, false);
     for (let i = 1; i < match.fighters.length; i++) drawStatus(match, i, RIGHT_X, ROWS_Y + (i - 1) * ROW_H, true);
-    drawBoard(match.player, running ? now : match.endedAt || now);
+    drawBoard(match.player, running ? now : match.settledAt || match.endedAt || now);
     if (finished && !match.result) banner('Stopped', 330);
     replays.drawOverlay(ctx);
   }
 
   // ---- Panel ----
 
-  const clockNow = () => (running ? ticks() : match?.endedAt || ticks());
+  const clockNow = () => (match?.endedAt ? match.endedAt : running ? ticks() : ticks());
   panel.clock(() => ({ label: 'Time', ms: match ? clockNow() - startedAt : 0 }));
   panel.controls(PUZZLE, KEYS);
 
