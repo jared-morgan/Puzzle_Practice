@@ -5,7 +5,7 @@ import { PyRandom } from '../../core/pyrandom';
 import type { Attack } from './attack';
 import { BREAKER } from './board';
 import { Fighter, type FighterHooks, type SoundName } from './fighter';
-import { Npc, type NpcStyle } from './npc';
+import { GameNpc, type GameStyle, Npc, type NpcStyle } from './npc';
 import { type Shaft, type Strike, Sword } from './strikes';
 
 export interface MatchSettings {
@@ -13,8 +13,11 @@ export interface MatchSettings {
   opponents: number;
   /** 0-10, the fight's AI skill level: a preset for `ai`. */
   skill: number;
-  /** How the opponents play. */
+  /** Which kind of opponent: one that stores breakers for combos, or one on the game's AI numbers. */
+  opponentType: 'tally' | 'game';
+  /** How each kind plays. */
   ai: NpcStyle;
+  gameAi: GameStyle;
   /** The puzzle difficulty that sets the starting speed (0.01 x (difficulty + 1) pixels per ms). */
   difficulty: number;
   /** Chance a dealt piece is a breaker, in percent. */
@@ -62,7 +65,7 @@ export interface MatchEvents {
 const BOT_NAMES = ['TrainingBot', 'Bilgerat', 'Barnacle', 'Scurvydog', 'Grogbelly', 'Plankwalker'];
 
 export class Match {
-  readonly fighters: Array<Fighter | Npc> = [];
+  readonly fighters: Array<Fighter | Npc | GameNpc> = [];
   readonly swords: Sword[] = [];
   readonly names: string[] = [];
   /** Who you're attacking (TeamPuzzleController targets). */
@@ -94,8 +97,17 @@ export class Match {
       };
       this.fighters.push(i === 0
         ? new Fighter(i, settings.difficulty, hooks, startedAt)
-        : new Npc(i, settings.ai, new PyRandom(seed + i * 7919), { nextPair: hooks.nextPair, attack: hooks.attack! }, startedAt));
+        : this.opponent(i, hooks, seed, startedAt));
     }
+  }
+
+  private opponent(i: number, hooks: FighterHooks, seed: number, startedAt: number): Npc | GameNpc {
+    const rng = new PyRandom(seed + i * 7919);
+    const npcHooks = { nextPair: hooks.nextPair, attack: hooks.attack! };
+    if (this.settings.opponentType === 'tally') return new Npc(i, this.settings.ai, rng, npcHooks, startedAt);
+    const npc = new GameNpc(i, this.settings.gameAi, rng, npcHooks, startedAt);
+    npc.targeted = () => this.target === i;
+    return npc;
   }
 
   get player(): Fighter {

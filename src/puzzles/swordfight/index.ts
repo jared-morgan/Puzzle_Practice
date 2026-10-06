@@ -19,7 +19,7 @@ import {
   blockPiece, blockTile, colour, DAMAGE, DAMAGE_HINT, EMPTY, H, isBlock, isBreaker, kind, METAL, RUM, SWORD, swordTile, W,
 } from './board';
 import { COL_PX, type Fighter, FAST_SPEED, ROW_PX, secondOf, startSpeed } from './fighter';
-import { type NpcStyle, skillStyle } from './npc';
+import { type GameStyle, gameSkillStyle, type NpcStyle, skillStyle } from './npc';
 import { Match, type MatchSettings } from './match';
 import { PLAIN_SWORDS, SWORD_COLOURS, SWORD_NAMES, isHorizontal } from './strikes';
 import delarobbUrl from './delarobb.ttf?url';
@@ -76,6 +76,8 @@ interface Settings extends MatchSettings {}
 const DEFAULTS: Settings = {
   opponents: 2,
   skill: 10,
+  opponentType: 'tally',
+  gameAi: gameSkillStyle(10),
   ai: { pairMs: 3000, breakAverage: 40, variation: 41, heightBoost: 1.5, storeChance: 23, comboMax: 3, strikeShare: 85, pairsPerAttack: 1 },
   difficulty: 5,
   breakers: 18,
@@ -119,22 +121,36 @@ function validStyle(value: unknown): value is NpcStyle {
     inRange(s.strikeShare, 0, 100) && int(s.pairsPerAttack, 0, 100);
 }
 
+function validGameStyle(value: unknown): value is GameStyle {
+  if (!value || typeof value !== 'object') return false;
+  const s = value as Record<string, unknown>;
+  return inRange(s.pairMs, 50, 20000) && inRange(s.baseDestroy, 0, 100) && inRange(s.maxDestroy, 0, 100) &&
+    inRange(s.chainChance, 0, 100) && inRange(s.targetedSlowdown, 0, 1000) && inRange(s.strikeShare, 0, 100) && int(s.pairsPerAttack, 0, 100);
+}
+
 /** Saved settings without the current opponent options get them from their AI skill. */
 function upgrade(value: unknown): unknown {
-  if (!value || typeof value !== 'object' || validStyle((value as { ai?: unknown }).ai)) return value;
-  const s = value as Record<string, unknown>;
-  return int(s.skill, 0, 10) ? { ...s, ai: skillStyle(s.skill as number) } : value;
+  if (!value || typeof value !== 'object') return value;
+  const s = { ...(value as Record<string, unknown>) };
+  if (!int(s.skill, 0, 10)) return value;
+  if (!validStyle(s.ai)) s.ai = skillStyle(s.skill as number);
+  if (!validGameStyle(s.gameAi)) s.gameAi = gameSkillStyle(s.skill as number);
+  if (s.opponentType !== 'tally' && s.opponentType !== 'game') s.opponentType = 'tally';
+  return s;
 }
 
 function validSettings(value: unknown): value is Settings {
   if (!value || typeof value !== 'object') return false;
   const s = value as Record<string, unknown>;
-  return int(s.opponents, 0, 6) && int(s.skill, 0, 10) && validStyle(s.ai) && int(s.difficulty, 0, 9) &&
+  return int(s.opponents, 0, 6) && int(s.skill, 0, 10) && validStyle(s.ai) && validGameStyle(s.gameAi) &&
+    (s.opponentType === 'tally' || s.opponentType === 'game') && int(s.difficulty, 0, 9) &&
     typeof s.breakers === 'number' && s.breakers >= 0 && s.breakers <= 100 && validSword(s.sword) && validSword(s.enemySword);
 }
 
 /** Whether the opponent's options are still exactly the AI skill preset. */
-const isPreset = (s: Settings) => JSON.stringify(s.ai) === JSON.stringify(skillStyle(s.skill));
+const isPreset = (s: Settings) => s.opponentType === 'tally'
+  ? JSON.stringify(s.ai) === JSON.stringify(skillStyle(s.skill))
+  : JSON.stringify(s.gameAi) === JSON.stringify(gameSkillStyle(s.skill));
 
 interface Message {
   text: string;
@@ -182,7 +198,12 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
 
   const opponentKey = () => {
     if (!settings.opponents) return '-';
-    if (isPreset(settings)) return String(settings.skill);
+    const kind = settings.opponentType === 'game' ? 'game ' : '';
+    if (isPreset(settings)) return kind + String(settings.skill);
+    if (settings.opponentType === 'game') {
+      const g = settings.gameAi;
+      return `game custom ${g.pairMs}/${g.baseDestroy}/${g.maxDestroy}/${g.chainChance}/${g.targetedSlowdown}/${g.strikeShare}/${g.pairsPerAttack}`;
+    }
     const a = settings.ai;
     return `custom ${a.pairMs}/${a.breakAverage}/${a.variation}/${a.heightBoost}/${a.storeChance}/${a.comboMax}/${a.strikeShare}/${a.pairsPerAttack}`;
   };
@@ -666,27 +687,49 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
   });
   const off = { disabled: () => running };
   const foes = panel.settings.group('Opponents');
-  foes.range('AI skill', () => settings.skill, (v) => { settings.skill = v; settings.ai = skillStyle(v); save(); }, { ...off, min: 0, max: 10 });
+  foes.select('Opponent type', [
+    { value: 'tally', label: 'Stores breakers for combos' },
+    { value: 'game', label: "The game's AI numbers" },
+  ] as Option<'tally' | 'game'>[], () => settings.opponentType, (t) => { settings.opponentType = t; save(); }, off);
+  foes.range('AI skill', () => settings.skill, (v) => { settings.skill = v; settings.ai = skillStyle(v); settings.gameAi = gameSkillStyle(v); save(); }, { ...off, min: 0, max: 10 });
   foes.note(() => isPreset(settings)
     ? 'AI skill sets everything below; change any of it to make your own.'
     : 'Custom: AI skill sets everything below back to its preset.');
   const ai = (change: (a: NpcStyle) => void) => { change(settings.ai); save(); };
-  foes.number('Time per pair (ms)', () => settings.ai.pairMs, (v) => ai((a) => { a.pairMs = v; }), { ...off, min: 50, max: 20000, step: 50,
+  const tallyOff = { disabled: () => running, hidden: () => settings.opponentType !== 'tally' };
+  foes.number('Time per pair (ms)', () => settings.ai.pairMs, (v) => ai((a) => { a.pairMs = v; }), { ...tallyOff, min: 50, max: 20000, step: 50,
     title: 'How fast an opponent plays: how often it is dealt a pair.' });
-  foes.range('Colour cleared (%)', () => settings.ai.breakAverage, (v) => ai((a) => { a.breakAverage = v; }), { ...off, min: 0, max: 100,
+  foes.range('Colour cleared (%)', () => settings.ai.breakAverage, (v) => ai((a) => { a.breakAverage = v; }), { ...tallyOff, min: 0, max: 100,
     title: 'How much of its colour a breaker clears on an empty board, on average.' });
-  foes.range('Variation (±%)', () => settings.ai.variation, (v) => ai((a) => { a.variation = v; }), { ...off, min: 0, max: 50,
+  foes.range('Variation (±%)', () => settings.ai.variation, (v) => ai((a) => { a.variation = v; }), { ...tallyOff, min: 0, max: 50,
     title: 'How far a clear varies from that, either way.' });
-  foes.number('Height multiplier', () => settings.ai.heightBoost, (v) => ai((a) => { a.heightBoost = v; }), { ...off, min: 0, max: 10, step: 0.1,
+  foes.number('Height multiplier', () => settings.ai.heightBoost, (v) => ai((a) => { a.heightBoost = v; }), { ...tallyOff, min: 0, max: 10, step: 0.1,
     title: 'How much more a breaker clears on a full board than an empty one, rising with the board: 2 doubles it at the top, 1 keeps it the same.' });
-  foes.range('Stores breakers (%)', () => settings.ai.storeChance, (v) => ai((a) => { a.storeChance = v; }), { ...off, min: 0, max: 100,
+  foes.range('Stores breakers (%)', () => settings.ai.storeChance, (v) => ai((a) => { a.storeChance = v; }), { ...tallyOff, min: 0, max: 100,
     title: 'The chance a breaker is kept on its board to go off with its next clear.' });
-  foes.number('Combo (stored breakers)', () => settings.ai.comboMax, (v) => ai((a) => { a.comboMax = v; }), { ...off, min: 0, max: 20,
+  foes.number('Combo (stored breakers)', () => settings.ai.comboMax, (v) => ai((a) => { a.comboMax = v; }), { ...tallyOff, min: 0, max: 20,
     title: 'How many stored breakers it can keep and use with one clear, each the next link of a chain.' });
-  foes.range('Strikes vs sprinkles (%)', () => settings.ai.strikeShare, (v) => ai((a) => { a.strikeShare = v; }), { ...off, min: 0, max: 100,
+  foes.range('Strikes vs sprinkles (%)', () => settings.ai.strikeShare, (v) => ai((a) => { a.strikeShare = v; }), { ...tallyOff, min: 0, max: 100,
     formatValue: (v) => (v === 0 ? 'all sprinkles' : v === 100 ? 'all strikes' : `${v}% strikes`), outputWidth: 13,
     title: 'Its style: how much of each clear it sends as swords, the rest as sprinkles. 50 is an even mix.' });
-  foes.number('Your attacks land every (pairs)', () => settings.ai.pairsPerAttack, (v) => ai((a) => { a.pairsPerAttack = v; }), { ...off, min: 0, max: 100,
+  foes.number('Your attacks land every (pairs)', () => settings.ai.pairsPerAttack, (v) => ai((a) => { a.pairsPerAttack = v; }), { ...tallyOff, min: 0, max: 100,
+    title: 'Your attacks land on an opponent at most once per this many of its pairs.' });
+  const gameOff = { disabled: () => running, hidden: () => settings.opponentType !== 'game' };
+  const gai = (change: (a: GameStyle) => void) => { change(settings.gameAi); save(); };
+  foes.number('Time per pair (ms)', () => settings.gameAi.pairMs, (v) => gai((a) => { a.pairMs = v; }), { ...gameOff, min: 50, max: 20000, step: 50,
+    title: 'How fast an opponent plays when you are not targeting it: how often it is dealt a pair.' });
+  foes.range('Least destroyed (%)', () => settings.gameAi.baseDestroy, (v) => gai((a) => { a.baseDestroy = v; }), { ...gameOff, min: 0, max: 100,
+    title: "The least of its colour a breaker destroys: the game's base destruction for the skill level." });
+  foes.range('Most destroyed (%)', () => settings.gameAi.maxDestroy, (v) => gai((a) => { a.maxDestroy = v; }), { ...gameOff, min: 0, max: 100,
+    title: "The most of its colour a breaker destroys: the game's maximum destruction for the skill level. Each clear is somewhere in between." });
+  foes.range('Chain chance (%)', () => settings.gameAi.chainChance, (v) => gai((a) => { a.chainChance = v; }), { ...gameOff, min: 0, max: 100,
+    title: "The chance a clear chains into another of its colours, rolled again for each further link. The game's is 40% at skill 10." });
+  foes.range('Slower when targeted (%)', () => settings.gameAi.targetedSlowdown, (v) => gai((a) => { a.targetedSlowdown = v; }), { ...gameOff, min: 0, max: 300, step: 5,
+    title: 'How much slower an opponent plays while you are targeting it. The game slows an AI from 1 targeter, and most at 4.' });
+  foes.range('Strikes vs sprinkles (%)', () => settings.gameAi.strikeShare, (v) => gai((a) => { a.strikeShare = v; }), { ...gameOff, min: 0, max: 100,
+    formatValue: (v) => (v === 0 ? 'all sprinkles' : v === 100 ? 'all strikes' : `${v}% strikes`), outputWidth: 13,
+    title: 'Its style: how much of each clear it sends as swords, the rest as sprinkles. 50 is an even mix.' });
+  foes.number('Your attacks land every (pairs)', () => settings.gameAi.pairsPerAttack, (v) => gai((a) => { a.pairsPerAttack = v; }), { ...gameOff, min: 0, max: 100,
     title: 'Your attacks land on an opponent at most once per this many of its pairs.' });
   const game = panel.settings.group('Fight');
   game.select('Starting speed', Array.from({ length: 10 }, (_, d) => ({ value: d, label: `${d}: ${Math.round(ROW_PX / startSpeed(d))}ms a row` })),
@@ -705,15 +748,18 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
   panel.settings.group('Reset').button('Reset to defaults', () => { settings = structuredClone(DEFAULTS); save(); }, { disabled: () => running });
 
   const replaySettingsCodec: ReplaySettingsCodec = {
-    currentVersion: 3,
+    currentVersion: 4,
     simulatorVersion: 2,
     // Earlier recordings had an opponent that played the board, so they can't be replayed.
-    migrate: (version, value) => (version === 3 && validSettings(value) ? value : null),
+    migrate: (version, value) => {
+      const upgraded = version === 3 ? upgrade(value) : value;
+      return (version === 3 || version === 4) && validSettings(upgraded) ? upgraded : null;
+    },
   };
   let savedSettings: Settings | null = null;
   replays = new ReplayRecorder(PUZZLE, store, panel, ticks, (tape: PuzzleReplay) => {
     savedSettings ??= structuredClone(settings);
-    settings = structuredClone(tape.settings as Settings);
+    settings = structuredClone(upgrade(tape.settings) as Settings);
     const seed = (tape.seed as { seed?: unknown })?.seed;
     if (typeof seed !== 'number') throw new Error('Invalid Swordfight replay seed');
     start(seed);

@@ -9,7 +9,8 @@
 //   - Each break is sent as an attack: `strikeShare` percent of the shattered pieces as fused
 //     blocks (swords), the rest as loose pieces (sprinkles), with the chain multiplier.
 //   - Your attacks land on top of its columns as plain pieces, at most one every few of its pairs.
-// AI skill is a preset for all of these.
+// AI skill is a preset for all of these. A second kind, GameNpc at the end, uses the game's own AI
+// numbers instead: base and maximum destruction, a chain chance, and slowing down when targeted.
 import type { PyRandom } from '../../core/pyrandom';
 import { type Attack, swordFor } from './attack';
 import { Board, BREAKER, colour, EMPTY, H, isBreaker, W } from './board';
@@ -65,15 +66,23 @@ export interface NpcHooks {
   attack(attack: Attack): void;
 }
 
-export class Npc {
+/** What every opponent style has. */
+interface BaseStyle {
+  pairMs: number;
+  strikeShare: number;
+  pairsPerAttack: number;
+}
+
+/** An opponent that keeps a tally of its pieces; what a breaker does is up to each kind. */
+abstract class TallyNpc<S extends BaseStyle> {
   board = new Board();
   out = false;
   stats: FighterStats = { pairs: 0, shattered: 0, bestChain: 0, sent: 0, received: 0, swordsSent: 0, biggestSword: 0 };
-  private nextAt: number;
+  protected nextAt: number;
   private incoming: number[] = [];
   private pairsSinceAttack = 0;
 
-  constructor(readonly index: number, readonly style: NpcStyle, private readonly rng: PyRandom, private readonly hooks: NpcHooks, started: number) {
+  constructor(readonly index: number, readonly style: S, protected readonly rng: PyRandom, protected readonly hooks: NpcHooks, started: number) {
     this.nextAt = started + style.pairMs;
   }
 
@@ -86,11 +95,16 @@ export class Npc {
   update(now: number): void {
     while (!this.out && now >= this.nextAt) {
       this.step();
-      this.nextAt += Math.max(50, this.style.pairMs);
+      this.nextAt += Math.max(50, this.interval());
     }
   }
 
-  private gauss(): number {
+  /** How long until its next pair. */
+  protected interval(): number {
+    return this.style.pairMs;
+  }
+
+  protected gauss(): number {
     const u = Math.max(1e-12, this.rng.random());
     return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * this.rng.random());
   }
@@ -123,31 +137,41 @@ export class Npc {
     }
   }
 
-  private count(c: number): number {
+  protected count(c: number): number {
     let n = 0;
     for (const p of this.board.cells) if (p !== EMPTY && !isBreaker(p) && colour(p) === c) n++;
     return n;
   }
 
-  private stored(): number[] {
+  protected stored(): number[] {
     return Array.from(this.board.cells).filter((p) => p !== EMPTY && isBreaker(p));
   }
 
   /** Takes a stored breaker of colour c off the board. */
-  private useStored(c: number): void {
+  protected useStored(c: number): void {
     const i = this.board.cells.findIndex((p) => p !== EMPTY && isBreaker(p) && colour(p) === c);
     if (i >= 0) this.board.cells[i] = EMPTY;
   }
 
+  /** How much of its colour, in percent, a breaker shatters now. */
+  protected abstract breakPercent(): number;
+
+  /**
+   * A breaker of colour c arrives: either keep it (push it onto plain to be stacked) or set it
+   * off, adding each break's size to breaks in chain order.
+   */
+  protected abstract breaker(c: number, breaks: number[], plain: number[]): void;
+
+  /** How full the board is, 0 to 1. */
+  protected fill(): number {
+    return this.board.cells.filter((p) => p !== EMPTY).length / (W * H);
+  }
+
   /** Shatters part of a colour, taken evenly from the columns, centre first. */
-  private shatter(c: number): number {
+  protected shatter(c: number): number {
     const matching = this.count(c);
     if (!matching) return 0;
-    const s = this.style;
-    // The higher the board, the more it breaks: up to heightBoost times as much when full.
-    const fill = this.board.cells.filter((p) => p !== EMPTY).length / (W * H);
-    const boost = 1 + (s.heightBoost - 1) * fill;
-    const percent = Math.max(0, Math.min(100, Math.round((s.breakAverage + this.gauss() * s.variation) * boost)));
+    const percent = Math.max(0, Math.min(100, Math.round(this.breakPercent())));
     const target = Math.round((matching * percent) / 100);
     let removed = 0;
     while (removed < target) {
@@ -181,18 +205,7 @@ export class Npc {
         plain.push(c);
         continue;
       }
-      if (this.stored().length < this.style.comboMax && this.rng.random() * 100 < this.style.storeChance) {
-        plain.push(c | BREAKER);
-        continue;
-      }
-      // The breaker goes off, then the stored ones with it, each the next link of the chain.
-      const first = this.shatter(c) + 1;
-      breaks.push(first);
-      for (const saved of this.stored().slice(0, this.style.comboMax)) {
-        const sc = colour(saved);
-        this.useStored(sc);
-        breaks.push(this.shatter(sc) + 1);
-      }
+      this.breaker(c, breaks, plain);
     }
     if (breaks.length) this.compact();
     // Own pieces go on the lowest column; ties go to the first in FILL_ORDER.
@@ -293,5 +306,87 @@ export class Npc {
   /** Knocked out, like you, when the top of its fourth column is filled. */
   private checkOut(): void {
     if (this.board.get(3, 0) !== EMPTY) this.out = true;
+  }
+}
+
+/** The tally opponent: stores breakers and sets them off together as a combo; clears grow with its board. */
+export class Npc extends TallyNpc<NpcStyle> {
+  protected breakPercent(): number {
+    const s = this.style;
+    // The higher the board, the more it breaks: up to heightBoost times as much when full.
+    return (s.breakAverage + this.gauss() * s.variation) * (1 + (s.heightBoost - 1) * this.fill());
+  }
+
+  protected breaker(c: number, breaks: number[], plain: number[]): void {
+    if (this.stored().length < this.style.comboMax && this.rng.random() * 100 < this.style.storeChance) {
+      plain.push(c | BREAKER);
+      return;
+    }
+    // The breaker goes off, then the stored ones with it, each the next link of the chain.
+    breaks.push(this.shatter(c) + 1);
+    for (const saved of this.stored().slice(0, this.style.comboMax)) {
+      const sc = colour(saved);
+      this.useStored(sc);
+      breaks.push(this.shatter(sc) + 1);
+    }
+  }
+}
+
+/** The game's AI numbers for an opponent. */
+export interface GameStyle {
+  /** How often it's dealt a pair, in ms, when nobody is targeting it. */
+  pairMs: number;
+  /** The least and most of its colour a breaker destroys, in percent (the game's base and maximum destruction). */
+  baseDestroy: number;
+  maxDestroy: number;
+  /** Chance a clear chains into another colour, in percent; rolled again for each further link. */
+  chainChance: number;
+  /** How much slower it plays while you target it, in percent. */
+  targetedSlowdown: number;
+  strikeShare: number;
+  pairsPerAttack: number;
+}
+
+/** The game's own numbers at an AI skill level: destruction, chain chance at skill 10 (40%), slowing when targeted. */
+export function gameSkillStyle(skill: number): GameStyle {
+  return {
+    pairMs: 2000 - skill * 125,
+    baseDestroy: Math.round(BASE_DESTROY[skill] * 100),
+    maxDestroy: Math.round(MAX_DESTROY[skill] * 100),
+    chainChance: Math.round(40 * skill / 10),
+    // The game starts slowing an AI at 1 targeter and is slowest at 4: one of 4 steps of up to double.
+    targetedSlowdown: 25,
+    strikeShare: 50,
+    pairsPerAttack: 3,
+  };
+}
+
+/**
+ * The game-numbers opponent: each breaker destroys between the base and maximum destruction of its
+ * colour, then may chain into the other colours it holds, one more each time the chain chance comes up.
+ */
+export class GameNpc extends TallyNpc<GameStyle> {
+  /** Whether you're targeting it, which slows it down. */
+  targeted: () => boolean = () => false;
+
+  protected interval(): number {
+    return this.style.pairMs * (this.targeted() ? 1 + this.style.targetedSlowdown / 100 : 1);
+  }
+
+  protected breakPercent(): number {
+    const { baseDestroy, maxDestroy } = this.style;
+    return Math.min(baseDestroy, maxDestroy) + this.rng.random() * Math.abs(maxDestroy - baseDestroy);
+  }
+
+  protected breaker(c: number, breaks: number[]): void {
+    breaks.push(this.shatter(c) + 1);
+    const used = new Set([c]);
+    while (this.rng.random() * 100 < this.style.chainChance) {
+      const others = [0, 1, 2, 3].filter((o) => !used.has(o) && this.count(o) > 0);
+      if (!others.length) break;
+      const next = others[this.rng.randintN(0, others.length - 1)];
+      used.add(next);
+      breaks.push(this.shatter(next));
+    }
   }
 }

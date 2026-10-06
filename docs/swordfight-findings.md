@@ -54,6 +54,11 @@ choice for each of these so the puzzle plays; each one is easy to change.
    per pair, colour cleared, variation, height multiplier, chance to store breakers, combo size,
    strikes vs sprinkles, how often your attacks land) to set on its own. The time per pair,
    storing chance and combo size for each skill level are my guesses.
+   A second opponent type, **The game's AI numbers**, uses those values directly: each breaker
+   destroys a random share of its colour between the base and maximum destruction for its skill,
+   chains into another of its colours at the chain chance (40% at skill 10, scaled by skill, rolled
+   again for each link), and plays more slowly while you target it (25% by default, a guess at one
+   of the four targeter steps). Its time per pair is my guess too.
 7. **Who opponents attack.** With several opponents, they all attack you.
 8. **Scores and ratings.** The game never scores a fight on your screen. Here the main score is damage sent
    (sprinkles plus each sword's squares), with your wins and losses per setting. Which number

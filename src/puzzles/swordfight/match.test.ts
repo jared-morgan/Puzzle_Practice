@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { PyRandom } from '../../core/pyrandom';
-import { Npc, skillStyle } from './npc';
+import { GameNpc, gameSkillStyle, Npc, skillStyle } from './npc';
 import { attackFor, swordFor } from './attack';
 import { Board, BREAKER, findClear } from './board';
 import { Match, type MatchSettings } from './match';
 
-const settings: MatchSettings = { opponents: 1, skill: 6, ai: skillStyle(6), difficulty: 5, breakers: 12.5, sword: [2, 0, 0], enemySword: [6, 4, 2] };
+const settings: MatchSettings = { opponents: 1, skill: 6, opponentType: 'tally', ai: skillStyle(6), gameAi: gameSkillStyle(6), difficulty: 5, breakers: 12.5, sword: [2, 0, 0], enemySword: [6, 4, 2] };
 
 describe('attacks (YPPedia)', () => {
   it('turns blocks into swords', () => {
@@ -84,6 +84,36 @@ describe('the opponents', () => {
       if (share === 0) expect(sent[0].swords).toBe(0);
       else expect(sent[0].swords).toBeGreaterThan(0);
     }
+  });
+});
+
+describe("the game-numbers opponents", () => {
+  const filled = (n: number): Array<[number, number]> => Array.from({ length: n }, (): [number, number] => [0, 0]);
+
+  it('destroy between the base and maximum of their colour', () => {
+    for (let seed = 1; seed <= 20; seed++) {
+      const pairs = [...filled(20), [BREAKER, 1] as [number, number]];
+      const style = { ...gameSkillStyle(5), pairMs: 100, chainChance: 0 };
+      const npc = new GameNpc(1, style, new PyRandom(seed), { nextPair: () => pairs.shift()!, attack: () => {} }, 0);
+      npc.update(2100);
+      // 40 reds, 30% to 60% of them shattered, plus the breaker.
+      expect(npc.stats.shattered).toBeGreaterThanOrEqual(12 + 1);
+      expect(npc.stats.shattered).toBeLessThanOrEqual(24 + 1);
+    }
+  });
+
+  it('chain into their other colours', () => {
+    const pairs: Array<[number, number]> = [...Array.from({ length: 10 }, (): [number, number] => [0, 1]), [BREAKER, 2]];
+    const npc = new GameNpc(1, { ...gameSkillStyle(5), pairMs: 100, chainChance: 100 }, new PyRandom(1), { nextPair: () => pairs.shift()!, attack: () => {} }, 0);
+    npc.update(1100);
+    expect(npc.stats.bestChain).toBe(2);
+  });
+
+  it('play more slowly while targeted', () => {
+    const npc = new GameNpc(1, { ...gameSkillStyle(5), pairMs: 1000, targetedSlowdown: 100 }, new PyRandom(1), { nextPair: () => [0, 1], attack: () => {} }, 0);
+    npc.targeted = () => true;
+    npc.update(10_000);
+    expect(npc.stats.pairs).toBe(5);
   });
 });
 
