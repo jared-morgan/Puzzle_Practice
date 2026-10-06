@@ -92,7 +92,7 @@ const DEFAULTS: Settings = {
   opponentType: 'game',
   gameAi: gameSkillStyle(60),
   ai: { pairMs: 3000, breakAverage: 40, variation: 41, heightBoost: 1.5, storeChance: 23, comboMax: 3, strikeShare: 85, pairsPerAttack: 1 },
-  difficulty: 4,
+  difficulty: 1,
   breakers: 18,
   sword: [16, 0, 0],
 };

@@ -867,13 +867,15 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
     const level = `Difficulty ${difficulty}`;
     return mode === 'perfect' ? `${perfectSize}x${perfectSize} board · ${level}` : level;
   });
+  // Starting while a replay is open closes it and starts a game of your own.
   actions.button('Start', () => {
+    if (replays.isPlaying) { replays.stop(); if (replays.isPlaying) return; }
     if (mode === 'perfect') {
       if (run.active) endRun(false);
       else startRun();
     } else if (running) { abortBoard(); replays.finish('Stopped'); }
     else { replays.begin({ mode, difficulty, perfectSize, timerMs }, rng.snapshot()); newSword(); }
-  }, { variant: 'primary', disabled: () => !!replays?.isPlaying, label: () => (busy() ? 'Stop' : !finished || mode === 'perfect' ? 'Start' : 'New sword') });
+  }, { variant: 'primary', label: () => (replays?.isPlaying ? 'Start' : busy() ? 'Stop' : !finished || mode === 'perfect' ? 'Start' : 'New sword') });
 
   const best = () => bests[String(difficulty)];
   const perfectRecord = () => perfectRecords[perfectKey()];

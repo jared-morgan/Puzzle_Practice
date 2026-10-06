@@ -14,7 +14,10 @@ choice for each of these so the puzzle plays; each one is easy to change.
 1. **How fast the pair falls at the start.** The game starts it at `0.01 x (difficulty + 1)`
    pixels per ms (rows are 40px), where the server sends the difficulty. Difficulty 0 is 4
    seconds a row and 9 is 400ms. I don't know which difficulty real fights use, or whether it
-   depends on the opponent. **Default here: 4, which is 800ms a row.** It's a setting.
+   depends on the opponent. Nothing in the game's files sets it for swordfights: the other puzzles
+   have difficulty levels 0 to 8 that players pick in their options (capped by experience), but
+   Swordfight isn't one of them. **Default here: 1, which is 2 seconds a row, from Jared's memory of
+   the game.** The setting offers 0 (4 seconds) to 9 (400ms).
 2. **How pairs are dealt.** The server sends the pieces, six pairs at a time. I don't know the
    colour odds, how often a breaker comes, or whether everyone in a fight gets the same pairs.
    **Here: each piece is one of the four colours at random, 12.5% are breakers (a setting), and

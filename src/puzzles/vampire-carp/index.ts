@@ -705,12 +705,14 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
   actions
     .button(
       'Start',
+      // Starting while a replay is open closes it and starts a game of your own.
       () => {
+        if (replays.isPlaying) { replays.stop(); if (replays.isPlaying) return; }
         if (!boardActive) { replayBoardSeeds = null; replaySpeedState = null; startSession(); }
         else replays.finish(`Score ${score()}`);
         boardActive = !boardActive;
       },
-      { variant: 'primary', disabled: () => !!replays?.isPlaying, label: () => (boardActive ? 'Stop' : 'Start') },
+      { variant: 'primary', label: () => (replays?.isPlaying ? 'Start' : boardActive ? 'Stop' : 'Start') },
     )
     .button(
       'Pause',

@@ -1021,7 +1021,8 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
     return `Difficulty ${difficulty} · ${timer}`;
   });
   actions
-    .button('Start', () => (running ? dismiss() : start()), { variant: 'primary', disabled: () => !!replays?.isPlaying, label: () => (running ? 'Dismiss' : 'Start'), title: 'Dismiss saves the current score without processing another column' })
+    // Starting while a replay is open closes it and starts a game of your own.
+    .button('Start', () => { if (replays.isPlaying) { replays.stop(); if (replays.isPlaying) return; } if (running) dismiss(); else start(); }, { variant: 'primary', label: () => (replays?.isPlaying ? 'Start' : running ? 'Dismiss' : 'Start'), title: 'Dismiss saves the current score without processing another column' })
     .button('Pause', () => { replays.command('pause'); togglePause(); }, { disabled: () => !running || !!replays?.isPlaying, label: () => (paused ? 'Resume' : 'Pause'), title: 'Esc' });
 
   panel.score().stats([], () => {

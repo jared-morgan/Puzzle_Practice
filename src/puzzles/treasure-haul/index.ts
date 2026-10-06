@@ -883,7 +883,8 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
   ] as Option<ClearPack>[], () => clearPack, (p) => { clearPack = p; store.set('clearPack', p); }, { hidden: () => mode !== 'clear', disabled: () => running });
   const actions = panel.group();
   actions.note(() => mode === 'clear' ? 'A practice move brings in each chest. Haul as many as you can.' : '');
-  actions.button('Start', () => (running ? stop() : start()), { variant: 'primary', disabled: () => !!replays?.isPlaying, label: () => (running ? 'Stop' : finished ? 'Play again' : 'Start') });
+  // Starting while a replay is open closes it and starts a game of your own.
+  actions.button('Start', () => { if (replays.isPlaying) { replays.stop(); if (replays.isPlaying) return; } if (running) stop(); else start(); }, { variant: 'primary', label: () => (replays?.isPlaying ? 'Start' : running ? 'Stop' : finished ? 'Play again' : 'Start') });
 
   const best = () => bests[bestKey()];
   panel.score('Haul').stats(['', 'Now', 'Best'], () => [[

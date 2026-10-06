@@ -630,10 +630,10 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
   const actions = panel.group();
   actions.note(() => isPuzzle() ? settings.scramble ? 'Scrambled' : '' : roundSeconds() ? `${roundSeconds()} second round` : 'No timer');
   actions
-    .button('Start', toggleRunning, {
+    // Starting while a replay is open closes it and starts a game of your own.
+    .button('Start', () => { if (replays.isPlaying) { replays.stop(); if (replays.isPlaying) return; } toggleRunning(); }, {
       variant: 'primary',
-      label: () => (!boardActive ? 'Start' : settings.mode === 'normal' ? 'Dismiss' : 'Stop'),
-      disabled: () => !!replay,
+      label: () => (replay || !boardActive ? 'Start' : settings.mode === 'normal' ? 'Dismiss' : 'Stop'),
     })
     .button('New board', () => {
       if (!replay) replays.action({ type: 'forage-new-board' });
