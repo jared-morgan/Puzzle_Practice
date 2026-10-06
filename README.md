@@ -9,7 +9,7 @@ Practice versions of Puzzle Pirates puzzles that run in the browser:
 - **Vampire Carp**: patch coffin holes with pentomino planks (the Vampire Lair's carpentry, rebuilt from the game).
 - **Blacksmithing**: strike squares to forge a sword, each piece deciding where you strike next.
 - **Swordfight**: drop pairs, shatter them with breakers and fuse blocks into swords, against training
-  opponents or on your own (rebuilt from the game; see [what the client tells us](docs/swordfight-client-findings.md)).
+  opponents or on your own (rebuilt from the game; see [what we know and what's still open](docs/swordfight-findings.md)).
 
 Play at [puzzle-practice.github.io/Puzzle_Practice](https://puzzle-practice.github.io/Puzzle_Practice/).
 

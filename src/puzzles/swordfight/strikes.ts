@@ -1,4 +1,4 @@
-// Incoming attacks, ported from the Puzzle Pirates client (build 20260909165753):
+// Incoming attacks, ported from Puzzle Pirates (build 20260909165753):
 //   swords         item/data/Sword: each sword's pattern of colours
 //   strikes        sword/data/StrikeInfo, sword/data/ShaftInfo
 //   placing        sword/a/i: where strikes and sprinkles land on the board they hit
@@ -36,7 +36,7 @@ const SHAFT_PROTOTYPES: number[][][] = [
 const STICK_PROTOTYPE = [[3, 0, 2, 2, 1, 3], [0, 0, 2, 2, 1, 1], [0, 0, 2, 2, 1, 1]];
 export const STICK = 127;
 
-/** Sword names (client.item m.sword.N). */
+/** Sword names (the game's item names). */
 export const SWORD_NAMES: Record<number, string> = {
   0: 'Foil', 1: 'Short sword', 2: 'Long sword', 3: 'Rapier', 4: 'Dirk', 5: 'Scimitar', 6: 'Cutlass',
   7: 'Poniard', 8: 'Saber', 9: 'Stiletto', 10: 'Skull dagger', 11: 'Falchion', 12: 'Cleaver',
