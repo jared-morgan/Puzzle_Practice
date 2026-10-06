@@ -3,7 +3,7 @@
 // spot the pair can reach, plays out what would happen, and picks a good one. Its skill (0-10, the
 // client's "AI Skill level") sets how quickly it moves and how carefully it chooses.
 import { type Attack, addAttack, attackFor, attackSize, emptyAttack } from './attack';
-import { Board, colour, EMPTY, fall, findClear, findJoins, H, isBlock, isBreaker, isPlain, W } from './board';
+import { Board, colour, EMPTY, fall, findClear, findJoins, H, isBlock, isBreaker, isPlain, NORTH, W } from './board';
 import { type Fighter, secondOf } from './fighter';
 import type { PyRandom } from '../../core/pyrandom';
 
@@ -47,86 +47,113 @@ export function playOut(board: Board): { attack: Attack; chain: number } {
   return { attack, chain };
 }
 
+/** What the bot values; tuned by playing practice games on its own. */
+export const WEIGHTS = { attack: 8, chain: 4, height: 4.5, tallest: 0.6, middle: 40, same: 3, mixed: 1, block: 2 };
+
 /** How good a board is to be left with. */
-function judge(board: Board, attack: Attack, chain: number, skill: number): number {
+function judge(board: Board, attack: Attack, chain: number): number {
+  const k = WEIGHTS;
   const levels = board.columnLevels();
-  let score = attackSize(attack) * (6 + skill * 0.4) + chain * 4;
+  let score = attackSize(attack) * k.attack + chain * k.chain;
   const tallest = Math.max(...levels);
-  score -= levels.reduce((n, h) => n + h, 0) * 1.5;
-  score -= tallest * tallest * 0.6;
-  if (levels[3] > 8) score -= (levels[3] - 8) * 60;
-  // Fused blocks and same-coloured neighbours are attacks in the making, more so to a skilled bot.
-  const build = 0.4 + skill * 0.12;
+  score -= levels.reduce((n, h) => n + h, 0) * k.height;
+  score -= tallest * tallest * k.tallest;
+  // The fourth column must stay clear for the next pair.
+  if (levels[3] > 7) score -= (levels[3] - 7) * k.middle;
+  // Fused blocks and same-coloured neighbours are attacks in the making; mixed colours get in the way.
   for (let y = 0; y < H; y++) {
     for (let x = 0; x < W; x++) {
       const p = board.get(x, y);
       if (p === EMPTY) continue;
-      if (isBlock(p)) score += build * 3;
-      if (isPlain(p) || isBreaker(p)) {
-        for (const [nx, ny] of [[x + 1, y], [x, y + 1]]) {
-          const q = board.get(nx, ny);
-          if (nx < W && ny < H && q !== EMPTY && (isPlain(q) || isBreaker(q)) && colour(q) === colour(p)) score += build * (isBreaker(p) !== isBreaker(q) ? 0.2 : 1.5);
-        }
+      if (isBlock(p)) score += k.block;
+      if (!isPlain(p) && !isBreaker(p)) continue;
+      for (const [nx, ny] of [[x + 1, y], [x, y + 1]]) {
+        if (nx >= W || ny >= H) continue;
+        const q = board.get(nx, ny);
+        if (q === EMPTY || (!isPlain(q) && !isBreaker(q))) continue;
+        if (colour(q) === colour(p)) score += isBreaker(p) || isBreaker(q) ? 0 : k.same;
+        else score -= k.mixed;
       }
-      // A piece with an empty square under it is a gap that's hard to fill.
-      if (y < H - 1 && board.get(x, y + 1) === EMPTY) score -= 4;
     }
   }
   return score;
 }
 
-/** Every spot the falling pair can reach from where it is, judged; the bot's pick, or null. */
-export function choose(fighter: Fighter, skill: number, rng: PyRandom): Placement | null {
-  const pair = fighter.pair;
-  if (!pair) return null;
-  const options: Placement[] = [];
+interface Option {
+  turns: number;
+  shift: number;
+  board: Board;
+  attack: Attack;
+  chain: number;
+  score: number;
+}
+
+/** Every spot a pair can reach from where it is, played out and judged (turning first, then stepping sideways, as the bot presses the keys). */
+function options(start: Board, col0: number, row0: number, orient0: number, pieces: readonly number[]): Option[] {
+  const found: Option[] = [];
   for (let turns = 0; turns < 4; turns++) {
-    // Turn first, as the bot would press the keys, then step sideways one column at a time.
-    let state: [number, number, number] | null = [pair.orient, pair.col, pair.row];
+    let state: [number, number, number] | null = [orient0, col0, row0];
     for (let t = 0; t < turns && state; t++) {
-      const turned = fighter.board.turnPair(state[2], state[1], state[0], true, 0, false);
+      const turned = start.turnPair(state[2], state[1], state[0], true, 0, false);
       state = turned ? [turned[0], turned[1], turned[2]] : null;
     }
     if (!state) continue;
-    const [orient, col0, row] = state;
+    const [orient, turnedCol, row] = state;
     for (const dir of [0, -1, 1]) {
-      let col = col0;
-      for (let steps = 0; steps < W; steps++) {
-        if (dir !== 0 || steps === 0) {
-          if (steps > 0) {
-            const [sc, sr] = secondOf({ col, row, orient });
-            const x = Math.min(col, sc);
-            const y = Math.max(row, sr);
-            if (!fighter.board.canMove(x, y, col === sc ? 1 : 2, row === sr ? 1 : 2, dir, 0)) break;
-            col += dir;
-          }
-          const rest = restingRows(fighter.board, col, row, orient);
-          const board = fighter.board.clone();
-          board.ageStrikes();
-          for (let i = 0; i < 2; i++) {
-            if (rest.rows[i] >= 0 && board.inBounds(rest.cols[i], rest.rows[i])) board.set(rest.cols[i], rest.rows[i], pair.pieces[i]);
-          }
-          const { attack, chain } = playOut(board);
-          options.push({ turns, shift: col - pair.col, score: judge(board, attack, chain, skill) });
+      let col = turnedCol;
+      for (let steps = dir === 0 ? 0 : 1; steps < (dir === 0 ? 1 : W); steps++) {
+        const [sc, sr] = secondOf({ col, row, orient });
+        if (dir !== 0) {
+          if (!start.canMove(Math.min(col, sc), Math.max(row, sr), col === sc ? 1 : 2, row === sr ? 1 : 2, dir, 0)) break;
+          col += dir;
         }
-        if (dir === 0) break;
+        const rest = restingRows(start, col, row, orient);
+        const board = start.clone();
+        board.ageStrikes();
+        for (let i = 0; i < 2; i++) {
+          if (rest.rows[i] >= 0 && board.inBounds(rest.cols[i], rest.rows[i])) board.set(rest.cols[i], rest.rows[i], pieces[i]);
+        }
+        const { attack, chain } = playOut(board);
+        found.push({ turns, shift: col - col0, board, attack, chain, score: judge(board, attack, chain) });
       }
     }
   }
-  if (!options.length) return null;
+  return found;
+}
+
+/** The bot's pick for the falling pair, or null. Skilled bots also look at the next pair. */
+export function choose(fighter: Fighter, skill: number, rng: PyRandom): Placement | null {
+  const pair = fighter.pair;
+  if (!pair) return null;
+  const first = options(fighter.board, pair.col, pair.row, pair.orient, pair.pieces);
+  if (!first.length) return null;
+  const next = fighter.next;
+  if (next && skill >= 4) {
+    // Look ahead at the most promising few: what's the best the next pair can do after each?
+    const ahead = Math.min(first.length, 2 + Math.floor(skill / 2));
+    const ranked = [...first].sort((a, b) => b.score - a.score).slice(0, ahead);
+    const floor = Math.min(...first.map((o) => o.score));
+    for (const o of first) if (!ranked.includes(o)) o.score = floor - 1000;
+    for (const o of ranked) {
+      const replies = options(o.board, 3, o.board.isRowEmpty(1) ? 0 : -1, NORTH, next);
+      const best = replies.length ? Math.max(...replies.map((r) => r.score)) : o.score - 1000;
+      o.score = attackSize(o.attack) * WEIGHTS.attack + best;
+    }
+  }
   // Less skilled bots misjudge: noise on every score, up to a quarter of the spread at skill 0.
-  const spread = Math.max(...options.map((o) => o.score)) - Math.min(...options.map((o) => o.score));
+  const scores = first.map((o) => o.score).filter((n) => n > -Infinity);
+  const spread = Math.max(...scores) - Math.min(...scores);
   const noise = (spread * (10 - skill)) / 40;
-  let best = options[0];
+  let best = first[0];
   let bestScore = -Infinity;
-  for (const o of options) {
-    const s = o.score + (rng.random() * 2 - 1) * noise;
-    if (s > bestScore) {
-      bestScore = s;
+  for (const o of first) {
+    const sc = o.score + (rng.random() * 2 - 1) * noise;
+    if (sc > bestScore) {
+      bestScore = sc;
       best = o;
     }
   }
-  return best;
+  return { turns: best.turns, shift: best.shift, score: best.score };
 }
 
 /** How long the bot looks at a pair before moving it. */

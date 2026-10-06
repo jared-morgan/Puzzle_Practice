@@ -1,0 +1,612 @@
+// Swordfight, rebuilt from the Puzzle Pirates client (sword/client, build 20260909165753): the board
+// rules are in board.ts and strikes.ts, a player's board in play is fighter.ts, and this file is
+// SwordPanel and SwordBoardView on top: the 450x600 panel with the board at (143, 62), the next pair,
+// each pirate's status with a small copy of their board, the falling pair with its outline, pieces
+// settling, shattering and fusing, incoming strikes with their warnings, and the client's art and
+// sounds. Settings and scores are in the side panel.
+import { Images } from '../../core/assets';
+import { SoundBank } from '../../core/audio';
+import { keyMatches } from '../../core/controls';
+import { loadFont } from '../../core/fonts';
+import { historyGroup } from '../../core/history';
+import type { InputEvent } from '../../core/input';
+import type { Option } from '../../core/panel';
+import type { PuzzleFactory } from '../../core/puzzle';
+import { PyRandom } from '../../core/pyrandom';
+import { ReplayRecorder, type PuzzleReplay, type ReplaySettingsCodec } from '../../core/replay';
+import type { GameRecord } from '../../core/storage';
+import {
+  blockPiece, blockTile, colour, DAMAGE, DAMAGE_HINT, EMPTY, H, isBlock, isBreaker, kind, METAL, RUM, SWORD, swordTile, W,
+} from './board';
+import { COL_PX, type Fighter, FAST_SPEED, ROW_PX, secondOf, startSpeed } from './fighter';
+import { Match, type MatchSettings } from './match';
+import { PLAIN_SWORDS, SWORD_COLOURS, SWORD_NAMES, isHorizontal } from './strikes';
+import delarobbUrl from './delarobb.ttf?url';
+
+const imageUrls = import.meta.glob<string>('./media/*.png', { eager: true, query: '?url', import: 'default' });
+const swordIconUrls = import.meta.glob<string>('./media/swords/*.png', { eager: true, query: '?url', import: 'default' });
+const soundUrls = import.meta.glob<string>('./sounds/*.ogg', { eager: true, query: '?url', import: 'default' });
+
+const PUZZLE = 'swordfight';
+const WIDTH = 450;
+const BOARD_X = 143;
+const BOARD_Y = 62;
+const BOARD_W = W * COL_PX;
+const BOARD_H = H * ROW_PX;
+/** The next pair, in the box at the top left (SwordPanel: NextBlockView at (96, 6)). */
+const NEXT_X = 96;
+const NEXT_Y = 6;
+/** Status rows: yours on the left at (1, 97), the opponents' on the right at (313, 97), 62px each. */
+const LEFT_X = 1;
+const RIGHT_X = 313;
+const ROWS_Y = 97;
+const ROW_H = 62;
+const MINI = 4;
+const FONT = 'Delarobb';
+/** Piece colours' art, by colour number (sword/a/h.p). */
+const COLOUR_NAMES = ['red', 'green', 'blue', 'yellow'];
+/** Floating messages show for 1.5s, knock-outs 3s, the result 4s (s.d, s.a_). */
+const MESSAGE_MS = 1500;
+
+/** Every sound a variant may pick from (sword/client/sounds.properties). */
+const SOUND_FILES: Record<string, string[]> = {
+  block_join: ['block_join'], block_join_big: ['block_join_big'], block_join_huge: ['block_join_huge'],
+  block_explode: ['strike_land', 'strike_land2'], block_explode_big: ['strike_land_big', 'strike_land_big2'],
+  block_explode_huge: ['strike_land_huge', 'strike_land_huge2'],
+  piece_land: ['metal_piece_land'], metal_piece_land: ['metal_piece_land2'],
+  piece_explode: ['piece_explode', 'piece_explode2', 'piece_explode3', 'piece_explode4'],
+  chain_double: ['chain_double'], chain_triple: ['chain_triple'], chain_quadruple: ['chain_quadruple'], chain_plus: ['chain_five'],
+  hstrike_enter: ['hstrike_enter'], hstrike_enter_big: ['hstrike_enter_big'], hstrike_enter_huge: ['hstrike_enter_huge'],
+  vstrike_enter: ['vstrike_enter', 'vstrike_enter2'], vstrike_enter_big: ['vstrike_enter_big'],
+  vstrike_enter_huge: ['vstrike_enter_huge', 'vstrike_enter_huge2'],
+  strike_blocked: ['strike_blocked', 'strike_blocked2'], strike_land: ['strike_land', 'strike_land2'],
+  strike_land_big: ['strike_land_big', 'strike_land_big2'], strike_land_huge: ['strike_land_huge', 'strike_land_huge2'],
+  danger_sprinkle: ['danger_sprinkle'], danger: ['danger'], danger_big: ['danger_big'], danger_huge: ['danger_huge'],
+  opponent_knocked_out: ['opponent_knocked_out', 'opponent_knocked_out2'],
+  self_knocked_out: ['self_knocked_out', 'self_knocked_out2'],
+  win: ['win'], lose: ['lose'], fanfare: ['fanfare'],
+};
+
+interface Settings extends MatchSettings {}
+
+const DEFAULTS: Settings = {
+  opponents: 1,
+  skill: 5,
+  difficulty: 5,
+  breakers: 12.5,
+  sword: [2, 0, 0],
+  enemySword: [6, 4, 2],
+};
+
+const OPPONENTS: Option<number>[] = [
+  { value: 0, label: 'None (practice)' },
+  ...[1, 2, 3, 4, 5, 6].map((n) => ({ value: n, label: n === 1 ? '1 opponent' : `${n} opponents` })),
+];
+
+const KEYS = [
+  { id: 'left', label: 'Move left', defaultKey: 'ArrowLeft' },
+  { id: 'right', label: 'Move right', defaultKey: 'ArrowRight' },
+  { id: 'cw', label: 'Turn clockwise', defaultKey: 'ArrowDown' },
+  { id: 'ccw', label: 'Turn anticlockwise', defaultKey: 'ArrowUp' },
+  { id: 'drop', label: 'Drop faster', defaultKey: 'Space' },
+  { id: 'next', label: 'Next target', defaultKey: 'S' },
+  { id: 'prev', label: 'Previous target', defaultKey: 'A' },
+];
+const key = (event: string, id: string) => {
+  const binding = KEYS.find((k) => k.id === id)!;
+  const aliases = id === 'next' ? [']'] : id === 'prev' ? ['['] : [];
+  return keyMatches(event, PUZZLE, id, binding.defaultKey, aliases);
+};
+
+function validSword(value: unknown): value is [number, number, number] {
+  return Array.isArray(value) && value.length === 3 && PLAIN_SWORDS.includes(value[0]) &&
+    value.slice(1).every((n) => Number.isInteger(n) && n >= 0 && n < 8);
+}
+
+function validSettings(value: unknown): value is Settings {
+  if (!value || typeof value !== 'object') return false;
+  const s = value as Record<string, unknown>;
+  const int = (v: unknown, lo: number, hi: number) => Number.isInteger(v) && (v as number) >= lo && (v as number) <= hi;
+  return int(s.opponents, 0, 6) && int(s.skill, 0, 10) && int(s.difficulty, 0, 9) &&
+    typeof s.breakers === 'number' && s.breakers >= 0 && s.breakers <= 100 && validSword(s.sword) && validSword(s.enemySword);
+}
+
+interface Message {
+  text: string;
+  start: number;
+  ms: number;
+}
+
+/** Ten piece explosions break into quarters that fly up and fall (SwordBoardView's explode info). */
+function chunkVelocity(seed: number, i: number): [number, number] {
+  const r = (n: number) => {
+    const x = Math.sin(seed * 12.9898 + n * 78.233) * 43758.5453;
+    return x - Math.floor(x);
+  };
+  return [(r(i * 2) * 2 - 1) * 0.082, -r(i * 2 + 1) * 0.522];
+}
+
+export default (async ({ screen, input, panel, store, ticks, setReplayTime }) => {
+  const [images, icons] = await Promise.all([Images.load(imageUrls), Images.load(swordIconUrls), loadFont(FONT, delarobbUrl)]);
+  const img = (name: string) => images.get(name);
+  let replays!: ReplayRecorder;
+  const sounds = new SoundBank(soundUrls, () => replays?.isSeeking ?? false);
+  const soundPick = new PyRandom();
+  soundPick.seedFromCrypto();
+  const ctx = screen.ctx;
+  const play = (name: string) => {
+    const files = SOUND_FILES[name];
+    if (files) sounds.play(files[soundPick.randintN(0, files.length - 1)]);
+  };
+
+  const saved = store.get<unknown>('settings', DEFAULTS);
+  let settings: Settings = validSettings(saved) ? { ...saved } : { ...DEFAULTS };
+  const seeds = new PyRandom();
+  seeds.seedFromCrypto();
+
+  let match: Match | null = null;
+  let running = false;
+  let finished = false;
+  let startedAt = 0;
+  let messages: Message[] = [];
+  /** Left and right held, repeating 7 times a second after 300ms (PuzzlePanel's key bindings). */
+  const held = { left: 0, right: 0, leftNext: 0, rightNext: 0 };
+
+  const settingsKey = () => `${settings.opponents}:${settings.opponents ? settings.skill : '-'}:${settings.difficulty}:${settings.breakers}`;
+  const record = store.get<Record<string, { wins: number; losses: number; best: number }>>('record', {});
+
+  function start(seed?: number): void {
+    const s = seed ?? seeds.randintN(1, 2 ** 31 - 1);
+    if (seed === undefined) replays.begin({ ...settings }, { seed: s });
+    const now = ticks();
+    messages = [];
+    held.left = held.right = 0;
+    match = new Match({ ...settings }, s, now, {
+      sound: (name, fighter) => { if (fighter === 0) play(name); },
+      message: (text, fighter) => { if (fighter === 0) messages.push({ text, start: ticks(), ms: text.includes('knocked') ? 3000 : text.startsWith('Ye be') ? 4000 : MESSAGE_MS }); },
+    });
+    running = true;
+    finished = false;
+    startedAt = now;
+    play('fanfare');
+  }
+
+  function outcome(): string {
+    if (!match) return '';
+    if (!settings.opponents) return 'Knocked out';
+    if (match.result === 'won') return 'Victory';
+    if (match.result === 'lost') return 'Defeat';
+    return 'Stopped';
+  }
+
+  function stop(): void {
+    if (!match) return;
+    const now = ticks();
+    const completed = !!match.result;
+    const f = match.player;
+    const finishedReplay = replays.finish(outcome());
+    if (completed && !replays.isPlaying) {
+      store.addHistory(settingsKey(), {
+        score: f.stats.sent,
+        result: outcome(),
+        won: match.result === 'won' ? 1 : 0,
+        ms: Math.round((match.endedAt || now) - startedAt),
+        received: f.stats.received,
+        pairs: f.stats.pairs,
+        bestChain: f.stats.bestChain,
+        ...(finishedReplay ? { replayAt: finishedReplay.at, replayId: finishedReplay.runId ?? '' } : {}),
+      });
+      const r = record[settingsKey()] ?? { wins: 0, losses: 0, best: 0 };
+      if (settings.opponents) {
+        if (match.result === 'won') r.wins++;
+        else r.losses++;
+      }
+      r.best = Math.max(r.best, f.stats.sent);
+      record[settingsKey()] = r;
+      store.set('record', record);
+    }
+    if (!match.result) match.endedAt = now;
+    running = false;
+    finished = true;
+  }
+
+  // ---- Input ----
+
+  function handle(events: InputEvent[], now: number): void {
+    if (!match || !running) return;
+    const f = match.player;
+    for (const event of events) {
+      if (event.type === 'keydown') {
+        if (key(event.key, 'left')) { f.move(-1, now); held.left = now; held.leftNext = now + 300; }
+        else if (key(event.key, 'right')) { f.move(1, now); held.right = now; held.rightNext = now + 300; }
+        else if (key(event.key, 'cw')) f.rotate(true, now);
+        else if (key(event.key, 'ccw')) f.rotate(false, now);
+        else if (key(event.key, 'drop')) f.setFast(true, now);
+        else if (key(event.key, 'next')) match.cycleTarget(1);
+        else if (key(event.key, 'prev')) match.cycleTarget(-1);
+      } else if (event.type === 'keyup') {
+        if (key(event.key, 'left')) held.left = 0;
+        else if (key(event.key, 'right')) held.right = 0;
+        else if (key(event.key, 'drop')) f.setFast(false, now);
+      } else if (event.type === 'mousedown' && event.button === 1) {
+        // Clicking an opponent's status targets them.
+        const [mx, my] = event.pos;
+        if (mx >= RIGHT_X && mx < RIGHT_X + 136) {
+          const row = Math.floor((my - ROWS_Y) / ROW_H);
+          if (row >= 0 && row < settings.opponents) match.setTarget(row + 1);
+        }
+      }
+    }
+    for (const side of ['left', 'right'] as const) {
+      const next = side === 'left' ? 'leftNext' : 'rightNext';
+      while (held[side] && now >= held[next]) {
+        f.move(side === 'left' ? -1 : 1, held[next]);
+        held[next] += 1000 / 7;
+      }
+    }
+  }
+
+  // ---- Drawing ----
+
+  /** The tile for a piece: its sheet and frame (sword/a/h.b). */
+  function tileOf(p: number, small = false): [string, number] | null {
+    const sm = small ? '_sm' : '';
+    switch (kind(p)) {
+      case SWORD: return [`piece_swords_strike${sm}`, swordTile(p)];
+      case DAMAGE: return [`piece_swords_metal${sm}`, 7];
+      case DAMAGE_HINT: return [`piece_swords_metal${sm}`, colour(p)];
+      case METAL: return [`piece_swords_metal${sm}`, 8];
+      case RUM: return null;
+      default: {
+        const name = COLOUR_NAMES[colour(p)];
+        if (!name) return null;
+        return [`piece_swords_${name}${sm}`, isBlock(p) ? blockTile(p) : isBreaker(p) ? 10 : 0];
+      }
+    }
+  }
+
+  function drawPiece(p: number, x: number, y: number, alpha = 1): void {
+    if (p === EMPTY) return;
+    const tile = tileOf(p);
+    if (!tile) return;
+    ctx.globalAlpha = alpha;
+    ctx.drawImage(img(tile[0]), tile[1] * COL_PX, 0, COL_PX, ROW_PX, Math.trunc(x), Math.trunc(y), COL_PX, ROW_PX);
+    ctx.globalAlpha = 1;
+  }
+
+  /** The pair's first piece is outlined in white (sword/client/k: a 1px white glow). */
+  const glowCache = new Map<number, HTMLCanvasElement>();
+  function glowing(p: number): HTMLCanvasElement {
+    let canvas = glowCache.get(p);
+    if (canvas) return canvas;
+    canvas = document.createElement('canvas');
+    canvas.width = COL_PX + 2;
+    canvas.height = ROW_PX + 2;
+    const c = canvas.getContext('2d')!;
+    const tile = tileOf(p)!;
+    for (const [dx, dy] of [[0, 1], [2, 1], [1, 0], [1, 2], [0, 0], [2, 2], [0, 2], [2, 0]]) {
+      c.drawImage(img(tile[0]), tile[1] * COL_PX, 0, COL_PX, ROW_PX, dx, dy, COL_PX, ROW_PX);
+    }
+    c.globalCompositeOperation = 'source-in';
+    c.fillStyle = 'rgba(255,255,255,0.5)';
+    c.fillRect(0, 0, canvas.width, canvas.height);
+    c.globalCompositeOperation = 'source-over';
+    c.drawImage(img(tile[0]), tile[1] * COL_PX, 0, COL_PX, ROW_PX, 1, 1, COL_PX, ROW_PX);
+    glowCache.set(p, canvas);
+    return canvas;
+  }
+
+  function drawPair(f: Fighter, now: number): void {
+    const p = f.pair;
+    if (!p) return;
+    const offset = p.bounceAt ? 1 : f.progress(now) * ROW_PX;
+    const [sc, sr] = secondOf(p);
+    drawPiece(p.pieces[1], sc * COL_PX, sr * ROW_PX + offset);
+    ctx.drawImage(glowing(p.pieces[0]), p.col * COL_PX - 1, p.row * ROW_PX + offset - 1);
+  }
+
+  function drawBoard(f: Fighter, now: number): void {
+    ctx.save();
+    ctx.translate(BOARD_X, BOARD_Y);
+    ctx.beginPath();
+    ctx.rect(0, 0, BOARD_W, BOARD_H);
+    ctx.clip();
+    const moving = new Set(f.movers.map((m) => m.to * W + m.x));
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) if (!moving.has(y * W + x)) drawPiece(f.board.get(x, y), x * COL_PX, y * ROW_PX);
+    }
+    // Pieces settling slide straight down (DropBoardView.b with a LinePath).
+    for (const m of f.movers) {
+      const t = Math.min(1, Math.max(0, (now - m.start) / (m.end - m.start)));
+      drawPiece(m.piece, m.x * COL_PX, (m.from + (m.to - m.from) * t) * ROW_PX);
+    }
+    // New blocks fade in over the loose pieces before they fuse.
+    for (const j of f.joins) {
+      const a = Math.min(1, (now - j.start) * 0.004);
+      const { block } = j;
+      for (let cx = 0; cx < block.w; cx++) {
+        for (let cy = 0; cy < block.h; cy++) {
+          drawPiece(blockPiece(block.colour, cx, cy, block.w, block.h), (block.x + cx) * COL_PX, (block.y - block.h + 1 + cy) * ROW_PX, a);
+        }
+      }
+    }
+    for (const s of f.sprites) {
+      const total = Math.abs(s.to - s.from);
+      const t = Math.min(total, Math.max(0, (now - s.start) / s.stepMs));
+      const lead = s.from + Math.sign(s.to - s.from) * t;
+      if (!s.across) {
+        s.pieces.forEach((p, i) => drawPiece(p, s.line * COL_PX, (lead - i) * ROW_PX));
+      } else {
+        s.pieces.forEach((p, i) => drawPiece(p, (lead + i * s.dir) * COL_PX, s.line * ROW_PX));
+      }
+    }
+    drawShadows(f, now);
+    drawPair(f, now);
+    // Shattered pieces break into quarters that fly up and fall away over half a second.
+    for (const b of f.blasts) {
+      const t = now - b.start;
+      const tile = tileOf(b.piece);
+      if (!tile) continue;
+      ctx.globalAlpha = Math.max(0, 1 - t / 500);
+      for (let i = 0; i < 4; i++) {
+        const [vx, vy] = chunkVelocity(b.start + b.x * 31 + b.y * 17, i);
+        const qx = (i % 2) * (COL_PX / 2);
+        const qy = Math.floor(i / 2) * (ROW_PX / 2);
+        const x = b.x * COL_PX + qx + vx * t;
+        const y = b.y * ROW_PX + qy + vy * t + 0.000522 * t * t / 2;
+        ctx.drawImage(img(tile[0]), tile[1] * COL_PX + qx, qy, COL_PX / 2, ROW_PX / 2, Math.trunc(x), Math.trunc(y), COL_PX / 2, ROW_PX / 2);
+      }
+      ctx.globalAlpha = 1;
+    }
+    // Sparks where a sword hits.
+    for (const hit of f.impacts) {
+      const t = now - hit.start;
+      const n = Math.min(12, 3 + hit.size);
+      ctx.globalAlpha = Math.max(0, 1 - t / 600);
+      for (let i = 0; i < n; i++) {
+        const [vx, vy] = chunkVelocity(hit.start + i, i);
+        const x = hit.x * COL_PX + vx * 3 * t - 19;
+        const y = hit.y * ROW_PX + vy * 0.6 * t + 0.0005 * t * t - 19;
+        ctx.drawImage(img('sparks'), (i % 3) * 39, 0, 39, 39, Math.trunc(x), Math.trunc(y), 39, 39);
+      }
+      ctx.globalAlpha = 1;
+    }
+    if (f.out) {
+      ctx.fillStyle = 'rgba(0,0,0,0.3)';
+      ctx.fillRect(0, 0, BOARD_W, BOARD_H);
+    }
+    drawMessages(now);
+    ctx.restore();
+  }
+
+  /** Warnings of incoming strikes poke in at the edge and blink every 300ms (sword/client/i). */
+  function drawShadows(f: Fighter, now: number): void {
+    if (!f.shadows.length || !f.pair) return;
+    if (Math.floor(now / 300) % 2 === 1) return;
+    ctx.globalAlpha = 0.75;
+    for (const s of f.shadows) {
+      const area = s.width * s.height;
+      const hidden = 1 - [1 / 3, 2 / 3, 1][area <= 6 ? 0 : area <= 10 ? 1 : 2];
+      if (isHorizontal(s)) {
+        const col = s.orient === 0 ? Math.max(s.x, 0) : Math.min(s.x + s.width - 1, W - 1);
+        const column = s.pieces[col];
+        if (!column) continue;
+        const x = s.orient === 0 ? BOARD_W - COL_PX * (1 - hidden) : -COL_PX * hidden;
+        const rows = Math.min(s.height, column.length);
+        for (let i = rows - 1; i >= 0; i--) drawPiece(column[i], x, (s.y - i) * ROW_PX);
+      } else {
+        for (let col = Math.max(s.x, 0); col < Math.min(s.x + s.width, W); col++) {
+          const column = s.pieces[col];
+          if (column) drawPiece(column[0], col * COL_PX, -ROW_PX * hidden);
+        }
+      }
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  function drawMessages(now: number): void {
+    messages = messages.filter((m) => now < m.start + m.ms);
+    let y = BOARD_H / 2;
+    for (const m of messages) {
+      const p = (now - m.start) / m.ms;
+      ctx.save();
+      ctx.globalAlpha = p < 0.7 ? 1 : Math.max(0, 1 - (p - 0.7) / 0.3);
+      ctx.font = `28px "${FONT}"`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.lineJoin = 'round';
+      ctx.lineWidth = 4;
+      ctx.strokeStyle = '#000';
+      const ty = y - 30 * Math.min(p, 0.7);
+      ctx.strokeText(m.text, BOARD_W / 2, ty, BOARD_W - 4);
+      ctx.fillStyle = '#fff';
+      ctx.fillText(m.text, BOARD_W / 2, ty, BOARD_W - 4);
+      ctx.restore();
+      y += 36;
+    }
+  }
+
+  function drawNext(f: Fighter | null): void {
+    const next = f?.next;
+    if (!next) return;
+    drawPiece(next[1], NEXT_X, NEXT_Y);
+    drawPiece(next[0], NEXT_X, NEXT_Y + ROW_PX);
+  }
+
+  /** A pirate's status row: name, sword and a small copy of their board (SwordPlayerStatusView). */
+  function drawStatus(m: Match, index: number, x: number, y: number, right: boolean): void {
+    const f = m.fighters[index];
+    const sword = m.swords[index];
+    ctx.save();
+    if (right && index === m.target && !f.out) {
+      ctx.fillStyle = 'rgba(255, 230, 120, 0.35)';
+      ctx.fillRect(x, y, 136, ROW_H - 2);
+      ctx.strokeStyle = 'rgba(255, 230, 120, 0.9)';
+      ctx.strokeRect(x + 0.5, y + 0.5, 135, ROW_H - 3);
+    }
+    const boardX = right ? x + 14 : x + 134 - 14 - (W * MINI + 4);
+    const swordX = right ? boardX + W * MINI + 8 : boardX - 34;
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
+    ctx.fillRect(boardX, y + 2, W * MINI + 4, H * MINI + 4);
+    for (let r = 0; r < H; r++) {
+      for (let c = 0; c < W; c++) {
+        const tile = tileOf(f.board.get(c, r), true);
+        if (tile) ctx.drawImage(img(tile[0]), tile[1] * MINI, 0, MINI, MINI, boardX + 2 + c * MINI, y + 4 + r * MINI, MINI, MINI);
+      }
+    }
+    const icon = icons.has(`sword${sword.type}`) ? icons.get(`sword${sword.type}`) : null;
+    if (icon) ctx.drawImage(icon, swordX, y + 2);
+    ctx.font = '11px sans-serif';
+    ctx.textBaseline = 'top';
+    ctx.textAlign = right ? 'right' : 'left';
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = '#000';
+    ctx.fillStyle = f.out ? '#aaa' : '#fff';
+    const nameX = right ? x + 134 : x + 2;
+    ctx.strokeText(m.names[index], nameX, y + 4);
+    ctx.fillText(m.names[index], nameX, y + 4);
+    if (f.out) {
+      ctx.fillStyle = 'rgba(0,0,0,0.35)';
+      ctx.fillRect(boardX, y + 2, W * MINI + 4, H * MINI + 4);
+    }
+    // Attacker dots: who is attacking this pirate.
+    const attackers = index === 0 ? m.alive().length : m.target === index && !m.player.out ? 1 : 0;
+    for (let i = 0; i < attackers; i++) ctx.drawImage(img('dot'), right ? x + 2 : x + 126, y + 20 + i * 7);
+    ctx.restore();
+  }
+
+  function banner(text: string, y: number): void {
+    ctx.save();
+    ctx.font = `24px "${FONT}"`;
+    ctx.textAlign = 'center';
+    ctx.lineWidth = 4;
+    ctx.lineJoin = 'round';
+    ctx.strokeStyle = '#000';
+    ctx.fillStyle = '#fff';
+    ctx.strokeText(text, WIDTH / 2, y);
+    ctx.fillText(text, WIDTH / 2, y);
+    ctx.restore();
+  }
+
+  // ---- The frame ----
+
+  function frame(events: InputEvent[]): void {
+    const routed = replays.frame(events, input.mouse, ticks());
+    events = routed.events;
+    input.mouse = routed.mouse;
+    const now = ticks();
+    if (!routed.renderOnly) {
+      handle(events, now);
+      if (match && running) {
+        match.update(now);
+        if (match.result) stop();
+      }
+    }
+    if (replays.isSeeking || replays.isAdvancing) return;
+    screen.fill('#000');
+    if (!match) {
+      screen.blit(img('howto'), 0, 0);
+      replays.drawOverlay(ctx);
+      return;
+    }
+    screen.blit(img('background'), 0, 0);
+    drawNext(match.player);
+    drawStatus(match, 0, LEFT_X, ROWS_Y, false);
+    for (let i = 1; i < match.fighters.length; i++) drawStatus(match, i, RIGHT_X, ROWS_Y + (i - 1) * ROW_H, true);
+    drawBoard(match.player, running ? now : match.endedAt || now);
+    if (finished && !match.result) banner('Stopped', 330);
+    replays.drawOverlay(ctx);
+  }
+
+  // ---- Panel ----
+
+  const clockNow = () => (running ? ticks() : match?.endedAt || ticks());
+  panel.clock(() => ({ label: 'Time', ms: match ? clockNow() - startedAt : 0 }));
+  panel.controls(PUZZLE, KEYS);
+
+  const session = panel.session();
+  session.select('Opponents', OPPONENTS, () => settings.opponents, (n) => { settings.opponents = n; save(); }, { disabled: () => running });
+  session.note(() => {
+    const sword = SWORD_NAMES[settings.sword[0]];
+    const speed = `${Math.round(ROW_PX / startSpeed(settings.difficulty))}ms a row`;
+    return settings.opponents
+      ? `AI skill ${settings.skill} · starting speed ${speed} · your ${sword.toLowerCase()} (Settings tab)`
+      : `Starting speed ${speed} · your ${sword.toLowerCase()} (Settings tab)`;
+  });
+  session.button('Start', () => (running ? stop() : start()), {
+    variant: 'primary', disabled: () => !!replays?.isPlaying, label: () => (running ? 'Stop' : finished ? 'Fight again' : 'Start'),
+  });
+  panel.group().note(() => running && match && settings.opponents > 1 ? `Attacking ${match.names[match.target]}: press A / S or click a pirate on the right to change.` : '');
+
+  const recordNow = () => record[settingsKey()] ?? { wins: 0, losses: 0, best: 0 };
+  panel.score('Fight').stats(['', 'Now', 'Best'], () => [
+    ['Damage sent', match ? String(match.player.stats.sent) : '0', String(recordNow().best || '—')],
+    ...(settings.opponents ? [['Wins', String(recordNow().wins), `of ${recordNow().wins + recordNow().losses}`]] : []),
+  ]);
+  panel.results(() => finished && match && match.result ? {
+    title: settings.opponents ? (match.result === 'won' ? 'Ye be the victor!' : 'Ye be defeated!') : 'Practice results',
+    rows: [
+      ['Result', outcome()],
+      ['Time', `${((match.endedAt - startedAt) / 1000).toFixed(1)}s`],
+      ['Damage sent', String(match.player.stats.sent)],
+      ['Damage taken', String(match.player.stats.received)],
+      ['Pairs placed', String(match.player.stats.pairs)],
+      ['Pieces shattered', String(match.player.stats.shattered)],
+      ['Best chain', String(match.player.stats.bestChain)],
+      ['Swords sent', String(match.player.stats.swordsSent)],
+      ['Biggest sword', match.player.stats.biggestSword ? `${match.player.stats.biggestSword} squares` : '—'],
+    ],
+  } : null);
+
+  const replayAction = {
+    available: (game: GameRecord) => typeof game.replayAt === 'number' && (replays?.hasPlayableAt(game.replayAt, typeof game.replayId === 'string' ? game.replayId : undefined) ?? false),
+    play: (game: GameRecord) => { if (typeof game.replayAt === 'number') replays?.playAt(game.replayAt, typeof game.replayId === 'string' ? game.replayId : undefined); },
+  };
+  historyGroup(panel, () => store.history(settingsKey()), [
+    { label: 'Result', value: (g) => String(g.result ?? '') },
+    { label: 'Damage', value: (g) => String(g.score) },
+    { label: 'Time', value: (g) => typeof g.ms === 'number' ? `${(g.ms / 1000).toFixed(0)}s` : '' },
+  ], 'Past fights', replayAction);
+
+  function save(): void {
+    store.set('settings', settings);
+  }
+  const game = panel.settings.group('Fight');
+  game.range('AI skill', () => settings.skill, (v) => { settings.skill = v; save(); }, { min: 0, max: 10, disabled: () => running });
+  game.select('Starting speed', Array.from({ length: 10 }, (_, d) => ({ value: d, label: `${d}: ${Math.round(ROW_PX / startSpeed(d))}ms a row` })),
+    () => settings.difficulty, (d) => { settings.difficulty = d; save(); }, { disabled: () => running });
+  game.number('Breaker chance (%)', () => settings.breakers, (v) => { settings.breakers = v; save(); }, { min: 0, max: 100, step: 0.5, disabled: () => running });
+  game.note(() => `The pair speeds up as it's dealt, to ${Math.round(ROW_PX / 0.25)}ms a row at most; holding drop is ${Math.round(ROW_PX / FAST_SPEED)}ms a row.`);
+
+  const swordOptions: Option<number>[] = PLAIN_SWORDS.map((t) => ({ value: t, label: SWORD_NAMES[t] }));
+  const colourOptions: Option<number>[] = SWORD_COLOURS.map((name, i) => ({ value: i, label: name }));
+  for (const [title, which] of [['Your sword', 'sword'], ["Opponents' sword", 'enemySword']] as const) {
+    const g = panel.settings.group(title);
+    g.select('Sword', swordOptions, () => settings[which][0], (t) => { settings[which] = [t, settings[which][1], settings[which][2]]; save(); }, { disabled: () => running });
+    g.select('Colour 1', colourOptions, () => settings[which][1], (c) => { settings[which] = [settings[which][0], c, settings[which][2]]; save(); }, { disabled: () => running || settings[which][0] === 127 });
+    g.select('Colour 2', colourOptions, () => settings[which][2], (c) => { settings[which] = [settings[which][0], settings[which][1], c]; save(); }, { disabled: () => running || settings[which][0] === 127 });
+  }
+  panel.settings.group('Reset').button('Reset to defaults', () => { settings = { ...DEFAULTS }; save(); }, { disabled: () => running });
+
+  const replaySettingsCodec: ReplaySettingsCodec = {
+    currentVersion: 1,
+    simulatorVersion: 1,
+    migrate: (version, value) => (version === 1 && validSettings(value) ? value : null),
+  };
+  let savedSettings: Settings | null = null;
+  replays = new ReplayRecorder(PUZZLE, store, panel, ticks, (tape: PuzzleReplay) => {
+    savedSettings ??= { ...settings };
+    settings = { ...(tape.settings as Settings) };
+    const seed = (tape.seed as { seed?: unknown })?.seed;
+    if (typeof seed !== 'number') throw new Error('Invalid Swordfight replay seed');
+    start(seed);
+  }, () => {
+    if (running) stop();
+    if (savedSettings) {
+      settings = savedSettings;
+      savedSettings = null;
+    }
+  }, (seed) => typeof (seed as { seed?: unknown })?.seed === 'number', setReplayTime, () => frame([]), replaySettingsCodec, () => !running || replays.isPlaying);
+
+  return { frame, dispose: () => { replays.dispose(); sounds.dispose(); } };
+}) satisfies PuzzleFactory;
