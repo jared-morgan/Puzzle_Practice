@@ -536,7 +536,8 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
   session.button('Start', () => (running ? stop() : start()), {
     variant: 'primary', disabled: () => !!replays?.isPlaying, label: () => (running ? 'Stop' : finished ? 'Fight again' : 'Start'),
   });
-  panel.group().note(() => running && match && settings.opponents > 1 ? `Attacking ${match.names[match.target]}: press A / S or click a pirate on the right to change.` : '');
+  const targeting = () => running && !!match && settings.opponents > 1;
+  panel.group(undefined, { hidden: () => !targeting() }).note(() => targeting() ? `Attacking ${match!.names[match!.target]}: press A / S or click a pirate on the right to change.` : '');
 
   const recordNow = () => record[settingsKey()] ?? { wins: 0, losses: 0, best: 0 };
   panel.score('Fight').stats(['', 'Now', 'Best'], () => [
@@ -607,6 +608,9 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
       savedSettings = null;
     }
   }, (seed) => typeof (seed as { seed?: unknown })?.seed === 'number', setReplayTime, () => frame([]), replaySettingsCodec, () => !running || replays.isPlaying);
+
+  // For driving the game from tests in the dev server.
+  if (import.meta.env.DEV) (window as unknown as { __sf: unknown }).__sf = { get match() { return match; } };
 
   return { frame, dispose: () => { replays.dispose(); sounds.dispose(); } };
 }) satisfies PuzzleFactory;

@@ -581,13 +581,15 @@ export class Fighter {
     const pieces = this.hooks.nextPair();
     this.next = this.hooks.peekPair();
     this.blocksSeen++;
+    // Each pair starts at the normal speed, even with the drop key still held (s.v).
+    this.fast = false;
     this.pair = {
       col: 3,
       row: this.board.isRowEmpty(1) ? 0 : -1,
       orient: NORTH,
       pieces,
       start: now,
-      speed: this.fast ? FAST_SPEED : this.speed,
+      speed: this.speed,
       bounceAt: 0,
       kicks: 2,
     };

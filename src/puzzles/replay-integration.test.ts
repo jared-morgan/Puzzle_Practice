@@ -14,7 +14,7 @@ vi.mock('../core/replay', async (original) => {
 });
 vi.mock('../core/assets', async (original) => ({
   ...await original<typeof import('../core/assets')>(),
-  Images: class { static async load() { return { get: () => ({ width: 450, height: 600 }) }; } },
+  Images: class { static async load() { return { get: () => ({ width: 450, height: 600 }), has: () => true }; } },
 }));
 vi.mock('../core/fonts', () => ({ loadFont: async () => {} }));
 vi.mock('../core/audio', () => ({ SoundBank: class { play() {} dispose() {} } }));
@@ -141,6 +141,7 @@ describe('puzzle completion during replay', () => {
     ['distilling', 30000, 20, { timerOn: true, timerSeconds: 0.01 }],
     ['vampire-carp', 121000, 1000, {}],
     ['forage', 12000, 20, { settings: { mode: 'ci', roundSeconds: 5 } }],
+    ['swordfight', 90000, 20, { settings: { opponents: 1, skill: 5, difficulty: 5, breakers: 12.5, sword: [2, 0, 0], enemySword: [6, 4, 2] } }],
   ] as const)('%s keeps player history unchanged through playback, seeking and Stop', async (puzzle, end, step, settings) => {
     const store = new Store(puzzle);
     if (puzzle === 'forage') vi.spyOn(Math, 'random').mockReturnValue(0.123456);

@@ -7,7 +7,7 @@
 //   - each break sends one sprinkle for every two loose pieces (breakers included), rounded down,
 //     working out simultaneous breaks separately and adding them up
 //   - the nth clear of a chain multiplies sprinkles by n, and a block's longest side by n
-import { type Clear, colour, H, isBlock, W } from './board';
+import { type Clear, colour, H, W } from './board';
 
 export interface Attack {
   /** [width, height] of each sword strike. */
@@ -37,8 +37,10 @@ export function swordFor(w: number, h: number, link: number): [number, number] {
 export function attackFor(clear: Clear, link: number): Attack {
   const swords = clear.blocks.map((b) => swordFor(b.w, b.h, link));
   // Separate breaks: loose shattered pieces grouped by touching, through any shattered block.
+  // A piece counts as loose unless it's in one of the clear's blocks, as the clear counts them.
+  const inBlock = (x: number, y: number) => clear.blocks.some((b) => x >= b.x && x < b.x + b.w && y <= b.y && y > b.y - b.h);
   const shattered = new Map<number, { loose: boolean; colour: number }>();
-  for (const c of clear.cells) shattered.set(c.y * W + c.x, { loose: !isBlock(c.piece), colour: colour(c.piece) });
+  for (const c of clear.cells) shattered.set(c.y * W + c.x, { loose: !inBlock(c.x, c.y), colour: colour(c.piece) });
   const seen = new Set<number>();
   let sprinkles = 0;
   for (const start of shattered.keys()) {
