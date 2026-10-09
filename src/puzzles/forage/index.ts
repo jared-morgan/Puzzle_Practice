@@ -171,6 +171,8 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
     settings.roundSeconds ??= 0;
   }
   settings.roundSeconds ??= settings.mode === 'ci' ? 120 : 0;
+  // Gauntlet chests always arrive paced; only replays recorded before keep their old timing.
+  settings.pacedChests = true;
   const saveSettings = () => store.set('settings', settings);
   const puzzleRecords = store.get<Record<string, PuzzleRecord>>('puzzleRecords', {});
   const ciBest = store.get<Record<string, number>>('ciBest', {});
@@ -236,7 +238,7 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
       (settings.ants ? 'ants' : '');
     // Preserve existing scores for the original Gauntlet and Normal round lengths.
     const original = settings.mode === 'normal' ? 0 : 120;
-    // Paced chests score lower, so they keep their own bests and history.
+    // Paced games keep their own bests and history, apart from scores made before chests were paced.
     const paced = settings.mode === 'ci' && settings.pacedChests ? ':paced' : '';
     return base + (roundSeconds() === original ? '' : `:timer:${roundSeconds()}`) + paced;
   };
@@ -727,11 +729,6 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
     disabled: locked,
     hidden: () => isPuzzle() || settings.mode === 'normal',
     title: 'Changes chest spawn rates only',
-  });
-  setup.toggle('Paced chests', () => !!settings.pacedChests, (on) => { settings.pacedChests = on; saveSettings(); }, {
-    disabled: locked,
-    hidden: () => settings.mode !== 'ci',
-    title: 'A due chest arrives on your next move and lands only when there is room, as in the game',
   });
   bind(setup, 'Scramble', 'scramble', () => !isPuzzle());
 

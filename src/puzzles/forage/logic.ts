@@ -51,7 +51,7 @@ export interface Settings {
   chestRatios?: [number, number, number];
   /**
    * Gauntlet: a chest that's due arrives on the next move and needs room to land, as it does in the
-   * game, rather than dropping in straight away. Missing (older replays) is off.
+   * game. Always on in play; replays recorded without it play back with chests dropping straight in.
    */
   pacedChests?: boolean;
 }
