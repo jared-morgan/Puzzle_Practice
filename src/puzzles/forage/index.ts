@@ -238,9 +238,7 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
       (settings.ants ? 'ants' : '');
     // Preserve existing scores for the original Gauntlet and Normal round lengths.
     const original = settings.mode === 'normal' ? 0 : 120;
-    // Paced games keep their own bests and history, apart from scores made before chests were paced.
-    const paced = settings.mode === 'ci' && settings.pacedChests ? ':paced' : '';
-    return base + (roundSeconds() === original ? '' : `:timer:${roundSeconds()}`) + paced;
+    return base + (roundSeconds() === original ? '' : `:timer:${roundSeconds()}`);
   };
 
   const roundSeconds = () => settings.roundSeconds ?? (settings.mode === 'ci' ? 120 : 0);
