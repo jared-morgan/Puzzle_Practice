@@ -89,3 +89,23 @@ describe('crate sources', () => {
     expect(points).toBeGreaterThanOrEqual(collected);
   });
 });
+
+describe('paced Gauntlet chests', () => {
+  it('arrive a move after they are due, through the spawn step, and still 9 a board', () => {
+    const source = new GauntletChests(new PyRandom(8), [0.5, 0.35, 0.15], 9, false, true);
+    const game = new Forage(21n, source);
+    let firstDue = -1;
+    let firstLanded = -1;
+    let most = 0;
+    for (let i = 0; i < 2000; i++) {
+      game.act(i % (WIDTH - 1), (i * 7) % (HEIGHT - 1), i % 3 === 0);
+      if (firstDue < 0 && (source as unknown as { waiting: number }).waiting >= 0) firstDue = i;
+      if (firstLanded < 0 && game.crateCount() > 0) firstLanded = i;
+      most = Math.max(most, game.crateCount());
+    }
+    expect(firstDue).toBeGreaterThanOrEqual(0);
+    expect(firstLanded).toBeGreaterThan(firstDue);
+    expect(most).toBeLessThanOrEqual(3);
+    expect(source.budget).toBeGreaterThanOrEqual(0);
+  });
+});

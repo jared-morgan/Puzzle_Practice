@@ -71,9 +71,25 @@ export class GauntletChests implements CrateSource {
     private readonly weights: readonly [number, number, number],
     budget: number,
     private readonly chaos = false,
+    /**
+     * Paced: a chest that's due doesn't drop in at once. It's asked for when the player next moves,
+     * and then it has to find room like a Normal crate: each time the board settles it lands with a
+     * chance that falls as the board fills, in any column whose top cells are clear.
+     */
+    private readonly paced = false,
   ) {
     this.budget = budget;
     this.pick();
+  }
+
+  /** Paced: the size of a chest that's due but not asked for yet. */
+  private waiting = -1;
+
+  beforeMove(game: Forage): void {
+    if (!this.paced || this.waiting < 0 || game.board.bonusMode !== 0) return;
+    game.crateArt[this.waiting] = CURSED_TILES[this.waiting];
+    game.board.bonusMode = 64 | this.waiting | (this.waiting << 2);
+    this.waiting = -1;
   }
 
   get enabled(): boolean {
@@ -108,8 +124,15 @@ export class GauntletChests implements CrateSource {
     if (!this.enabled || (!this.chaos && this.budget <= 0)) return false;
     const onBoard = [0, 0, 0];
     for (const p of game.board.cells) if (isCrateAnchor(p)) onBoard[crateSize(p)]++;
+    // A paced chest still on its way counts as on the board.
+    const coming = this.waiting >= 0 ? this.waiting : (game.board.bonusMode & 64) !== 0 ? game.board.bonusMode & 3 : -1;
+    if (coming >= 0) onBoard[coming]++;
     const total = onBoard[0] + onBoard[1] + onBoard[2];
     this.movesSinceLast++;
+    if (this.paced && coming >= 0) {
+      if (total === 3) this.movesSinceLast = -1;
+      return false;
+    }
     let placed = false;
     if (this.movesSinceLast >= 2 && (this.chaos || total < 3)) {
       const fits =
@@ -122,6 +145,13 @@ export class GauntletChests implements CrateSource {
   }
 
   private trySpawn(game: Forage): boolean {
+    if (this.paced) {
+      this.waiting = this.next - 1;
+      this.budget--;
+      this.pick();
+      this.movesSinceLast = 0;
+      return false;
+    }
     let blocked = this.blocked(game, this.column);
     if (blocked && this.movesSinceLast >= 3) {
       for (const x of this.rng.shuffle(Array.from({ length: WIDTH + 1 - this.next }, (_, i) => i))) {

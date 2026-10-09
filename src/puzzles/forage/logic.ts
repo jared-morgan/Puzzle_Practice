@@ -49,6 +49,11 @@ export interface Settings {
   roundSeconds?: number;
   /** Override the level's mix in Gauntlet and Chaos. */
   chestRatios?: [number, number, number];
+  /**
+   * Gauntlet: a chest that's due arrives on the next move and needs room to land, as it does in the
+   * game, rather than dropping in straight away. Missing (older replays) is off.
+   */
+  pacedChests?: boolean;
 }
 
 /** [bone boxes, jars, chests] cleared. */

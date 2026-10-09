@@ -112,6 +112,7 @@ const DEFAULT_SETTINGS: Settings = {
   forageLevel: 6,
   normalRatios: [...NORMAL_RATIOS],
   chestRatios: undefined,
+  pacedChests: true,
 };
 
 interface PuzzleRecord {
@@ -235,7 +236,9 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
       (settings.ants ? 'ants' : '');
     // Preserve existing scores for the original Gauntlet and Normal round lengths.
     const original = settings.mode === 'normal' ? 0 : 120;
-    return base + (roundSeconds() === original ? '' : `:timer:${roundSeconds()}`);
+    // Paced chests score lower, so they keep their own bests and history.
+    const paced = settings.mode === 'ci' && settings.pacedChests ? ':paced' : '';
+    return base + (roundSeconds() === original ? '' : `:timer:${roundSeconds()}`) + paced;
   };
 
   const roundSeconds = () => settings.roundSeconds ?? (settings.mode === 'ci' ? 120 : 0);
@@ -271,7 +274,7 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
         ? new ServerRequests(rng, crateWeights(), BANANAS)
         : settings.mode === 'puzzle'
           ? {}
-          : new GauntletChests(rng, crateWeights(), BANANAS, settings.mode === 'chaos');
+          : new GauntletChests(rng, crateWeights(), BANANAS, settings.mode === 'chaos', settings.mode === 'ci' && !!settings.pacedChests);
     const g = new Forage(seed, source);
     // Shovel, machete, monkey, earthquake, ants.
     g.board.allowed = [settings.shovel, settings.machete, settings.monkey, settings.eq, settings.ants];
@@ -704,7 +707,7 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
     const s = tape.settings as Settings & { puzzleId: string; pickedRandomly: boolean };
     const saved = replay?.saved ?? { settings: structuredClone(settings), puzzleId, pickedRandomly };
     const { puzzleId: replayPuzzleId, pickedRandomly: replayPickedRandomly, ...replaySettings } = structuredClone(s);
-    Object.assign(settings, DEFAULT_SETTINGS, replaySettings);
+    Object.assign(settings, DEFAULT_SETTINGS, { pacedChests: false }, replaySettings);
     settings.roundSeconds ??= settings.mode === 'ci' ? 120 : 0;
     puzzleId = replayPuzzleId;
     pickedRandomly = replayPickedRandomly;
@@ -724,6 +727,11 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
     disabled: locked,
     hidden: () => isPuzzle() || settings.mode === 'normal',
     title: 'Changes chest spawn rates only',
+  });
+  setup.toggle('Paced chests', () => !!settings.pacedChests, (on) => { settings.pacedChests = on; saveSettings(); }, {
+    disabled: locked,
+    hidden: () => settings.mode !== 'ci',
+    title: 'A due chest arrives on your next move and lands only when there is room, as in the game',
   });
   bind(setup, 'Scramble', 'scramble', () => !isPuzzle());
 
