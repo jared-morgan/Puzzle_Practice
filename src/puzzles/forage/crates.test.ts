@@ -53,11 +53,12 @@ describe('crate sources', () => {
     expect(game.board.crateArea).toBeGreaterThan(9);
   });
 
-  it('new chests use the base fall speed; older replay timing remains available', () => {
+  it('new chests drop in at the same speed as refill pieces', () => {
     const game = new Forage(42n);
     game.dropCrate(1, 2, 1);
     expect(game.steps[0].duration).toBe(TIMING.chestEntry(2));
-    expect(game.steps[0].duration).toBeGreaterThan(TIMING.fall(2));
+    expect(game.steps[0].duration).toBe(TIMING.fall(2));
+    expect(TIMING.fall(1)).toBe(85);
     const older = new Forage(42n);
     older.legacyChestTiming = true;
     older.dropCrate(1, 2, 1);
