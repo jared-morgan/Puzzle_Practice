@@ -249,7 +249,7 @@ describe('preset Treasure Haul drills', () => {
     const finalStats = stats();
     if (pack === 'edges') expect(finalStats[0]).toContainEqual(['Chests cleared', '1', expect.any(String)]);
     const [replay] = await listReplayFiles('treasure-haul');
-    expect(replay.settingsVersion).toBe(4);
+    expect(replay.settingsVersion).toBe(5);
     const data = JSON.parse(exportAll()).data;
     const perf = vi.spyOn(performance, 'now').mockReturnValue(0);
     expect(await captured.recorders[0].playAt(replay.at, replay.runId)).toBe(true);
@@ -292,6 +292,101 @@ describe('Treasure Haul score display', () => {
       else for (const label of ['Points', 'Coins', 'Best move']) expect(resultLabels).not.toContain(label);
       instance.dispose?.();
     }
+  });
+});
+
+describe('Treasure Haul vacant-board chest wait', () => {
+  it.each([0, 1, 2])('becomes ready while idle with %i starting chests, including pause and replay', async (chests) => {
+    vi.spyOn(PyRandom.prototype, 'seedFromCrypto').mockImplementation(function (this: PyRandom) { this.seed(1234); });
+    const populate = HaulBoard.prototype.populate;
+    const boards = vi.spyOn(HaulBoard.prototype, 'populate').mockImplementation(function (this: HaulBoard) {
+      populate.call(this);
+      for (let y = 0; y < 8; y++) for (let x = 0; x < 8; x++) this.set(x, y, (x + 2 * y) % 4);
+      if (chests > 0) { this.placeChest(0, 6, 0); this.set(2, 7, RUBY); }
+      if (chests === 2) this.placeChest(4, 6, 2);
+    });
+    let now = 100;
+    let lastHaulAt = 0;
+    const step = HaulBoard.prototype.step;
+    vi.spyOn(HaulBoard.prototype, 'step').mockImplementation(function (this: HaulBoard) {
+      const result = step.call(this);
+      if (result?.kind === 'haul' && !this.cells.some(isChestOrigin)) lastHaulAt = now;
+      return result;
+    });
+    const store = new Store('treasure-haul'); store.set('mode', 'chests2'); store.set('gemRates', [0, 0]);
+    store.set('showWaitingChests', true);
+    const { panel, buttons, stats, setters } = panelHarness();
+    const input = { mouse: [-1, -1] };
+    const screen = new Proxy({ ctx: canvasContext() }, { get: (target, key) => key === 'ctx' ? target.ctx : () => ({ width: 0, height: 0 }) });
+    const factory = (await import('./treasure-haul/index')).default;
+    const context = { screen, input, panel, store, ticks: () => now,
+      setReplayTime: (time: number | null) => { if (time !== null) now = time; } } as unknown as PuzzleContext;
+    let instance = await factory(context);
+    buttons.get('Play::Start')!();
+    const latestBoard = () => boards.mock.contexts.at(-1)! as HaulBoard;
+    const board = latestBoard();
+    for (; now < 2100; now += 25) instance.frame([]);
+    if (chests) {
+      expect(board.chestList).toHaveLength(0);
+      input.mouse = [44 + 2 * 45 + 10, 215];
+      instance.frame([{ type: 'mousedown', button: 1, pos: input.mouse as [number, number] }]);
+      for (let frame = 0; frame < 200 && !lastHaulAt; frame++) { now += 25; instance.frame([]); }
+      expect(lastHaulAt).toBeGreaterThan(0);
+      expect(board.chestList).toHaveLength(0);
+      buttons.get('Play::Pause')!();
+      now += 10000; instance.frame([]);
+      expect(board.chestList).toHaveLength(0);
+      buttons.get('Play::Pause')!();
+      // The deadline is a full second of active time after the final haul.
+      for (; now < lastHaulAt + 10000 + 1000; now += 25) {
+        instance.frame([]);
+        expect(board.chestList).toHaveLength(0);
+      }
+    }
+    for (let frame = 0; frame < 200 && !board.chestList.length; frame++) { now += 25; instance.frame([]); }
+    expect(board.chestList).toHaveLength(1);
+    expect(board.cells.filter(isChestOrigin)).toHaveLength(0);
+    for (let frame = 0; frame < 100; frame++) { now += 25; instance.frame([]); }
+    expect(board.chestList).toHaveLength(1);
+    expect(stats()[0]).toContainEqual(['Chests waiting', '1', expect.any(String)]);
+    buttons.get('Play::Start')!();
+    const expectedStats = stats();
+    await replayWrites.idle();
+    const [replay] = await listReplayFiles('treasure-haul');
+    expect(replay.settingsVersion).toBe(5);
+    const data = JSON.parse(exportAll()).data;
+    const perf = vi.spyOn(performance, 'now').mockReturnValue(0);
+    const recorder = captured.recorders[0];
+    expect(await recorder.playAt(replay.at, replay.runId)).toBe(true);
+    perf.mockReturnValue(replay.duration); instance.frame([]);
+    expect(stats()).toEqual(expectedStats);
+    expect(latestBoard().chestList).toHaveLength(1);
+    setters.get('History:Replays:Jump to (s)')!(replay.duration / 1000);
+    buttons.get('History:Replays:Jump')!();
+    await vi.waitFor(() => expect(recorder.isSeeking).toBe(false));
+    expect(stats()).toEqual(expectedStats);
+    expect(JSON.parse(exportAll()).data).toEqual(data);
+    buttons.get('History:Replays:Stop')!();
+    if (chests === 2) {
+      const { decodeReplayBlob, encodeReplayBlob, replayMetadata } = await import('../core/replay');
+      const { readReplayFile, saveReplayFile } = await import('../core/replay-storage');
+      const tape = (await decodeReplayBlob((await readReplayFile(replay))!))!;
+      tape.at++; tape.settingsVersion = 4; tape.simulatorVersion = 4;
+      (tape.settings as Record<string, unknown>).chestRules = 3;
+      delete tape.report;
+      const blob = await encodeReplayBlob(tape);
+      await saveReplayFile({ metadata: replayMetadata(tape, blob.size), blob });
+      instance.dispose?.(); instance = await factory(context);
+      const oldRecorder = captured.recorders.at(-1)!;
+      await vi.waitFor(() => expect(oldRecorder.hasPlayableAt(tape.at, tape.runId)).toBe(true));
+      perf.mockReturnValue(0);
+      expect(await oldRecorder.playAt(tape.at, tape.runId)).toBe(true);
+      perf.mockReturnValue(tape.duration); instance.frame([]);
+      expect(latestBoard().chestList).toHaveLength(0);
+      expect(JSON.parse(exportAll()).data).toEqual(data);
+      buttons.get('History:Replays:Stop')!();
+    }
+    instance.dispose?.();
   });
 });
 

@@ -186,15 +186,16 @@ export class ChestSupply {
   private emptyAtMove = false;
   private emptyReadyAt: number | null = null;
 
-  constructor(perChest: number, now: number, private readonly clearWhenEmpty = false) {
+  constructor(perChest: number, now: number, private readonly emptyRule: 'initial' | 'clear' | 'wait' = 'initial') {
     this.meter = new ChestMeter(perChest);
-    this.readyAt = clearWhenEmpty ? [] : [now + CHEST_DELAY_MS];
+    this.readyAt = emptyRule === 'initial' ? [now + CHEST_DELAY_MS] : [];
+    if (emptyRule === 'wait') this.emptyReadyAt = now + CHEST_DELAY_MS;
   }
 
   get waiting(): number { return this.readyAt.length || (this.emptyReadyAt !== null ? 1 : 0); }
 
   addCleared(cleared: readonly Cleared[], now: number): void {
-    if (this.emptyAtMove && this.emptyReadyAt === null) {
+    if (this.emptyRule === 'clear' && this.emptyAtMove && this.emptyReadyAt === null) {
       const pieces = cleared.filter((c) => c.piece !== EMPTY && !isChest(c.piece));
       if (pieces.length) this.emptyReadyAt = now + Math.min(...pieces.map((c) => c.delay)) + CHEST_DELAY_MS;
     }
@@ -204,18 +205,36 @@ export class ChestSupply {
     }
   }
 
+  private inPlay(board: HaulBoard): number {
+    return board.cells.filter(isChestOrigin).length + board.chestList.length + board.pending.length;
+  }
+
+  /** Start the vacant-board wait as soon as the last chest leaves, independently of clears. */
+  observe(board: HaulBoard, now: number): void {
+    if (this.emptyRule !== 'wait') return;
+    if (this.inPlay(board) > 0) this.emptyReadyAt = null;
+    else this.emptyReadyAt ??= now + CHEST_DELAY_MS;
+  }
+
   /** Space is reserved at the start of a move; hauling a full board cannot add space mid-cascade. */
-  beginMove(board: HaulBoard, limit: number): void {
-    const inPlay = board.cells.filter(isChestOrigin).length + board.chestList.length + board.pending.length;
+  beginMove(board: HaulBoard, limit: number, now = 0): void {
+    this.observe(board, now);
+    const inPlay = this.inPlay(board);
     this.openings = Math.min(1, Math.max(0, limit - inPlay));
-    this.emptyAtMove = this.clearWhenEmpty && limit === 2 && inPlay === 0;
+    this.emptyAtMove = this.emptyRule !== 'initial' && limit === 2 && inPlay === 0;
     if (inPlay > 0) this.emptyReadyAt = null;
   }
 
+  /** A full-board haul must settle before its newly vacant space can accept another chest. */
+  endMove(board: HaulBoard, limit: number, now: number): void {
+    if (this.emptyRule === 'wait' && this.inPlay(board) === 0) this.beginMove(board, limit, now);
+  }
+
   release(board: HaulBoard, now: number, pickValue: () => number): void {
+    this.observe(board, now);
     if (!this.openings) return;
     if (this.emptyAtMove) {
-      // A vacant two-chest board needs a fresh clear, even when awards are banked.
+      // The vacant-board delay applies even when coin awards are banked.
       if (this.emptyReadyAt === null || now < this.emptyReadyAt) return;
       // Use a banked award first; otherwise provide the first chest without a coin threshold.
       if (this.readyAt.length && now >= this.readyAt[0]) this.readyAt.shift();

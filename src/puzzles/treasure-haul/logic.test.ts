@@ -137,9 +137,9 @@ describe('earned chest supply', () => {
     expect(supply.waiting).toBe(0);
   });
 
-  it('uses the opening left by hauling the sole chest in two-chest mode', () => {
+  it.each(['initial', 'wait'] as const)('uses the opening left by hauling the sole chest in two-chest mode under %s rules', (rule) => {
     const b = boardFrom(QUIET, () => 0.3);
-    const supply = new ChestSupply(150, 0);
+    const supply = new ChestSupply(150, 0, rule);
     spendStartingChest(supply);
     b.placeChest(0, 7, 0);
     supply.addCleared(coins(150), 1000);
@@ -201,7 +201,7 @@ describe('earned chest supply', () => {
 
   it('requires a clear on an empty two-chest board, then waits a full second without needing 150 coins', () => {
     const b = boardFrom(QUIET, () => 0.3);
-    const supply = new ChestSupply(150, 0, true);
+    const supply = new ChestSupply(150, 0, 'clear');
     supply.beginMove(b, 2);
     supply.release(b, 10000, () => 0);
     expect(b.chestList).toHaveLength(0);
@@ -219,7 +219,7 @@ describe('earned chest supply', () => {
 
   it('retains the first clear deadline across moves and respects the blast arrival time', () => {
     const b = boardFrom(QUIET, () => 0.3);
-    const supply = new ChestSupply(150, 0, true);
+    const supply = new ChestSupply(150, 0, 'clear');
     supply.beginMove(b, 2);
     supply.addCleared(coins(1, 350), 1000);
     supply.beginMove(b, 2);
@@ -237,7 +237,7 @@ describe('earned chest supply', () => {
   it('uses the 150-coin rule once a chest is already in play', () => {
     const b = boardFrom(QUIET, () => 0.3);
     b.placeChest(0, 5, 0);
-    const supply = new ChestSupply(150, 0, true);
+    const supply = new ChestSupply(150, 0, 'clear');
     supply.beginMove(b, 2);
     supply.addCleared(coins(149), 1000);
     supply.release(b, 5000, () => 0);
@@ -253,7 +253,7 @@ describe('earned chest supply', () => {
   it('keeps banked awards out of a full-board haul, then requires a new clear and delay on the vacant board', () => {
     const b = boardFrom(QUIET, () => 0.3);
     b.placeChest(0, 7, 0); b.placeChest(4, 7, 0);
-    const supply = new ChestSupply(150, 0, true);
+    const supply = new ChestSupply(150, 0, 'clear');
     supply.beginMove(b, 2);
     supply.addCleared(coins(317), 1000);
     expect(b.step()?.kind).toBe('haul');
@@ -275,7 +275,7 @@ describe('earned chest supply', () => {
   it('restarts the clear-and-wait rule after the last chest leaves, with no coin award banked', () => {
     const b = boardFrom(QUIET, () => 0.3);
     b.placeChest(0, 7, 0);
-    const supply = new ChestSupply(150, 0, true);
+    const supply = new ChestSupply(150, 0, 'clear');
     supply.beginMove(b, 2);
     expect(b.step()?.kind).toBe('haul');
     supply.release(b, 5000, () => 0);
@@ -286,6 +286,76 @@ describe('earned chest supply', () => {
     expect(b.chestList).toHaveLength(1);
     supply.release(b, 7000, () => 0);
     expect(b.chestList).toHaveLength(1);
+  });
+});
+
+describe('vacant-board chest wait', () => {
+  const coins = (count: number, delay = 0) => Array.from({ length: count }, () => ({ x: 0, y: 0, piece: 0, delay }));
+  const opening = (b: HaulBoard) => {
+    for (let y = 0; y < 2; y++) for (let x = 0; x < 2; x++) b.set(x, y, EMPTY);
+  };
+
+  it('makes the first chest ready just by waiting, while still requiring a 2x2 opening', () => {
+    const b = boardFrom(QUIET, () => 0.3);
+    const supply = new ChestSupply(150, 100, 'wait');
+    supply.beginMove(b, 2, 100);
+    supply.release(b, 1099, () => 0);
+    expect(b.chestList).toHaveLength(0);
+    supply.release(b, 1100, () => 0);
+    supply.release(b, 1100, () => 0);
+    expect(b.chestList).toHaveLength(1);
+    expect(b.cells.filter(isChestOrigin)).toHaveLength(0);
+    expect(b.step()).toBeNull();
+    expect(b.chestList).toHaveLength(1);
+    opening(b); b.step();
+    expect(b.cells.filter(isChestOrigin)).toHaveLength(1);
+    expect(supply.meter.coins).toBe(0);
+  });
+
+  it.each([0, 317])('waits after a full-board haul without a new clear, retaining %i banked coins', (earned) => {
+    const b = boardFrom(QUIET, () => 0.3);
+    b.placeChest(0, 7, 0); b.placeChest(4, 7, 0);
+    const supply = new ChestSupply(150, 0, 'wait');
+    supply.beginMove(b, 2, 1000);
+    supply.addCleared(coins(earned), 1000);
+    expect(b.step()?.kind).toBe('haul');
+    supply.observe(b, 4000);
+    supply.release(b, 5000, () => 0);
+    expect(b.chestList).toHaveLength(0);
+    // Full-board haul openings cannot spawn a chest during that cascade.
+    b.step();
+    supply.endMove(b, 2, 5000);
+    supply.release(b, 5000, () => 0);
+    expect(b.chestList).toHaveLength(1);
+    expect(supply.waiting).toBe(earned ? 1 : 0);
+    expect(supply.meter.coins).toBe(earned % 150);
+    opening(b); b.step();
+    expect(b.cells.filter(isChestOrigin)).toHaveLength(1);
+  });
+
+  it('starts a full wait when the last chest leaves, without resetting it on non-clearing moves', () => {
+    const b = boardFrom(QUIET, () => 0.3);
+    b.placeChest(0, 7, 0);
+    const supply = new ChestSupply(150, 0, 'wait');
+    supply.beginMove(b, 2, 1000);
+    expect(b.step()?.kind).toBe('haul');
+    supply.observe(b, 4000);
+    b.step();
+    supply.endMove(b, 2, 4200);
+    supply.beginMove(b, 2, 4500);
+    supply.release(b, 4999, () => 0);
+    expect(b.chestList).toHaveLength(0);
+    supply.release(b, 5000, () => 0);
+    expect(b.chestList).toHaveLength(1);
+    supply.beginMove(b, 2, 6000);
+    supply.addCleared(coins(149), 6000);
+    supply.release(b, 10000, () => 0);
+    expect(b.chestList).toHaveLength(1);
+    supply.addCleared(coins(1, 350), 10000);
+    supply.release(b, 11349, () => 0);
+    expect(b.chestList).toHaveLength(1);
+    supply.release(b, 11350, () => 0);
+    expect(b.chestList).toHaveLength(2);
   });
 });
 
