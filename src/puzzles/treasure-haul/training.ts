@@ -1,5 +1,6 @@
 import { HaulBoard, W, H, RUBY, EMERALD, EMPTY, isChestOrigin } from './logic';
 import { PyRandom } from '../../core/pyrandom';
+import { createVariedEdgeDrill } from './edge-training';
 
 export type ClearPack = 'standard' | 'efficient' | 'emeralds' | 'edges';
 export interface Drill {
@@ -56,9 +57,17 @@ export function rubySpawnScore(original: HaulBoard, chestX: number): number {
 }
 
 /** Practice boards have no automatic matches, and never overwrite another chest. */
-export function createDrill(random: () => number, pack: ClearPack, rules: 1 | 2 | 3 | 4 = 4, options: DrillOptions = {}): Drill {
+export function createDrill(random: () => number, pack: ClearPack, rules: 1 | 2 | 3 | 4 | 5 = 5, options: DrillOptions = {}): Drill {
   if (rules === 1 || pack === 'standard' || pack === 'efficient') return createLegacyDrill(random, pack);
-  if (pack === 'edges') return rules >= 4 ? createDeepEdgeDrill(random, options) : createEdgeDrill(random);
+  if (pack === 'edges') {
+    if (rules >= 5) {
+      if (options.impossibleChests && random() < 0.2) return createDeepEdgeDrill(random, options, {
+        impossible: true, left: random() < 0.5, y: 1 + Math.floor(random() * 2), edgePattern: 'horizontal',
+      });
+      return createVariedEdgeDrill(random);
+    }
+    return rules >= 4 ? createDeepEdgeDrill(random, options) : createEdgeDrill(random);
+  }
   if (rules >= 3) return createEmeraldDrill(random);
   const x = 2 + Math.floor(random() * 3);
   const y = 3 + Math.floor(random() * 3);
