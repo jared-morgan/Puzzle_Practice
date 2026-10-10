@@ -183,15 +183,21 @@ export class ChestSupply {
   readonly meter: ChestMeter;
   private readonly readyAt: number[];
   private openings = 0;
+  private emptyAtMove = false;
+  private emptyReadyAt: number | null = null;
 
-  constructor(perChest: number, now: number) {
+  constructor(perChest: number, now: number, private readonly clearWhenEmpty = false) {
     this.meter = new ChestMeter(perChest);
-    this.readyAt = [now + CHEST_DELAY_MS];
+    this.readyAt = clearWhenEmpty ? [] : [now + CHEST_DELAY_MS];
   }
 
-  get waiting(): number { return this.readyAt.length; }
+  get waiting(): number { return this.readyAt.length || (this.emptyReadyAt !== null ? 1 : 0); }
 
   addCleared(cleared: readonly Cleared[], now: number): void {
+    if (this.emptyAtMove && this.emptyReadyAt === null) {
+      const pieces = cleared.filter((c) => c.piece !== EMPTY && !isChest(c.piece));
+      if (pieces.length) this.emptyReadyAt = now + Math.min(...pieces.map((c) => c.delay)) + CHEST_DELAY_MS;
+    }
     const coins = cleared.filter((c) => c.piece >= 0 && c.piece < COLOURS).sort((a, b) => a.delay - b.delay);
     for (const coin of coins) {
       if (this.meter.add(1)) this.readyAt.push(now + coin.delay + CHEST_DELAY_MS);
@@ -202,11 +208,23 @@ export class ChestSupply {
   beginMove(board: HaulBoard, limit: number): void {
     const inPlay = board.cells.filter(isChestOrigin).length + board.chestList.length + board.pending.length;
     this.openings = Math.min(1, Math.max(0, limit - inPlay));
+    this.emptyAtMove = this.clearWhenEmpty && limit === 2 && inPlay === 0;
+    if (inPlay > 0) this.emptyReadyAt = null;
   }
 
   release(board: HaulBoard, now: number, pickValue: () => number): void {
-    if (!this.openings || !this.readyAt.length || now < this.readyAt[0]) return;
-    this.readyAt.shift();
+    if (!this.openings) return;
+    if (this.emptyAtMove) {
+      // A vacant two-chest board needs a fresh clear, even when awards are banked.
+      if (this.emptyReadyAt === null || now < this.emptyReadyAt) return;
+      // Use a banked award first; otherwise provide the first chest without a coin threshold.
+      if (this.readyAt.length && now >= this.readyAt[0]) this.readyAt.shift();
+      this.emptyReadyAt = null;
+      this.emptyAtMove = false;
+    } else {
+      if (!this.readyAt.length || now < this.readyAt[0]) return;
+      this.readyAt.shift();
+    }
     this.openings--;
     board.chestList.push({ value: pickValue(), size: 0 });
   }
