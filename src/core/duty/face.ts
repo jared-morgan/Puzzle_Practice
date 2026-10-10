@@ -59,6 +59,7 @@ export function faceOptions(female: boolean) {
     skin: coloursOf('skin'),
     hairColour: coloursOf('hair'),
     cloth: coloursOf('textile_p'),
+    trimCloth: coloursOf('textile_s'),
   };
 }
 
@@ -84,7 +85,7 @@ export function sanitizeFace(value: unknown): FaceSpec {
     eyepatch: v.eyepatch === true,
     hat: one(v.hat, options.hat, options.hat.includes(DEFAULT_FACE.hat) ? DEFAULT_FACE.hat : '', true),
     hatColour: one(v.hatColour, options.cloth, DEFAULT_FACE.hatColour),
-    trimColour: one(v.trimColour, options.cloth, DEFAULT_FACE.trimColour),
+    trimColour: one(v.trimColour, options.trimCloth, DEFAULT_FACE.trimColour),
   };
 }
 

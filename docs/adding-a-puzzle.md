@@ -62,7 +62,7 @@ All in `src/core/`:
 - **Duty reports** (`duty/`): the end-of-session screen is the game's duty report: the player's
   pirate (name and face, set on every Settings tab), a rating word, the score and what was cleared.
   Make a desk with `dutyDesk(panel, store, id, station, scales)` (each scale is a measure with five
-  cut-offs the player can change in Settings), call `duty.end({ performance: duty.rate(scale, value),
+  fixed cut-offs in code), call `duty.end({ performance: duty.rate(scale, value),
   score, cleared })` when a session ends, pass the report to `replays.finish(result, report)` and
   `...duty.fields(report)` to `addHistory`, and give `panel.results` `report: duty.last`. Tally icons
   are named in `duty/icons.ts`.

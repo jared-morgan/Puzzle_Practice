@@ -9,6 +9,7 @@
 // performance, which isn't in the client, so the panel shows points but no rating yet. Chests
 // are sent by the server too; here the mode keeps 0, 1 or 2 chests on their way at all times, or
 // sets up a practice drill: getting chests to spawn, or hauling one chest as fast as possible.
+import { SessionPause } from '../../core/pause';
 import { Images } from '../../core/assets';
 import { SoundBank } from '../../core/audio';
 import { loadFont } from '../../core/fonts';
@@ -160,16 +161,23 @@ interface Tally {
   rubies: number;
   emeralds: number;
   chests: number;
+  chestsByType: number[];
+  rubiesSpawned: number;
+  emeraldsSpawned: number;
   /** Spawn mode: chests that came in, those in the middle four columns, and the score (see scoreSpawn). */
   spawned: number;
   middle: number;
   spawnScore: number;
 }
 
-/** Duty report ratings for the chest modes (0-2 chests): points a minute. Spawn and Clear drills are Learning. */
-const RATING_SCALES: RatingScale[] = [{ id: 'points', label: 'Points a minute (0-2 chests)', cutoffs: [40, 80, 130, 180, 240] }];
+/** Vampire ratings use the published chest counts; coin mode uses points a minute. */
+const RATING_SCALES: RatingScale[] = [
+  { id: 'points', label: 'Points a minute (0 chests)', cutoffs: [40, 80, 130, 180, 240] },
+  // YPPedia: Vampirate expedition, Treasure Haul scoring.
+  { id: 'vampirateChests', label: '2 chests, chests hauled', cutoffs: [2, 3, 5, 6, 8], gauntlet: true },
+];
 
-const emptyTally = (): Tally => ({ moves: 0, points: 0, bestMove: 0, coins: 0, gems: 0, rubies: 0, emeralds: 0, chests: 0, spawned: 0, middle: 0, spawnScore: 0 });
+const emptyTally = (): Tally => ({ moves: 0, points: 0, bestMove: 0, coins: 0, gems: 0, rubies: 0, emeralds: 0, chests: 0, chestsByType: [0, 0, 0], rubiesSpawned: 0, emeraldsSpawned: 0, spawned: 0, middle: 0, spawnScore: 0 });
 
 /** A copy of the purple hands tinted to a skin tone, keeping their shading. */
 function tint(img: HTMLImageElement): HTMLCanvasElement {
@@ -193,7 +201,9 @@ function tint(img: HTMLImageElement): HTMLCanvasElement {
   return canvas;
 }
 
-export default (async ({ screen, input, panel, store, ticks, setReplayTime }) => {
+export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplayTime: rawReplayTime }) => {
+  const pause = new SessionPause(rawTicks, rawReplayTime);
+  const { ticks, setReplayTime } = pause;
   const [images] = await Promise.all([Images.load(imageUrls), loadFont(FONT, delarobbUrl)]);
   const img = (name: string) => images.get(name);
   const sounds = new SoundBank<Sound>(soundUrls, () => replays?.isSeeking ?? false);
@@ -204,10 +214,10 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
   let replays!: ReplayRecorder;
   const hands = tint(img('hands'));
 
-  let mode = store.get<Mode>('mode', '0');
-  if (!MODES.some((m) => m.value === mode)) mode = '0';
-  let roundSecs = store.get<number>('round', 0);
-  if (!ROUNDS.some((r) => r.value === roundSecs)) roundSecs = 0;
+  let mode = store.get<Mode>('mode', '2');
+  if (!MODES.some((m) => m.value === mode)) mode = '2';
+  let roundSecs = store.get<number>('round', 120);
+  if (!ROUNDS.some((r) => r.value === roundSecs)) roundSecs = 120;
   const bests = store.get<Record<string, number>>('bestPoints', {});
   const savedPack = store.get<ClearPack | 'diamonds'>('clearPack', 'standard');
   let clearPack: ClearPack = savedPack === 'diamonds' ? 'emeralds' : savedPack;
@@ -264,9 +274,11 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
   const chestSheet = (mini: boolean) => (mini ? 'minichest2x2' : 'chest2x2');
   /** Bests are kept per mode, pack, round length and spawn rules. */
   const timed = () => roundSecs > 0;
+  const chestMode = () => mode === '1' || mode === '2' || mode === 'clear';
+  const scoreLabel = () => mode === 'spawn' ? 'Spawn score' : chestMode() ? 'Chests cleared' : 'Points';
   const bestKey = () => `${mode}:${mode === 'clear' ? clearPack + ':' : ''}${roundSecs}` +
     (gemRates.every((rate) => rate === 200 / 308) ? '' : `:gems:${gemRates.join('-')}`) +
-    (mode === 'spawn' && spawnDelay ? ':delay' : '');
+    (mode === 'spawn' && spawnDelay ? ':delay' : '') + (mode === '1' || mode === '2' ? ':chests' : '');
   const actionCount = () => movers.length + fades.length;
   const inFlight = () => flyers.length + minis.length;
 
@@ -386,6 +398,7 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
   }
 
   function start(): void {
+    pause.resume();
     replays.begin({ mode, clearPack, roundSecs, spawnDelay, gemRates: [...gemRates] }, rng.snapshot());
     sparks = [];
     flyers = [];
@@ -415,10 +428,18 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
     });
   }
 
-  /** The score a mode keeps a best of: higher is better, except clear mode's time. */
+  function dismissBoard(): void {
+    if (!running || !active || intro || !stable || actionCount() || landing || redeal) return;
+    active = false;
+    sparks = []; flyers = []; minis = []; texts = []; timers = [];
+    netStart = 0; hauling = false; pull = null; handsUp = true; redealAt = 0; clearMs = 0;
+    deal(3, () => { active = true; });
+  }
+
+  /** The score a mode keeps a best of: chests hauled, coin points or spawn-drill points. */
   function score(): number {
     if (mode === 'spawn') return tally.spawnScore;
-    if (mode === 'clear') return tally.chests;
+    if (chestMode()) return tally.chests;
     return tally.points;
   }
 
@@ -427,7 +448,7 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
     const completed = timed() && !!roundEnd && ticks() >= roundEnd;
     const wasRunning = running;
     const report = wasRunning ? endReport() : duty.last;
-    const finishedReplay = replays.finish(`${score()} ${mode === 'clear' ? 'chests' : 'points'}`, report);
+    const finishedReplay = replays.finish(`${score()} ${chestMode() ? 'chests' : 'points'}`, report);
     if (completed && wasRunning && !replays.isPlaying) store.addHistory(bestKey(), {
       score: score(),
       ...duty.fields(report),
@@ -447,19 +468,24 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
     }
   }
 
-  /** The session's duty report: what was hauled, rated by points a minute in the chest modes. */
+  /** Vampire mode rates chests hauled; 0 chests rates points a minute. Haunted Seas has no published fixed thresholds; it and drills are Learning. */
   function endReport() {
     const minutes = clockStart ? Math.max(0, ticks() - clockStart) / 60000 : 0;
-    const rated = mode === '0' || mode === '1' || mode === '2';
+    const rated = mode === '0' || mode === '2';
     return duty.end({
       mode: MODES.find((m) => m.value === mode)?.label,
-      performance: duty.rate(rated ? 'points' : null, rated ? (minutes > 0 ? tally.points / minutes : 0) : null),
-      score: { label: mode === 'spawn' ? 'Spawn score' : mode === 'clear' ? 'Chests cleared' : 'Points', value: String(score()) },
-      cleared: [{ label: 'Treasure Hauled', items: [
+      performance: duty.rate(rated ? mode === '2' ? 'vampirateChests' : 'points' : null,
+        rated ? mode === '2' ? tally.chests : (minutes > 0 ? tally.points / minutes : 0) : null),
+      score: { label: scoreLabel(), value: String(score()) },
+      cleared: mode === '0' ? [{ label: 'Treasure Hauled', items: [
         { icon: 'haul-coin', label: 'coins', count: tally.coins },
         { icon: 'haul-ruby', label: 'rubies', count: tally.rubies },
         { icon: 'haul-emerald', label: 'emeralds', count: tally.emeralds },
-        { icon: 'chest-large', label: 'chests', count: tally.chests },
+      ] }] : [{ label: 'Chests Hauled', items: [
+        ...['small', 'medium', 'large'].map((size, i) => ({
+          icon: `${mode === '2' ? 'vampirate-chest' : mode === '1' ? 'haunted-chest' : 'chest'}-${size}`,
+          label: `${size} chests`, count: tally.chestsByType[i],
+        })),
       ] }],
     });
   }
@@ -557,6 +583,8 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
   function animate(step: Step): void {
     if (step.kind === 'rise') {
       for (const m of step.moves) {
+        if (m.fy < 0 && m.piece === RUBY) tally.rubiesSpawned++;
+        if (m.fy < 0 && m.piece === EMERALD) tally.emeraldsSpawned++;
         const duration = (CELL * Math.abs(m.ty - m.fy)) / RISE_PX_PER_MS;
         move(m.piece, m.fx, m.fy, m.tx, m.ty, duration);
       }
@@ -567,6 +595,7 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
       }
     } else if (step.kind === 'haul') {
       tally.chests += step.chests.length;
+      for (const chest of step.chests) tally.chestsByType[chestValue(chest.piece)]++;
       if (landing && step.chests.some((c) => c.x === landing!.x)) landing.hauled = true;
       if (mode === 'clear') {
         clearMs = ticks() - clockStart;
@@ -832,11 +861,15 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
   }
 
   function frame(events: InputEvent[]): void {
+    const liveEvents = pause.input(events, 'treasure-haul', running);
+    if (liveEvents === null) return;
+    events = liveEvents;
     const routed = replays.frame(events, input.mouse, ticks());
     events = routed.events;
     input.mouse = routed.mouse;
     const now = ticks();
     if (!routed.renderOnly) {
+      for (const command of routed.commands) if (command === 'dismiss') dismissBoard();
       const onBoard = (p: Point) => p[0] >= BOARD_X && p[0] < BOARD_X + BOARD && p[1] >= BOARD_Y && p[1] < BOARD_Y + BOARD;
       // The cursor follows the mouse over the board: the square under it and the one below (HaulBoardView.c(int, int)).
       if (active && onBoard(input.mouse) && (input.mouse[0] !== lastMouse[0] || input.mouse[1] !== lastMouse[1])) {
@@ -885,6 +918,8 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
     replays.drawOverlay(ctx);
   }
 
+  pause.install(panel, () => running);
+
   // ---- Panel ----
 
   /** The clock's now: it stops when the game does. */
@@ -896,6 +931,7 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
   });
 
   panel.controls('treasure-haul', [
+    { id: 'pause', label: 'Pause / resume', defaultKey: 'Escape' },
     { id: 'left', label: 'Move left', defaultKey: 'ArrowLeft' },
     { id: 'right', label: 'Move right', defaultKey: 'ArrowRight' },
     { id: 'up', label: 'Move up', defaultKey: 'ArrowUp' },
@@ -918,22 +954,31 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
   // Starting while a replay is open closes it and starts a game of your own.
   actions.button('Start', () => { if (replays.isPlaying) { replays.stop(); if (replays.isPlaying) return; } if (running) stop(); else start(); }, { variant: 'primary', label: () => (replays?.isPlaying ? 'Start' : running ? 'Stop' : finished ? 'Play again' : 'Start') });
 
+  actions.button('Dismiss', () => { replays.command('dismiss'); dismissBoard(); }, {
+    disabled: () => !running || !active || !!intro || !stable || !!actionCount() || !!landing || redeal || pause.paused || !!replays?.isPlaying,
+    title: 'Deal a fresh board; keep the session score and timer running.',
+  });
+
   const best = () => bests[bestKey()];
   panel.score('Haul').stats(['', 'Now', 'Best'], () => [[
-    mode === 'spawn' ? 'Spawn score' : mode === 'clear' ? 'Chests cleared' : 'Points',
+    scoreLabel(),
     String(score()), timed() && best() !== undefined ? String(best()) : '—',
   ]]);
   const duty = dutyDesk(panel, store, 'treasure-haul', 'Treasure Haul', RATING_SCALES, {
-    shown: () => mode === '0' || mode === '1' || mode === '2',
+    shown: (id) => id === 'vampirateChests' ? mode === '2' : mode === '0',
   });
   panel.results(() => finished ? {
     title: 'Treasure Haul results',
     report: duty.last,
+    averages: duty.averages(timed() ? store.history(bestKey()) : null,
+      { scoreLabel: scoreLabel() }),
     rows: [
-      [mode === 'spawn' ? 'Spawn score' : mode === 'clear' ? 'Chests cleared' : 'Points', String(score())],
+      [scoreLabel(), String(score())],
       ['Time', `${(clockStart ? Math.max(0, stoppedAt - clockStart) / 1000 : 0).toFixed(2)}s`],
-      ['Moves', String(tally.moves)], ['Best move', String(tally.bestMove)],
+      ['Moves', String(tally.moves)],
+      ...(!chestMode() ? [['Best move', String(tally.bestMove)]] : []),
       ['Coins', String(tally.coins)], ['Gems', String(tally.gems)], ['Chests hauled', String(tally.chests)],
+      ['Rubies spawned', String(tally.rubiesSpawned)], ['Emeralds spawned', String(tally.emeraldsSpawned)],
       ...(mode === 'spawn' ? [['Chests in middle', `${tally.middle} / ${tally.spawned}`]] : []),
     ],
   } : null);
@@ -957,8 +1002,8 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
   }, { min: 0, max: 100, step: 0.01, disabled: () => running }));
   gems.button('Defaults', () => { gemRates = [200 / 308, 200 / 308]; store.set('gemRates', gemRates); }, { disabled: () => running });
   panel.settings.group('Reset').button('Reset to defaults', () => {
-    mode = '0';
-    roundSecs = 0;
+    mode = '2';
+    roundSecs = 120;
     clearPack = 'standard';
     spawnDelay = false;
     gemRates = [200 / 308, 200 / 308];

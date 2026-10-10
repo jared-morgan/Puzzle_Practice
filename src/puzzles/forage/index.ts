@@ -8,6 +8,7 @@
 // On top of the client's game are the Forage Simulator's modes: Puzzle (its hand-made boards, from
 // logic.ts and puzzles.ts), CI and Infinite (cursed isle foraging, with the simulator's chests and
 // flat 1/2/3 scoring, crates.ts) and Normal (normal foraging on the client's crate rules and points).
+import { SessionPause } from '../../core/pause';
 import { Images } from '../../core/assets';
 import { SoundBank } from '../../core/audio';
 import { loadFont } from '../../core/fonts';
@@ -97,11 +98,11 @@ const MODES: Option<Mode>[] = [
 /**
  * Duty report ratings. Normal foraging goes by points a move. Gauntlet and Chaos are rated like
  * cursed isle foraging (YPPedia, Cursed Isles): Asleep up to Frenetic by points (bone box 1, fetish
- * jar 2, cursed chest 3), then our own four words above Frenetic. Puzzles are Learning.
+ * jar 2, cursed chest 3), then four extra words and 👀 at 40. Puzzles are Learning.
  */
 const RATING_SCALES: RatingScale[] = [
   { id: 'normal', label: 'Normal, points a move', cutoffs: [0.25, 0.5, 0.8, 1.2, 1.6], step: 0.05 },
-  { id: 'gauntletPoints', label: 'Gauntlet and Chaos, points', cutoffs: [3, 6, 9, 12, 15, 20, 25, 30, 35], gauntlet: true },
+  { id: 'gauntletPoints', label: 'Gauntlet and Chaos, points', cutoffs: [3, 6, 9, 12, 15, 20, 25, 30, 35, 40], gauntlet: true },
 ];
 
 /** Modes that end and keep a best score. */
@@ -171,7 +172,9 @@ interface Timed {
   start: number;
 }
 
-export default (async ({ screen, input, panel, store, ticks, setReplayTime }) => {
+export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplayTime: rawReplayTime }) => {
+  const pause = new SessionPause(rawTicks, rawReplayTime);
+  const { ticks, setReplayTime } = pause;
   const [images] = await Promise.all([Images.load(imageUrls), loadFont(FONT, delarobbUrl)]);
   const img = (name: string) => images.get(name);
   const rng = new PyRandom();
@@ -204,6 +207,8 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
   let ended = false;
   let pendingNextBoard = false;
   let movesUsed = 0;
+  let clockwise = 0;
+  let anticlockwise = 0;
   let score = 0;
   /** The banana meter: crates collected on this board, and how full it's drawn (0-100%). */
   let crates = 0;
@@ -313,7 +318,9 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
   }
 
   function start(): void {
+    pause.resume();
     movesUsed = 0;
+    clockwise = anticlockwise = 0;
     sessionCrates = [0, 0, 0];
     duty.clear();
     settledAt = 0;
@@ -378,7 +385,7 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
     const report = endReport();
     const finishedReplay = endRecording(`Puzzle ${puzzleId}, ${movesUsed} moves`, report);
     if (settings.scramble || replay) return;
-    store.addHistory(historyKey()!, { score: movesUsed, moves: movesUsed, time: timePassed, ...duty.fields(report), ...(finishedReplay ? { replayAt: finishedReplay.at, replayId: finishedReplay.runId ?? '' } : {}) });
+    store.addHistory(historyKey()!, { score: movesUsed, moves: movesUsed, clockwise, anticlockwise, time: timePassed, ...duty.fields(report), ...(finishedReplay ? { replayAt: finishedReplay.at, replayId: finishedReplay.runId ?? '' } : {}) });
     const best = record ?? { moves: movesUsed, time: timePassed };
     record = { moves: Math.min(best.moves, movesUsed), time: Math.min(best.time, timePassed) };
     puzzleRecords[puzzleId] = record;
@@ -405,8 +412,8 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
         store.set(settings.mode === 'normal' ? 'normalBestPerMove' : 'ciBest', best);
       }
       store.addHistory(historyKey()!, settings.mode === 'normal'
-        ? { score: Number(final.toFixed(2)), points: score, moves: movesUsed, ...duty.fields(report), ...(finishedReplay ? { replayAt: finishedReplay.at, replayId: finishedReplay.runId ?? '' } : {}) }
-        : { score: final, ...duty.fields(report), ...(finishedReplay ? { replayAt: finishedReplay.at, replayId: finishedReplay.runId ?? '' } : {}) });
+        ? { score: Number(final.toFixed(2)), points: score, moves: movesUsed, clockwise, anticlockwise, ...duty.fields(report), ...(finishedReplay ? { replayAt: finishedReplay.at, replayId: finishedReplay.runId ?? '' } : {}) }
+        : { score: final, clockwise, anticlockwise, ...duty.fields(report), ...(finishedReplay ? { replayAt: finishedReplay.at, replayId: finishedReplay.runId ?? '' } : {}) });
     }
     bestScore = Math.max(bestScore ?? 0, final);
     // A full meter is "Great work!" in the client, and the pieces fly off a second later.
@@ -441,8 +448,13 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
   function act(cell: Cell, ccw: boolean, replayed = false): void {
     if (!replayed && !inPlay()) return;
     game.steps = [];
+    const rotation = !isTool(game.board.getPiece(cell[0], cell[1]));
     const outcome = game.act(cell[0], cell[1], ccw);
     if (outcome === 'illegal') return;
+    if (rotation) {
+      if (ccw) anticlockwise++;
+      else clockwise++;
+    }
     if (!replayed && !replay) {
       replays.action({ type: 'forage-act', data: { x: cell[0], y: cell[1], ccw } });
       recordedAction = true;
@@ -536,6 +548,7 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
     crates = 0;
     meterShown = 0;
     movesUsed = 0;
+    clockwise = anticlockwise = 0;
     score = 0;
     timePassed = 0;
     meterAt = ticks();
@@ -632,6 +645,8 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
     }
   }
 
+  pause.install(panel, () => boardActive && !ended);
+
   // ---- Panel ----
 
   const isPuzzle = () => settings.mode === 'puzzle';
@@ -660,6 +675,7 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
   });
 
   panel.controls('forage', [
+    { id: 'pause', label: 'Pause / resume', defaultKey: 'Escape' },
     { id: 'left', label: 'Move left', defaultKey: 'ArrowLeft' },
     { id: 'right', label: 'Move right', defaultKey: 'ArrowRight' },
     { id: 'up', label: 'Move up', defaultKey: 'ArrowUp' },
@@ -710,10 +726,11 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
       [isPuzzle() ? 'Moves' : 'Score', isPuzzle() ? String(movesUsed) : scoreText(shownScore())],
       ['Time', `${(timePassed / 1000).toFixed(2)}s`],
       ...(isPuzzle() ? [] : [['Moves', String(movesUsed)]]),
+      ['Clockwise, anticlockwise', `${clockwise}, ${anticlockwise}`],
       // Points are the score except in Normal, where the score is points a move.
       ...(settings.mode === 'normal' ? [['Points', String(score)]] : []),
     ],
-    averages: duty.averages(historyKey() && !settings.scramble ? store.history(historyKey()!) : null, isPuzzle()
+    averages: duty.averages(historyKey() ? store.history(historyKey()!) : null, isPuzzle()
       ? { scoreLabel: 'Moves', lowerIsBetter: true, digits: 1 }
       : { scoreLabel: settings.mode === 'normal' ? 'Points a move' : 'Score' }),
   } : null);
@@ -1144,6 +1161,9 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
   }
 
   function frame(events: InputEvent[]): void {
+    const liveEvents = pause.input(events, 'forage', boardActive && !ended);
+    if (liveEvents === null) return;
+    events = liveEvents;
     const routed = replays.frame([], [Math.round(input.mouse[0]), Math.round(input.mouse[1])], ticks());
     if (replay) {
       replay.now = routed.elapsed;

@@ -4,8 +4,9 @@ import { Store } from '../storage';
 import { DEFAULT_FACE, faceLayers, faceOptions, sanitizeFace } from './face';
 import { DEFAULT_NAME, loadProfile, saveProfile, sanitizeName, setReplayPirate } from './profile';
 import { cutoffsFor, cutoffWords, LEARNING, moodFor, performanceWord, rate, rateOn, type RatingScale } from './ratings';
-import { decodeReport, encodeReport, makeReport, readReport } from './report';
+import { decodeReport, encodeReport, makeReport, readReport, showsDutyReport, SPACE } from './report';
 import { stackRows } from './view';
+import { sessionAverages } from './desk';
 
 function fakeStorage() {
   const values = new Map<string, string>();
@@ -52,11 +53,11 @@ describe('duty ratings', () => {
     expect([7, 12].map(moodFor)).toEqual(['really_sad', 'really_happy']);
   });
 
-  it("uses the player's own cut-offs when they've set valid ones", () => {
+  it("ignores previously saved custom cut-offs", () => {
     const store = new Store('forage');
     expect(cutoffsFor(store, scale)).toEqual([1, 2, 3, 4, 5]);
     store.set('ratingCutoffs:test', [10, 20, 30, 40, 50]);
-    expect(rateOn(store, scale, 25)).toBe(2);
+    expect(rateOn(store, scale, 25)).toBe(5);
     store.set('ratingCutoffs:test', [1, 'x']);
     expect(rateOn(store, scale, 25)).toBe(5);
     expect(rateOn(store, null, 25)).toBe(LEARNING);
@@ -118,7 +119,9 @@ describe('duty reports', () => {
     expect(decodeReport(encodeReport(report))).toEqual(report);
     expect(decodeReport('{nope')).toBeNull();
     expect(decodeReport(42)).toBeNull();
-    expect(readReport({ ...report, performance: 13 })).toBeNull();
+    expect(readReport({ ...report, performance: 16 })?.performance).toBe(16);
+    expect(readReport({ ...report, performance: 17 })?.performance).toBe(17);
+    expect(readReport({ ...report, performance: 18 })).toBeNull();
     expect(readReport({ ...report, cleared: [{ label: 'x', items: [{ icon: 'a', label: 'b', count: -1 }] }] })).toBeNull();
     // A damaged pirate is cleaned rather than losing the report.
     expect(readReport({ ...report, pirate: { name: 7 } })?.pirate).toEqual({ name: DEFAULT_NAME, face: DEFAULT_FACE });
@@ -150,5 +153,80 @@ describe("the game's bonus stacks", () => {
     // A kind that fits on a row of its own but not after the others moves down whole.
     expect(stackRows([40, 10], 12)).toEqual([[40, 0], [0, 10]]);
     expect(stackRows([0, 0], 12)).toEqual([[0, 0]]);
+  });
+});
+
+
+describe('extended ratings', () => {
+  const scale: RatingScale = { id: 'gauntlet', label: 'Score', cutoffs: [3, 6, 9, 12, 15, 20, 25, 30, 35, 40], gauntlet: true };
+  it('uses published thresholds, the four named tiers and eyes at 40', () => {
+    expect([0, ...scale.cutoffs].map((score) => performanceWord(rate(score, scale.cutoffs, true))))
+      .toEqual(['Asleep', 'Lethargic', 'Steady', 'Brisk', 'Swift', 'Frenetic', 'Blazing', 'Breakneck', 'Tempestuous', 'Legendary', '\u{1f440}']);
+    expect(performanceWord(rate(39.99, scale.cutoffs, true))).toBe('Legendary');
+    expect(performanceWord(rate(100, scale.cutoffs, true))).toBe('\u{1f440}');
+    expect(moodFor(17)).toBe('really_happy');
+  });
+  it('caps new and saved extra ratings when the global switch is off', () => {
+    const prefs = new Store('global');
+    prefs.set('extraRatings', false);
+    expect(rateOn(new Store('forage'), scale, 40)).toBe(12);
+    expect(performanceWord(17)).toBe('Frenetic');
+    expect(performanceWord(5)).toBe('Incredible');
+    const games = [12, 17].map((performance, at) => ({ at, score: 40, duty: encodeReport(makeReport({
+      puzzle: 'forage', station: 'Foraging', performance, score: { label: 'Score', value: '40' },
+    })) }));
+    expect(sessionAverages(games)).toContainEqual(['Average rating', 'Frenetic']);
+    prefs.set('extraRatings', true);
+    expect(rateOn(new Store('forage'), scale, 40)).toBe(17);
+    expect(performanceWord(17)).toBe('\u{1f440}');
+  });
+});
+
+describe('face colours', () => {
+  it('offers hair dye colours for both pirate looks and preserves selected dyes', () => {
+    for (const female of [false, true]) {
+      expect(faceOptions(female).hairColour).toEqual(expect.arrayContaining(['indigo', 'lightBanshee', 'emerald', 'hotPink']));
+      expect(sanitizeFace({ ...DEFAULT_FACE, female, hairColour: 'indigo' }).hairColour).toBe('indigo');
+    }
+  });
+  it('offers chromas independently for primary and trim cloth', () => {
+    const options = faceOptions(false);
+    expect(options.cloth).toEqual(expect.arrayContaining(['electricBlue', 'neonGreen', 'cream']));
+    expect(options.trimCloth).toEqual(expect.arrayContaining(['electricBlue', 'neonGreen', 'cream']));
+    expect(sanitizeFace({ ...DEFAULT_FACE, hatColour: 'electricBlue', trimColour: 'cream' })).toMatchObject({ hatColour: 'electricBlue', trimColour: 'cream' });
+  });
+});
+
+describe('session averages', () => {
+  it('averages the score and each cleared kind independently', () => {
+    const games = [2, 6].map((count, at) => ({ at, score: count, duty: encodeReport(makeReport({
+      puzzle: 'forage', station: 'Foraging', performance: 12, score: { label: 'Score', value: String(count) },
+      cleared: [{ label: 'Crates Collected', items: [{ icon: 'ci-bone-box', label: 'bone boxes', count }] }],
+    })) }));
+    expect(sessionAverages(games)).toEqual([['Sessions', '2'], ['Average score', '4'], ['Best score', '6'], ['Average rating', 'Frenetic'], ['Average crates collected', '[4]']]);
+  });
+  it('supports fewer-is-better practice scores and empty histories', () => {
+    expect(sessionAverages([{ at: 0, score: 8 }, { at: 1, score: 4 }], { scoreLabel: 'Moves', lowerIsBetter: true }))
+      .toEqual([['Sessions', '2'], ['Average moves', '6'], ['Best moves', '4']]);
+    expect(sessionAverages([])).toEqual([]);
+  });
+});
+
+describe('ordered report items', () => {
+  it('round-trips spacers and counts on the score line', () => {
+    const report = makeReport({ puzzle: 'distilling', station: 'Distilling', performance: 16, score: { label: 'Score', value: '35' }, cleared: [
+      { label: 'Columns Sent Up', style: 'row', items: [{ icon: 'orb-clear', label: 'clear', count: 4 }, { icon: SPACE, label: '', count: 1 }, { icon: 'orb-bad', label: 'bad', count: 1 }] },
+      { label: 'Counts', inScore: true, items: [{ icon: 'ci-bone-box', label: 'bone boxes', count: 4 }] },
+    ] });
+    expect(decodeReport(encodeReport(report))).toEqual(report);
+  });
+});
+
+describe('report visibility', () => {
+  it('suppresses practice and create popups, including old saved reports', () => {
+    for (const mode of ['Practice', 'Create', 'Standard', 'Seeded']) {
+      const report = makeReport({ puzzle: 'distilling', station: 'Distilling', mode, performance: LEARNING, score: { label: 'Score', value: '0' } });
+      expect(showsDutyReport(decodeReport(encodeReport(report))!)).toBe(mode === 'Standard' || mode === 'Seeded');
+    }
   });
 });

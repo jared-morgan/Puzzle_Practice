@@ -9,13 +9,13 @@ import type { ColumnResult } from './logic';
  */
 export function columnOrbs(columns: readonly ColumnResult[]): ClearedItem[] {
   const items: ClearedItem[] = [];
-  let lastGood: boolean | null = null;
+  let inChain = false;
   for (const column of columns) {
-    if (!column.distilled) continue;
+    if (!column.distilled) { inChain = false; continue; }
     const good = column.verdict === 'clear';
     const icon = !good ? 'orb-bad' : column.spice === 'spicy' ? 'orb-spicy' : 'orb-clear';
-    if (lastGood !== null && good !== lastGood) items.push({ icon: SPACE, label: '', count: 1 });
-    lastGood = good;
+    if (items.length && !(inChain && good)) items.push({ icon: SPACE, label: '', count: 1 });
+    inChain = good;
     const last = items.at(-1);
     if (last?.icon === icon) last.count++;
     else items.push({ icon, label: !good ? 'other columns' : icon === 'orb-spicy' ? 'spicy Crystal Clears' : 'Crystal Clears', count: 1 });

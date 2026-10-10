@@ -34,7 +34,7 @@ export interface DutyReport {
   /** The mode played, if the puzzle has several. */
   mode?: string;
   pirate: PirateProfile;
-  /** The game's performance index (0-12, see ratings.ts). */
+  /** The game's performance index (0-12), or our extended tiers (13-17, see ratings.ts). */
   performance: number;
   score: { label: string; value: string };
   cleared: ClearedGroup[];
@@ -48,6 +48,11 @@ export interface ReportInput {
   performance: number;
   score: { label: string; value: string };
   cleared?: ClearedGroup[];
+}
+
+/** Combat and Distilling's practice boards use their own results instead of a duty popup. */
+export function showsDutyReport(report: DutyReport): boolean {
+  return report.puzzle !== 'swordfight' && !(report.puzzle === 'distilling' && (report.mode === 'Practice' || report.mode === 'Create'));
 }
 
 export function makeReport(input: ReportInput): DutyReport {

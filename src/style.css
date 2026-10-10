@@ -640,16 +640,16 @@ a {
 .duty-face { width: 116px; height: 116px; flex: none; }
 .duty-face.is-small { width: 58px; height: 58px; }
 .duty-who { display: flex; flex-direction: column; gap: 2px; min-width: 0; padding-top: 8px; }
-/* The game's UI font (Java's Dialog) at twice the game's size: names 10px plain, the rating 12px
-   drawn twice a pixel apart (its "bold" style), yellow and without an outline. */
+/* PiracyUI.c(0) for names and PiracyUI.d(1) for ratings: Dialog plain and bold,
+   at twice the game's size, with YoLookAndFeel's performanceText colour. */
 .duty-name, .duty-rating, .duty-score { font-family: Dialog, Arial, 'Helvetica Neue', sans-serif; }
 .duty-name { font-size: 20px; line-height: 1.2; }
 .duty-rating {
   font-size: 24px;
   line-height: 1.2;
-  font-weight: 400;
+  font-weight: 700;
   color: var(--duty-rating);
-  text-shadow: 2px 0 0 var(--duty-rating);
+  text-shadow: none;
 }
 .duty-rating.is-learning { --duty-rating: #00ff00; }
 .duty-score { font-size: 18px; font-variant-numeric: tabular-nums; }
@@ -661,6 +661,10 @@ a {
 .duty-fold summary { cursor: pointer; font-weight: 700; }
 .duty-fold .panel-stats { margin-top: 6px; color: var(--duty-text); }
 .duty-fold .panel-stats th { color: var(--duty-text); }
+.duty-report[data-puzzle="vampire-carp"] .panel-stats th { white-space: nowrap; }
+.stat-part { white-space: nowrap; }
+.stat-part.is-positive { color: #166526; font-weight: 700; }
+.stat-part.is-negative { color: #a51b25; font-weight: 700; }
 .duty-close { display: block; margin: 12px auto 0; }
 .game-results.duty-viewer { z-index: 3; }
 .game-results > h2[hidden] + .results-content { margin-top: 0; }

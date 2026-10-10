@@ -1,9 +1,8 @@
-// What a puzzle uses to give its sessions duty reports: its rating scales (with the player's
-// cut-offs on the Settings tab), the report for the session just ended, and the fields that
+// What a puzzle uses to give its sessions duty reports: its fixed rating scales, the report for the session just ended, and the fields that
 // keep a report with the game's history row.
 import type { Panel } from '../panel';
 import type { GameRecord, Store } from '../storage';
-import { cutoffsFor, cutoffWords, LEARNING, performanceWord, rateOn, type RatingScale } from './ratings';
+import { displayedPerformance, extraRatings, LEARNING, performanceWord, rateOn, type RatingScale } from './ratings';
 import { decodeReport, encodeReport, makeReport, type DutyReport, type ReportInput } from './report';
 
 export interface AverageOptions {
@@ -35,7 +34,7 @@ export function sessionAverages(games: readonly GameRecord[], options: AverageOp
   if (rated.length) {
     const gauntlet = rated.filter((r) => r.performance > LEARNING).length > rated.length / 2;
     const same = rated.filter((r) => (r.performance > LEARNING) === gauntlet);
-    const mean = Math.round(same.reduce((a, r) => a + r.performance, 0) / same.length);
+    const mean = Math.round(same.reduce((a, r) => a + displayedPerformance(r.performance), 0) / same.length);
     rows.push(['Average rating', performanceWord(mean)]);
   }
   // Each kind cleared, averaged over the sessions that kept a report, in the latest report's order.
@@ -71,22 +70,8 @@ export interface DutyDesk {
   averages(games: readonly GameRecord[] | null | undefined, options?: AverageOptions): string[][];
 }
 
-export function dutyDesk(panel: Panel, store: Store, puzzle: string, station: string, scales: readonly RatingScale[],
-  options: { shown?: (scale: string) => boolean; disabled?: () => boolean } = {}): DutyDesk {
-  for (const scale of scales) {
-    const words = cutoffWords(scale);
-    const group = panel.settings.group(`Ratings: ${scale.label}`, {
-      columns: 5,
-      hidden: options.shown ? () => !options.shown!(scale.id) : undefined,
-      title: 'The least it takes for each duty report rating; anything lower gets the lowest',
-    });
-    words.forEach((word, i) => group.number(word, () => cutoffsFor(store, scale)[i], (value) => {
-      const cutoffs = cutoffsFor(store, scale);
-      cutoffs[i] = value;
-      store.set(`ratingCutoffs:${scale.id}`, cutoffs);
-    }, { step: scale.step ?? 1, disabled: options.disabled }));
-    group.button('Defaults', () => store.set(`ratingCutoffs:${scale.id}`, [...scale.cutoffs]), { disabled: options.disabled });
-  }
+export function dutyDesk(_panel: Panel, store: Store, puzzle: string, station: string, scales: readonly RatingScale[],
+  _options: { shown?: (scale: string) => boolean; disabled?: () => boolean } = {}): DutyDesk {
   let last: DutyReport | null = null;
   let averaged: { games: readonly GameRecord[]; length: number; key: string; rows: string[][] } | null = null;
   return {
@@ -97,7 +82,7 @@ export function dutyDesk(panel: Panel, store: Store, puzzle: string, station: st
     fields(report) { return report ? { rating: performanceWord(report.performance), duty: encodeReport(report) } : {}; },
     averages(games, opts = {}) {
       if (!games?.length) return [];
-      const key = JSON.stringify(opts);
+      const key = JSON.stringify([opts, extraRatings()]);
       if (!averaged || averaged.games !== games || averaged.length !== games.length || averaged.key !== key) {
         averaged = { games, length: games.length, key, rows: sessionAverages(games, opts) };
       }

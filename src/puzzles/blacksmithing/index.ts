@@ -10,6 +10,7 @@
 // Perfect board is a practice mode that isn't in the game: a 1x1 to 5x5 board, one strike per
 // square, dealt so that every square can be struck. 3 points for clearing it, 1 for one left.
 // Boards follow one another until Stop, or until a 2-minute timer runs out.
+import { SessionPause } from '../../core/pause';
 import { Images } from '../../core/assets';
 import { SoundBank } from '../../core/audio';
 import { loadFont } from '../../core/fonts';
@@ -192,7 +193,9 @@ function silhouette(img: HTMLImageElement, colour: string): HTMLCanvasElement {
   return canvas;
 }
 
-export default (async ({ screen, input, panel, store, ticks, setReplayTime }) => {
+export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplayTime: rawReplayTime }) => {
+  const pause = new SessionPause(rawTicks, rawReplayTime);
+  const { ticks, setReplayTime } = pause;
   const [images] = await Promise.all([Images.load(imageUrls), loadFont(FONT, delarobbUrl)]);
   const img = (name: string) => images.get(name);
   const sounds = new SoundBank<Sound>(soundUrls, () => replays?.isSeeking ?? false);
@@ -210,12 +213,13 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
   const bests = store.get<Record<string, number>>('bestStrikes', {});
   const perfectRecords = store.get<Record<string, PerfectRecord>>('perfectRecords', {});
   const perfectKey = () => `${perfectSize}-${difficulty}`;
+  const runHistoryKey = () => `${timerMs ? 'run' : 'untimed-run'}:${perfectKey()}`;
   /** Points from the perfect board just finished, or null. */
   let lastPoints: number | null = null;
   let timerMs = store.get<number>('perfectTimer', 0);
   const timedBests = store.get<Record<string, number>>('perfectTimedBests', {});
   /** A perfect-board run: boards dealt one after another, with the points they've scored. */
-  const run = { active: false, start: 0, end: 0, points: 0, boards: 0, timeUp: false };
+  const run = { active: false, start: 0, end: 0, points: 0, boards: 0, perfect: 0, oneOff: 0, farOff: 0, timeUp: false };
   const timeLeft = () => (timerMs ? Math.max(0, timerMs - ((run.active ? ticks() : run.end) - run.start)) : null);
 
   let board: IronBoard | null = null;
@@ -375,6 +379,7 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
   const quick = () => mode === 'perfect';
 
   function newSword(): void {
+    pause.resume();
     const level = boardDifficulty(difficulty);
     board = mode === 'perfect' ? new IronBoard(level, random, perfectBoard(perfectSize, level, random)) : new IronBoard(level, random);
     lastPoints = null;
@@ -573,6 +578,9 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
       }
       run.points += lastPoints ?? 0;
       run.boards++;
+      if (lastPoints === 3) run.perfect++;
+      else if (lastPoints === 1) run.oneOff++;
+      else run.farOff++;
       // The next board comes straight in, for as long as the run lasts.
       if (run.active) newSword();
       else replays.finish(`Points ${run.points}`);
@@ -621,9 +629,10 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
   }
 
   function startRun(): void {
+    pause.resume();
     duty.clear();
     replays.begin({ mode, difficulty, perfectSize, timerMs }, rng.snapshot());
-    Object.assign(run, { active: true, start: ticks(), end: ticks(), points: 0, boards: 0, timeUp: false });
+    Object.assign(run, { active: true, start: ticks(), end: ticks(), points: 0, boards: 0, perfect: 0, oneOff: 0, farOff: 0, timeUp: false });
     newSword();
   }
 
@@ -636,14 +645,20 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
       mode: 'Perfect board',
       performance: duty.rate('perfect', run.boards ? run.points / run.boards : 0),
       score: { label: 'Points', value: String(run.points) },
-      cleared: [],
+      cleared: [{ label: 'Boards Finished', items: [
+        { icon: 'smith-perfect', label: 'perfect', count: run.perfect },
+        { icon: 'smith-one-off', label: 'one off', count: run.oneOff },
+        { icon: 'smith-far-off', label: 'too far off', count: run.farOff },
+      ] }],
     });
     const finishedReplay = replays.finish(`Points ${run.points}`, report);
     abortBoard();
-    if (!timeUp || replays.isPlaying) return;
-    say("Time's up!", 4, 2500);
+    if (replays.isPlaying) return;
     const key = perfectKey();
-    store.addHistory(`run:${key}`, { score: run.points, boards: run.boards, ...duty.fields(report), ...(finishedReplay ? { replayAt: finishedReplay.at, replayId: finishedReplay.runId ?? ''} : {}) });
+    // A manually ended untimed run is a session; timed averages only include full rounds.
+    if (!timerMs || timeUp) store.addHistory(runHistoryKey(), { score: run.points, boards: run.boards, ...duty.fields(report), ...(finishedReplay ? { replayAt: finishedReplay.at, replayId: finishedReplay.runId ?? ''} : {}) });
+    if (!timeUp) return;
+    say("Time's up!", 4, 2500);
     if (run.points > (timedBests[key] ?? -1)) {
       timedBests[key] = run.points;
       store.set('perfectTimedBests', timedBests);
@@ -765,6 +780,9 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
   }
 
   function frame(events: InputEvent[]): void {
+    const liveEvents = pause.input(events, 'blacksmithing', running || run.active);
+    if (liveEvents === null) return;
+    events = liveEvents;
     const routed = replays.frame(events, input.mouse, ticks());
     events = routed.events;
     input.mouse = routed.mouse;
@@ -871,6 +889,8 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
     replays.drawOverlay(ctx);
   }
 
+  pause.install(panel, () => running || run.active);
+
   // ---- Panel ----
 
   /** Settings are locked while a sword or a run is going. */
@@ -881,6 +901,7 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
   });
 
   panel.controls('blacksmithing', [
+    { id: 'pause', label: 'Pause / resume', defaultKey: 'Escape' },
     { id: 'up', label: 'Move up', defaultKey: 'ArrowUp' },
     { id: 'down', label: 'Move down', defaultKey: 'ArrowDown' },
     { id: 'left', label: 'Move left', defaultKey: 'ArrowLeft' },
@@ -950,7 +971,7 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
   historyGroup(panel, () => (mode === 'classic' ? store.history(`classic:${difficulty}`) : null), [
     { label: 'Strikes', value: (g) => String(g.score) },
   ], 'Past games', replayAction);
-  historyGroup(panel, () => (mode === 'perfect' && timerMs ? store.history(`run:${perfectKey()}`) : null), [
+  historyGroup(panel, () => (mode === 'perfect' ? store.history(runHistoryKey()) : null), [
     { label: 'Points', value: (g) => String(g.score) },
     { label: 'Boards', value: (g) => String(g.boards) },
   ], 'Past games', replayAction);
@@ -975,8 +996,12 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
   panel.results(() => finished && !busy() ? {
     title: mode === 'perfect' ? 'Perfect board results' : 'Sword results',
     report: duty.last,
+    averages: mode === 'classic'
+      ? duty.averages(store.history(`classic:${difficulty}`), { scoreLabel: 'Strikes' })
+      : duty.averages(store.history(runHistoryKey()), { scoreLabel: 'Points' }),
     rows: mode === 'perfect' ? [
       ['Points', String(run.points)], ['Boards', String(run.boards)],
+      ['Perfect / One off / Too far off', `${run.perfect} / ${run.oneOff} / ${run.farOff}`],
       ['Time', `${(Math.max(0, run.end - run.start) / 1000).toFixed(2)}s`],
     ] : [
       ['Strikes', String(board?.numHits ?? 0)],

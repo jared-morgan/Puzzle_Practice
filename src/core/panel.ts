@@ -7,7 +7,7 @@
 //
 //   Play      session choices (Mode) with Start / Stop, the clock and main score, then any other
 //             controls that matter during a game.
-//   Settings  everything chosen before a game, in two parts: this puzzle's options (the game's
+//   Settings  everything chosen before a game, in Mode, Controls and Global subtabs: this puzzle's options (the game's
 //             own, then Look and keys), then what applies to every puzzle (pirate, display, sound,
 //             replays).
 //   History   past games and replays only.
@@ -23,9 +23,11 @@
 
 import { getVolume, setVolume } from './audio';
 import { keyFor, keyLabel, resetKeys, setKey, type KeyBinding } from './controls';
-import type { DutyReport } from './duty/report';
-import { pirateSettings, renderReport } from './duty/view';
+import { showsDutyReport, type DutyReport } from './duty/report';
+import { foldTable, pirateSettings, renderReport } from './duty/view';
 import { Store } from './storage';
+import { extraRatings } from './duty/ratings';
+import { fillStatCell, type StatRows } from './stat-cell';
 
 type Get<T> = () => T;
 
@@ -85,7 +87,7 @@ export interface SessionResults {
   averages?: readonly (readonly string[])[];
   /** The session's duty report; `rows` then become its folded-away details. */
   report?: DutyReport | null;
-  rows: readonly (readonly string[])[];
+  rows: StatRows;
 }
 
 /** A button at the end of each row of a stats table. */
@@ -96,12 +98,16 @@ export interface RowAction {
   disabled?: (index: number) => boolean;
 }
 
-function rowsTable(rows: readonly (readonly string[])[]): HTMLElement {
+function rowsTable(rows: StatRows): HTMLElement {
   const table = el('table', 'panel-stats');
   const body = el('tbody');
   for (const row of rows) {
     const tr = el('tr');
-    row.forEach((cell, i) => tr.append(el(i === 0 ? 'th' : 'td', '', cell)));
+    row.forEach((cell, i) => {
+      const node = el(i === 0 ? 'th' : 'td');
+      fillStatCell(node, cell);
+      tr.append(node);
+    });
     body.append(tr);
   }
   table.append(body);
@@ -172,7 +178,8 @@ export class Panel {
   readonly play: Page;
   /** What's chosen before a game, for this puzzle only. */
   readonly settings: Page;
-  /** Settings shared by every puzzle, below this puzzle's own on the Settings tab. */
+  readonly controlSettings: Page;
+  /** Settings shared by every puzzle, in the Global subtab. */
   readonly globalSettings: Page;
   private readonly preferences = new Store('global');
   private hideTimer = this.preferences.get<boolean>('hideTimer', false);
@@ -180,19 +187,44 @@ export class Panel {
   private readonly sessionPage: Page;
   private readonly sessionElement: HTMLElement;
   private readonly liveElement: HTMLElement;
+  private resetSettings: () => void = () => {};
 
   constructor(readonly root: HTMLElement, private readonly canvas?: HTMLCanvasElement) {
     this.tabs.setAttribute('role', 'tablist');
     root.append(this.tabs);
     this.play = this.tab('Play');
     const settingsTab = this.tab('Settings').element;
-    const part = (title: string) => {
+    const settingsTabs = el('nav', 'panel-tabs panel-settings-tabs');
+    settingsTabs.setAttribute('role', 'tablist');
+    settingsTabs.setAttribute('aria-label', 'Settings scope');
+    settingsTab.append(settingsTabs);
+    const part = () => {
       const area = el('div', 'panel-settings-part');
-      settingsTab.append(el('h2', 'panel-part-title', title), area);
+      area.setAttribute('role', 'tabpanel');
+      settingsTab.append(area);
       return new Page(this, area);
     };
-    this.settings = part('This puzzle');
-    this.globalSettings = part('All puzzles');
+    this.settings = part();
+    this.controlSettings = part();
+    this.globalSettings = part();
+    const scopes = [this.settings, this.controlSettings, this.globalSettings];
+    const scopeButtons = ['Mode', 'Controls', 'Global'].map((name, i) => {
+      const button = el('button', 'panel-tab', name);
+      button.type = 'button';
+      button.setAttribute('role', 'tab');
+      button.addEventListener('click', () => { selectScope(i); this.used(); });
+      settingsTabs.append(button);
+      return button;
+    });
+    const selectScope = (index: number) => {
+      scopes.forEach((page, i) => { page.element.hidden = i !== index; });
+      scopeButtons.forEach((button, i) => {
+        button.classList.toggle('is-active', i === index);
+        button.setAttribute('aria-selected', String(i === index));
+      });
+    };
+    this.resetSettings = () => selectScope(0);
+    this.resetSettings();
     this.tab('History');
     this.clockCard.hidden = true;
     const session = el('div', 'panel-page panel-session');
@@ -204,7 +236,10 @@ export class Panel {
     this.live = new Page(this, live);
     live.append(this.clockCard);
     pirateSettings(this.globalSettings);
-    this.globalSettings.group('Display').toggle('Hide timer', () => this.hideTimer, (on) => {
+    this.globalSettings.group('Display').toggle('Extra Ratings', extraRatings, (on) => {
+      this.preferences.set('extraRatings', on);
+      if (this.viewing) this.showReport(this.viewing, this.viewerAverages);
+    }, { title: 'Allow ratings above Frenetic in Foraging and Vampire Carpentry.' }).toggle('Hide timer', () => this.hideTimer, (on) => {
       this.hideTimer = on;
       this.preferences.set('hideTimer', on);
     });
@@ -247,6 +282,7 @@ export class Panel {
 
   /** Switches to a tab, e.g. back to Play when a game starts. */
   show(name: string): void {
+    if (name === 'Settings') this.resetSettings();
     for (const p of this.pages) {
       const on = p.name === name;
       p.page.element.hidden = !on;
@@ -261,7 +297,7 @@ export class Panel {
 
   /** Adds this puzzle's editable keyboard bindings to its Settings tab. */
   controls(puzzle: string, bindings: readonly KeyBinding[]): void {
-    const group = this.settings.group('Controls');
+    const group = this.controlSettings.group('Keys');
     for (const binding of bindings) {
       group.text(binding.label, () => keyLabel(keyFor(puzzle, binding.id, binding.defaultKey)), (value) => {
         setKey(puzzle, binding.id, value);
@@ -305,19 +341,23 @@ export class Panel {
       if (!result) return;
       heading.textContent = result.report ? result.headline ?? '' : result.title ?? 'Session results';
       heading.hidden = !heading.textContent;
-      const key = JSON.stringify([result.report ?? null, result.rows, result.averages ?? []]);
+      const key = JSON.stringify([result.report ?? null, result.rows, result.averages ?? [], extraRatings()]);
       if (key === shown) return;
       shown = key;
       content.replaceChildren(result.report ? renderReport(result.report, result.rows, result.averages) : rowsTable(result.rows));
+      if (!result.report && result.averages) content.append(foldTable('averages', 'Session averages', result.averages.length ? result.averages : [['Sessions', 'No completed sessions yet']]));
     });
   }
 
   private viewing: DutyReport | null = null;
   private viewer: HTMLElement | null = null;
+  private viewerAverages: readonly (readonly string[])[] | (() => readonly (readonly string[])[]) = [];
 
   /** Shows a saved report over the board (from History or a replay) until it's closed; null closes it. */
-  showReport(report: DutyReport | null): void {
+  showReport(report: DutyReport | null, averages: readonly (readonly string[])[] | (() => readonly (readonly string[])[]) = []): void {
+    if (report && !showsDutyReport(report)) report = null;
     this.viewing = report;
+    this.viewerAverages = averages;
     if (!this.canvas?.parentElement) return;
     if (!this.viewer) {
       this.viewer = el('section', 'game-results duty-viewer');
@@ -325,7 +365,8 @@ export class Panel {
       this.canvas.parentElement.append(this.viewer);
     }
     this.viewer.hidden = !report;
-    this.viewer.replaceChildren(...(report ? [renderReport(report, [], [], () => { this.showReport(null); this.used(); })] : []));
+    this.viewer.replaceChildren(...(report ? [renderReport(report, [], typeof averages === 'function' ? averages() : averages,
+      () => { this.showReport(null); this.used(); })] : []));
     this.sync();
   }
 

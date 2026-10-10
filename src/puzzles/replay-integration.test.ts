@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { IDBFactory } from 'fake-indexeddb';
+import { PyRandom } from '../core/pyrandom';
 import { Store, exportAll } from '../core/storage';
 import { replayWrites, listReplayFiles } from '../core/replay-storage';
 import type { ReplayRecorder } from '../core/replay';
@@ -61,6 +62,12 @@ beforeEach(async () => {
   vi.stubGlobal('indexedDB', new IDBFactory());
   vi.stubGlobal('window', Object.assign(new EventTarget(), { setTimeout, clearTimeout }));
   vi.stubGlobal('navigator', { storage: {} });
+  // Face layers now load for the player's live Swordfight portrait as well as reports.
+  vi.stubGlobal('Image', class {
+    width = 58; height = 58;
+    onload?: () => void;
+    set src(_value: string) { queueMicrotask(() => this.onload?.()); }
+  });
   const values = new Map<string, string>();
   vi.stubGlobal('localStorage', {
     get length() { return values.size; }, key: (i: number) => [...values.keys()][i] ?? null,
@@ -74,6 +81,67 @@ beforeEach(async () => {
 });
 
 describe('Distilling session dismissal', () => {
+  it.each(['Practice', 'Create'])('%s ends without a duty report popup or a saved report', async (mode) => {
+    const store = new Store('distilling');
+    store.set('mode', mode);
+    const { panel, buttons, results } = panelHarness();
+    let now = 0;
+    const screen = new Proxy({ ctx: canvasContext() }, { get: (target, key) => key === 'ctx' ? target.ctx : () => ({ width: 0, height: 0 }) });
+    const factory = (await import('./distilling/index')).default;
+    const instance = await factory({ screen, input: { mouse: [-1, -1] }, panel, store, ticks: () => now } as unknown as PuzzleContext);
+    buttons.get('Play::Start')!();
+    now = 1000;
+    buttons.get('Play::Start')!();
+    expect(results()[0]).toBeNull();
+    if (mode === 'Practice') {
+      const games = store.history('Practice:0-0');
+      expect(games).toHaveLength(1);
+      expect(games[0].duty).toBeUndefined();
+    }
+    instance.dispose?.();
+  });
+
+  it('counts successful swaps once, excludes paused time and freezes the final rate', async () => {
+    const store = new Store('distilling');
+    store.set('mode', 'Standard');
+    store.set('timerOn', false);
+    const { panel, buttons, stats, results } = panelHarness();
+    let now = 0;
+    const screen = new Proxy({ ctx: canvasContext() }, { get: (target, key) => key === 'ctx' ? target.ctx : () => ({ width: 0, height: 0 }) });
+    const factory = (await import('./distilling/index')).default;
+    const instance = await factory({ screen, input: { mouse: [-1, -1] }, panel, store, ticks: () => now } as unknown as PuzzleContext);
+    const brew = (window as unknown as { __brew: {
+      game: { board: { allSwaps(): [number, number, number, number][] } };
+      setCursor(col: number, row: number): void;
+      selOrSwap(): void;
+    } }).__brew;
+    const swap = () => {
+      const [ac, ar, bc, br] = brew.game.board.allSwaps()[0];
+      brew.setCursor(ac, ar); brew.selOrSwap();
+      brew.setCursor(bc, br); brew.selOrSwap();
+    };
+    buttons.get('Play::Start')!();
+    swap();
+    now = 2000;
+    instance.frame([]);
+    expect(stats()[0]).toContainEqual(['Swaps per second', '0.50']);
+    buttons.get('Play::Pause')!();
+    now = 62000;
+    instance.frame([]);
+    expect(stats()[0]).toContainEqual(['Swaps per second', '0.50']);
+    buttons.get('Play::Pause')!();
+    swap();
+    now = 64000;
+    instance.frame([]);
+    buttons.get('Play::Start')!();
+    const result = results()[0] as { rows: string[][] };
+    expect(result.rows).toContainEqual(['Swaps', '2']);
+    expect(result.rows).toContainEqual(['Swaps per second', '0.50']);
+    now = 70000;
+    expect(stats()[0]).toContainEqual(['Swaps per second', '0.50']);
+    instance.dispose?.();
+  });
+
   it.each(['button', 'navigation'] as const)('completes a full-jug Crystal Clear streak through %s without scoring another column', async (ending) => {
     const store = new Store('distilling');
     store.set('mode', 'Seeded');
@@ -107,6 +175,8 @@ describe('Distilling session dismissal', () => {
     const result = results()[0] as { rows: string[][] };
     expect(result.rows.find(([name]) => name === 'Columns distilled')![1]).toBe('12');
     expect(result.rows.find(([name]) => name === 'Columns burnt')![1]).toBe('0');
+    expect(result.rows.find(([name]) => name === 'Longest crystal chain')![1]).toBe('12');
+    expect(result.rows).toContainEqual(['Junk left', '0']);
     expect(result.rows[0]).toEqual((scoreBefore as string[][])[0]);
     await replayWrites.idle();
     const data = JSON.parse(exportAll()).data;
@@ -137,16 +207,17 @@ afterEach(async () => {
 describe('puzzle completion during replay', () => {
   it.each([
     ['blacksmithing', 500, 20, { mode: 'perfect', perfectTimer: 100 }],
-    ['treasure-haul', 62000, 100, { round: 30 }],
+    ['treasure-haul', 62000, 100, { round: 30, gemRates: [50, 50] }],
     ['distilling', 30000, 20, { timerOn: true, timerSeconds: 0.01 }],
     ['vampire-carp', 121000, 1000, {}],
     ['forage', 12000, 20, { settings: { mode: 'ci', roundSeconds: 5 } }],
     ['swordfight', 90000, 20, { settings: { opponents: 1, skill: 5, difficulty: 5, breakers: 12.5, sword: [2, 0, 0], enemySword: [6, 4, 2] } }],
   ] as const)('%s keeps player history unchanged through playback, seeking and Stop', async (puzzle, end, step, settings) => {
     const store = new Store(puzzle);
+    if (puzzle === 'treasure-haul') vi.spyOn(PyRandom.prototype, 'seedFromCrypto').mockImplementation(function (this: PyRandom) { this.seed(1234); });
     if (puzzle === 'forage') vi.spyOn(Math, 'random').mockReturnValue(0.123456);
     for (const [key, value] of Object.entries(settings)) store.set(key, value);
-    const { panel, buttons, setters, stats, results } = panelHarness();
+    const { panel, buttons, buttonStates, setters, stats, results } = panelHarness();
     let now = 0;
     const screen = new Proxy({ ctx: canvasContext() }, { get: (target, key) => key === 'ctx' ? target.ctx : () => ({ width: 0, height: 0 }) });
     const input = { mouse: [-1, -1] };
@@ -156,9 +227,32 @@ describe('puzzle completion during replay', () => {
     const instance = await factory(context);
     const recorder = captured.recorders[0];
     buttons.get('Play::Start')!();
-    for (now = 0; now <= end; now += step) {
-      if (puzzle === 'forage' && now >= 2000 && now <= 8000) {
-        const index = Math.floor(now / step) % 54;
+    let pausedWallTime = 0;
+    for (let elapsed = 0; elapsed <= end; elapsed += step) {
+      now = elapsed + pausedWallTime;
+      if (['forage', 'treasure-haul', 'blacksmithing', 'swordfight'].includes(puzzle) && elapsed === step * 5) {
+        buttons.get('Play::Pause')!();
+        expect(buttonStates.get('Play::Pause')!.label!()).toBe('Resume');
+        const beforePause = stats();
+        now += 12345;
+        instance.frame([{ type: 'keydown', key: 'space' }]);
+        expect(stats()).toEqual(beforePause);
+        buttons.get('Play::Pause')!();
+        expect(buttonStates.get('Play::Pause')!.label!()).toBe('Pause');
+        pausedWallTime += 12345;
+      }
+      if (puzzle === 'treasure-haul' && elapsed === 2000) {
+        expect(buttonStates.get('Play::Dismiss')!.disabled!()).toBe(false);
+        const beforeDismiss = stats();
+        buttons.get('Play::Dismiss')!();
+        expect(stats()).toEqual(beforeDismiss);
+      }
+      if (puzzle === 'treasure-haul' && elapsed > 3000 && elapsed % 500 === 0) {
+        const cell = (elapsed / 500) % 56;
+        input.mouse = [64 + (cell % 8) * 45 + 10, 205 + Math.floor(cell / 8) * 45 + 10];
+        instance.frame([{ type: 'mousedown', button: 1, pos: input.mouse as [number, number] }]);
+      } else if (puzzle === 'forage' && elapsed >= 2000 && elapsed <= 8000) {
+        const index = Math.floor(elapsed / step) % 54;
         instance.frame([{ type: 'mousedown', button: 1, pos: [67 + (index % 6) * 45 + 10, 50 + Math.floor(index / 6) * 45 + 10] }]);
       } else instance.frame([]);
     }
@@ -169,6 +263,33 @@ describe('puzzle completion during replay', () => {
     expect(histories).toHaveLength(1);
     expect(histories[0][1]).toHaveLength(1);
     const replay = (await listReplayFiles(puzzle))[0];
+    if (puzzle === 'forage') {
+      const result = results()[0] as { averages: string[][]; rows: string[][] };
+      expect(result.averages).toContainEqual(['Sessions', '1']);
+      const history = (histories[0][1] as { clockwise: number; anticlockwise: number }[])[0];
+      expect(history.clockwise).toBe(0);
+      expect(history.anticlockwise).toBeGreaterThan(0);
+      expect(result.rows).toContainEqual(['Clockwise, anticlockwise', `0, ${history.anticlockwise}`]);
+    }
+    if (puzzle === 'treasure-haul') {
+      const result = results()[0] as { report: { score: {label: string; value: string}; cleared: {items: {icon: string; count: number}[]}[] }; rows: string[][] };
+      expect(result.report.score.label).toBe('Chests cleared');
+      expect(Number(result.report.score.value)).toBe(result.report.cleared[0].items.reduce((sum, i) => sum + i.count, 0));
+      expect(result.report.cleared[0].items.map((i) => i.icon)).toEqual(['vampirate-chest-small', 'vampirate-chest-medium', 'vampirate-chest-large']);
+      expect(result.rows.some(([label]) => label === 'Best move')).toBe(false);
+      expect(Number(result.rows.find(([label]) => label === 'Rubies spawned')![1])).toBeGreaterThan(0);
+      expect(Number(result.rows.find(([label]) => label === 'Emeralds spawned')![1])).toBeGreaterThan(0);
+    }
+    if (puzzle === 'swordfight') {
+      buttons.get('Play::View stats')!();
+      const result = results()[0] as { report?: unknown; rows: string[][] };
+      expect(result.report).toBeUndefined();
+      expect(result.rows.map(([label]) => label)).toEqual(expect.arrayContaining([
+        'Damage sent per second', 'Damage taken per second', 'Largest attack received',
+        ...['red', 'green', 'blue', 'yellow'].map((c) => `Longest ${c} breaker drought`),
+      ]));
+      buttons.get('Play::View stats')!();
+    }
     expect(replay).toBeDefined();
     const perf = vi.spyOn(performance, 'now').mockReturnValue(0);
     expect(await recorder.playAt(replay.at, replay.runId)).toBe(true);

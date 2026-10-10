@@ -1,7 +1,8 @@
 // A puzzle's past games on the panel's History tab: how many were played with the current
 // settings, and the most recent ones, newest first. The games come from Store.history / Store.addHistory.
 // A game saved with a duty report (its `duty` field) has a button that shows the report again.
-import { decodeReport, type DutyReport } from './duty/report';
+import { decodeReport, showsDutyReport, type DutyReport } from './duty/report';
+import { sessionAverages } from './duty/desk';
 import type { Panel, RowAction } from './panel';
 import type { GameRecord } from './storage';
 
@@ -14,7 +15,10 @@ const reports = new WeakMap<GameRecord, DutyReport | null>();
 /** A game's saved duty report, decoded once. */
 function reportOf(game: GameRecord | undefined): DutyReport | null {
   if (!game) return null;
-  if (!reports.has(game)) reports.set(game, decodeReport(game.duty));
+  if (!reports.has(game)) {
+    const report = decodeReport(game.duty);
+    reports.set(game, report && showsDutyReport(report) ? report : null);
+  }
   return reports.get(game)!;
 }
 
@@ -39,6 +43,7 @@ export function historyGroup(
   columns: readonly HistoryColumn[],
   title = 'Past games',
   replayAction?: { available: (game: GameRecord) => boolean; play: (game: GameRecord) => void },
+  showReports = true,
 ): void {
   const hidden = () => games() === null;
   const shownGames = () => (games() ?? []).slice(-SHOWN).reverse();
@@ -54,12 +59,18 @@ export function historyGroup(
       () => shownGames().map((game) => [when(game.at), ...columns.map((c) => c.value(game))]),
       {},
       [
-        {
+        ...(showReports ? [{
           label: '📜',
           title: 'Show this game’s duty report',
-          onClick: (index) => { const report = reportOf(shownGames()[index]); if (report) panel.showReport(report); },
-          disabled: (index) => !reportOf(shownGames()[index]),
-        },
+          onClick: (index: number) => {
+            const report = reportOf(shownGames()[index]);
+            if (report) panel.showReport(report, () => sessionAverages(games() ?? [], {
+              scoreLabel: report.score.label,
+              lowerIsBetter: report.puzzle === 'forage' && report.score.label === 'Moves',
+            }));
+          },
+          disabled: (index: number) => !reportOf(shownGames()[index]),
+        }] : []),
         ...(replayAction ? [{
           label: '▶',
           title: 'Play this game replay',

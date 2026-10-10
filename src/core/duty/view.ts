@@ -9,6 +9,7 @@ import { loadProfile, NAME_LIMIT, saveProfile, type PirateProfile } from './prof
 import { LEARNING, moodFor, MOODS, performanceWord } from './ratings';
 import { SPACE, type ClearedGroup, type DutyReport } from './report';
 import { Store } from '../storage';
+import { fillStatCell, type StatRows } from '../stat-cell';
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, className = '', text = ''): HTMLElementTagNameMap[K] {
   const node = document.createElement(tag);
@@ -129,16 +130,20 @@ function setFoldOpen(fold: Fold, open: boolean): void {
   prefs.set('reportFolds', { ...prefs.get<Partial<Record<Fold, boolean>>>('reportFolds', {}), [fold]: open });
 }
 
-function foldTable(fold: Fold, title: string, rows: readonly (readonly string[])[]): HTMLElement {
+export function foldTable(fold: Fold, title: string, rows: StatRows): HTMLElement {
   const box = el('details', `duty-fold duty-${fold}`);
   box.open = foldOpen(fold);
-  box.addEventListener('toggle', () => setFoldOpen(fold, box.open));
+  box.addEventListener('toggle', () => { if (box.isConnected) setFoldOpen(fold, box.open); });
   box.append(el('summary', '', title));
   const table = el('table', 'panel-stats');
   const body = el('tbody');
   for (const row of rows) {
     const tr = el('tr');
-    row.forEach((cell, i) => tr.append(el(i === 0 ? 'th' : 'td', '', cell)));
+    row.forEach((cell, i) => {
+      const node = el(i === 0 ? 'th' : 'td');
+      fillStatCell(node, cell);
+      tr.append(node);
+    });
     body.append(tr);
   }
   table.append(body);
@@ -146,8 +151,9 @@ function foldTable(fold: Fold, title: string, rows: readonly (readonly string[])
   return box;
 }
 
-/** A row-style group: every one drawn side by side in order, with gaps where the items say. */
+/** A row-style group: overlapping icons in order, with gaps only where the items say. */
 function rowCanvas(group: ClearedGroup): HTMLCanvasElement | null {
+  const rowStep = 3;
   const items = group.items.filter((item) => item.count > 0);
   if (!items.some((item) => item.icon !== SPACE)) return null;
   const icons = items.map((item) => (item.icon === SPACE ? null : ICONS[item.icon] ?? null));
@@ -158,14 +164,16 @@ function rowCanvas(group: ClearedGroup): HTMLCanvasElement | null {
   const placed: Array<{ icon: Icon; x: number; y: number }> = [];
   let x = 0;
   let y = 0;
+  let lastWidth = 0;
   items.forEach((item, i) => {
     const icon = icons[i];
     for (let k = 0; k < item.count; k++) {
-      if (!icon) { x += gap; continue; }
+      if (!icon) { x += Math.max(0, lastWidth - rowStep) + gap; lastWidth = 0; continue; }
       const w = iconWidth(icon);
       if (x + w > STACK_WIDTH) { x = 0; y += height + 1; }
       placed.push({ icon, x, y });
-      x += w + 1;
+      x += rowStep;
+      lastWidth = w;
     }
   });
   const canvas = el('canvas', 'duty-stack');
@@ -186,9 +194,10 @@ const counts = (group: ClearedGroup) => `[${group.items.map((item) => item.count
  * A report as a card. `details` is the session's full table of numbers and `averages` the
  * sessions so far with these settings, each folded away (and left open if the player opened it).
  */
-export function renderReport(report: DutyReport, details: readonly (readonly string[])[] = [],
+export function renderReport(report: DutyReport, details: StatRows = [],
   averages: readonly (readonly string[])[] = [], onClose?: () => void): HTMLElement {
   const card = el('div', 'duty-report');
+  card.dataset.puzzle = report.puzzle;
 
   const station = el('div', 'duty-station');
   const icon = stationIcon(report.puzzle);
@@ -218,7 +227,7 @@ export function renderReport(report: DutyReport, details: readonly (readonly str
   card.append(entry);
 
   if (details.length) card.append(foldTable('details', 'This session', details));
-  if (averages.length) card.append(foldTable('averages', 'Session averages', averages));
+  card.append(foldTable('averages', 'Session averages', averages.length ? averages : [['Sessions', 'No session averages available']]));
   if (onClose) {
     const close = el('button', 'panel-button duty-close', 'Close');
     close.type = 'button';
@@ -238,7 +247,8 @@ const LABELS: Record<string, string> = {
   sleepinghat: 'Sleeping cap', savvy: 'Savvy hat', top_hat: 'Top hat', picaroon_hat: 'Picaroon hat', wizard_hat: 'Wizard hat',
   santa: 'Festive hat', rogue_hat: 'Rogue hat', widebrimmed: 'Wide-brimmed hat',
 };
-const label = (value: string) => LABELS[value] ?? value.charAt(0).toUpperCase() + value.slice(1).replaceAll('_', ' ');
+const label = (value: string) => LABELS[value] ?? (value.charAt(0).toUpperCase() + value.slice(1))
+  .replaceAll('_', ' ').replace(/([a-z])([A-Z])/g, '$1 $2');
 const options = (values: string[], none?: string) => [...(none ? [{ value: '', label: none }] : []), ...values.map((value) => ({ value, label: label(value) }))];
 
 const pick = <T>(list: readonly T[]): T => list[Math.floor(Math.random() * list.length)];
@@ -250,7 +260,7 @@ export function randomFace(): FaceSpec {
   return {
     female, skin: pick(o.skin), hair: pick(o.hair), hairColour: pick(o.hairColour),
     beard: !female && Math.random() < 0.5 ? pick(o.beard) : '', eyepatch: Math.random() < 0.15,
-    hat: Math.random() < 0.8 ? pick(o.hat) : '', hatColour: pick(o.cloth), trimColour: pick(o.cloth),
+    hat: Math.random() < 0.8 ? pick(o.hat) : '', hatColour: pick(o.cloth), trimColour: pick(o.trimCloth),
   };
 }
 
@@ -303,7 +313,7 @@ export function pirateSettings(page: Page): Group {
   group.select('Hat', options(male.hat, 'None'), () => profile.face.hat, (hat) => face({ hat }), { hidden: () => profile.face.female });
   group.select('Hat', options(female.hat, 'None'), () => profile.face.hat, (hat) => face({ hat }), { hidden: () => !profile.face.female });
   group.select('Hat colour', options(male.cloth), () => profile.face.hatColour, (hatColour) => face({ hatColour }), { hidden: () => !profile.face.hat });
-  group.select('Trim colour', options(male.cloth), () => profile.face.trimColour, (trimColour) => face({ trimColour }), { hidden: () => !profile.face.hat });
+  group.select('Trim colour', options(male.trimCloth), () => profile.face.trimColour, (trimColour) => face({ trimColour }), { hidden: () => !profile.face.hat });
   group.toggle('Eyepatch', () => profile.face.eyepatch, (eyepatch) => face({ eyepatch }));
   group.button('Random face', () => face(randomFace()));
   return group;

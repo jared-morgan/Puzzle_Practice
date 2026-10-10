@@ -4,12 +4,14 @@
 // each pirate's status with a small copy of their board, the falling pair with its outline, pieces
 // settling, shattering and fusing, incoming strikes with their warnings, and the game's art and
 // sounds. Settings and scores are in the side panel.
+import { SessionPause } from '../../core/pause';
 import { Images } from '../../core/assets';
 import { SoundBank } from '../../core/audio';
 import { keyMatches } from '../../core/controls';
 import { loadFont } from '../../core/fonts';
-import { dutyDesk } from '../../core/duty/desk';
-import type { RatingScale } from '../../core/duty/ratings';
+import { sessionAverages } from '../../core/duty/desk';
+import { currentPirate } from '../../core/duty/profile';
+import { faceCanvas } from '../../core/duty/view';
 import { historyGroup } from '../../core/history';
 import type { InputEvent } from '../../core/input';
 import type { Option } from '../../core/panel';
@@ -52,8 +54,6 @@ const FONT = 'Delarobb';
 /** Piece colours' art, by colour number (sword/a/h.p). */
 const COLOUR_NAMES = ['red', 'green', 'blue', 'yellow'];
 
-/** Duty report ratings: damage sent a minute. */
-const RATING_SCALES: RatingScale[] = [{ id: 'damage', label: 'Damage sent a minute', cutoffs: [10, 25, 40, 60, 80] }];
 /** Floating messages show for 1.5s, knock-outs 3s, the result 4s (s.d, s.a_). */
 const MESSAGE_MS = 1500;
 /** The eight sword colours (red, orange, yellow, green, blue, purple, white, black), for attacker dots. */
@@ -108,6 +108,7 @@ const MAX_ALLIES = 5;
 const SKILLS = ['cultistSkill', 'homunculusSkill', 'thrallSkill', 'swabbieSkill'] as const;
 
 const KEYS = [
+    { id: 'pause', label: 'Pause / resume', defaultKey: 'Escape' },
   { id: 'left', label: 'Move left', defaultKey: 'ArrowLeft' },
   { id: 'right', label: 'Move right', defaultKey: 'ArrowRight' },
   { id: 'cw', label: 'Turn clockwise', defaultKey: 'ArrowDown' },
@@ -196,7 +197,9 @@ function chunkVelocity(seed: number, i: number): [number, number] {
   return [(r(i * 2) * 2 - 1) * 0.082, -r(i * 2 + 1) * 0.522];
 }
 
-export default (async ({ screen, input, panel, store, ticks, setReplayTime }) => {
+export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplayTime: rawReplayTime }) => {
+  const pause = new SessionPause(rawTicks, rawReplayTime);
+  const { ticks, setReplayTime } = pause;
   const [images, icons, faceImages] = await Promise.all([Images.load(imageUrls), Images.load(swordIconUrls), Images.load(faceUrls), loadFont(FONT, delarobbUrl)]);
   const img = (name: string) => images.get(name);
   let replays!: ReplayRecorder;
@@ -235,6 +238,7 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
   const record = store.get<Record<string, { wins: number; losses: number; best: number }>>('record', {});
 
   function start(seed?: number): void {
+    pause.resume();
     const s = seed ?? seeds.randintN(1, 2 ** 31 - 1);
     if (seed === undefined) replays.begin(structuredClone(settings), { seed: s });
     const now = ticks();
@@ -247,7 +251,6 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
     running = true;
     finished = false;
     showResults = false;
-    duty.clear();
     startedAt = now;
     play('fanfare');
   }
@@ -265,25 +268,16 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
     const now = ticks();
     const completed = !!match.result;
     const f = match.player;
-    const minutes = Math.max(0, (match.endedAt || now) - startedAt) / 60000;
-    const report = duty.end({
-      mode: settings.opponents ? outcome() : 'Practice',
-      performance: duty.rate('damage', minutes > 0 ? f.stats.sent / minutes : 0),
-      score: { label: 'Damage sent', value: String(f.stats.sent) },
-      cleared: [
-        { label: 'Pieces Shattered', items: COLOUR_NAMES.map((name, i) => ({ icon: `sword-${name}`, label: `${name} pieces`, count: f.stats.shatteredBy[i] })) },
-        { label: 'Swords Sent', items: [{ icon: 'sword-strike', label: 'swords', count: f.stats.swordsSent }] },
-      ],
-    });
-    const finishedReplay = replays.finish(outcome(), report);
+    const finishedReplay = replays.finish(outcome());
     if (completed && !replays.isPlaying) {
       store.addHistory(settingsKey(), {
         score: f.stats.sent,
-        ...duty.fields(report),
         result: outcome(),
         won: match.result === 'won' ? 1 : 0,
         ms: Math.round((match.endedAt || now) - startedAt),
         received: f.stats.received,
+        largestReceived: f.stats.largestReceived,
+        ...Object.fromEntries(COLOUR_NAMES.map((name, i) => [`${name}Drought`, f.stats.breakerDroughts[i]])),
         pairs: f.stats.pairs,
         bestChain: f.stats.bestChain,
         ...(finishedReplay ? { replayAt: finishedReplay.at, replayId: finishedReplay.runId ?? '' } : {}),
@@ -537,9 +531,11 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
   function faceOf(m: Match, index: number, out: boolean): HTMLCanvasElement {
     let cache = faces.get(m);
     if (!cache) faces.set(m, (cache = new Map()));
-    const key = `${index}${out ? 'out' : ''}`;
+    const pirate = index === 0 ? currentPirate() : null;
+    const key = `${index}${out ? 'out' : ''}${pirate ? JSON.stringify(pirate.face) : ''}`;
     let face = cache.get(key);
-    if (!face) cache.set(key, (face = drawFace(m.looks[index], out, (name) => faceImages.get(name))));
+    if (!face) cache.set(key, (face = pirate ? faceCanvas(pirate.face, out ? 'really_sad' : 'normal')
+      : drawFace(m.looks[index], out, (name) => faceImages.get(name))));
     return face;
   }
 
@@ -603,7 +599,7 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
     // The face (passed out once knocked out, faded where the game has no such face), with the name
     // over its top as YoFaceLabel draws it: 10pt, outlined, wrapped to the face's width.
     const face = faceOf(m, index, f.out);
-    if (f.out && m.looks[index].out === m.looks[index].layers) ctx.globalAlpha = 0.6;
+    if (f.out && index !== 0 && m.looks[index].out === m.looks[index].layers) ctx.globalAlpha = 0.6;
     ctx.drawImage(face, at.face + (SLOT - FACE) / 2, y + 4);
     ctx.globalAlpha = 1;
     ctx.font = '10px Dialog, Arial, sans-serif';
@@ -688,6 +684,9 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
   // ---- The frame ----
 
   function frame(events: InputEvent[]): void {
+    const liveEvents = pause.input(events, 'swordfight', running);
+    if (liveEvents === null) return;
+    events = liveEvents;
     const routed = replays.frame(events, input.mouse, ticks());
     events = routed.events;
     input.mouse = routed.mouse;
@@ -717,6 +716,8 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
     if (hoveredSword >= 0) swordTip(match, hoveredSword);
     replays.drawOverlay(ctx);
   }
+
+  pause.install(panel, () => running);
 
   // ---- Panel ----
 
@@ -772,16 +773,34 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
     ['Damage sent', match ? String(match.player.stats.sent) : '0', String(recordNow().best || '—')],
     ...(settings.opponents ? [['Wins', String(recordNow().wins), `of ${recordNow().wins + recordNow().losses}`]] : []),
   ]);
-  const duty = dutyDesk(panel, store, 'swordfight', 'Swordfighting', RATING_SCALES);
+  const damageRate = (amount: number) => {
+    const seconds = match ? Math.max(0, (match.endedAt || ticks()) - startedAt) / 1000 : 0;
+    return (seconds > 0 ? amount / seconds : 0).toFixed(2);
+  };
+  function fightAverages(): string[][] {
+    const games = store.history(settingsKey());
+    const rows = sessionAverages(games.map((g) => ({ ...g, duty: '' })), { scoreLabel: 'Damage sent' });
+    const durations = games.filter((g) => typeof g.ms === 'number' && g.ms > 0);
+    if (durations.length) {
+      const seconds = durations.reduce((sum, g) => sum + Number(g.ms) / 1000, 0);
+      rows.push(['Damage sent per second', `${(durations.reduce((sum, g) => sum + Number(g.score), 0) / seconds).toFixed(2)} squares/s`],
+        ['Damage taken per second', `${(durations.reduce((sum, g) => sum + Number(g.received ?? 0), 0) / seconds).toFixed(2)} squares/s`]);
+    }
+    return rows;
+  }
   panel.results(() => finished && showResults && match && match.result ? {
     title: settings.opponents ? (match.result === 'won' ? 'Ye be the victor!' : 'Ye be defeated!') : 'Practice results',
     headline: settings.opponents ? (match.result === 'won' ? 'Ye be the victor!' : 'Ye be defeated!') : undefined,
-    report: duty.last,
+    averages: fightAverages(),
     rows: [
       ['Result', outcome()],
       ['Time', `${((match.endedAt - startedAt) / 1000).toFixed(1)}s`],
       ['Damage sent', String(match.player.stats.sent)],
       ['Damage taken', String(match.player.stats.received)],
+      ['Damage sent per second', `${damageRate(match.player.stats.sent)} squares/s`],
+      ['Damage taken per second', `${damageRate(match.player.stats.received)} squares/s`],
+      ['Largest attack received', `${match.player.stats.largestReceived} squares`],
+      ...COLOUR_NAMES.map((name, i) => [`Longest ${name} breaker drought`, `${match!.player.stats.breakerDroughts[i]} pieces`]),
       ['Pairs placed', String(match.player.stats.pairs)],
       ['Pieces shattered', String(match.player.stats.shattered)],
       ['Best chain', String(match.player.stats.bestChain)],
@@ -798,7 +817,7 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
     { label: 'Result', value: (g) => String(g.result ?? '') },
     { label: 'Damage', value: (g) => String(g.score) },
     { label: 'Time', value: (g) => typeof g.ms === 'number' ? `${(g.ms / 1000).toFixed(0)}s` : '' },
-  ], 'Past fights', replayAction);
+  ], 'Past fights', replayAction, false);
 
   function save(): void {
     store.set('settings', settings);

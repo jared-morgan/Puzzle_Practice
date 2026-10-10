@@ -1,5 +1,5 @@
 import { setReplayPirate } from './duty/profile';
-import { readReport, type DutyReport } from './duty/report';
+import { readReport, showsDutyReport, type DutyReport } from './duty/report';
 import type { InputEvent, Point } from './input';
 import type { Panel } from './panel';
 import { Store } from './storage';
@@ -436,7 +436,7 @@ export class ReplayRecorder {
       if (p.finishPending) {
         this.stopPlayback();
         // The run is over: show the report it was saved with, as it was then.
-        if (p.tape.report) this.panel.showReport?.(p.tape.report);
+        if (p.tape.report && showsDutyReport(p.tape.report)) this.panel.showReport?.(p.tape.report);
         return this.routed([], p.mouse, p.elapsed);
       }
       const realNow = performance.now();
@@ -718,7 +718,7 @@ export class ReplayRecorder {
     if (!entry) return;
     try {
       const tape = await this.loadTape(entry);
-      if (tape?.report) this.panel.showReport?.(tape.report);
+      if (tape?.report && showsDutyReport(tape.report)) this.panel.showReport?.(tape.report);
       else this.replayStorageError = 'This replay was saved without a duty report.';
     } catch { this.replayStorageError = 'This replay could not be loaded.'; }
   }

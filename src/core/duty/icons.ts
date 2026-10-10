@@ -23,9 +23,9 @@ import brewSpice from '../../puzzles/distilling/media/piece_spice.png?url';
 import carpStars from '../../puzzles/vampire-carp/media/stars.png?url';
 import smithBonus from '../../puzzles/blacksmithing/media/bonus.png?url';
 import smithTally from '../../puzzles/blacksmithing/media/tally.png?url';
-import smithTwinkle from '../../puzzles/blacksmithing/media/twinkle.png?url';
-import smithHot from '../../puzzles/blacksmithing/media/hot.png?url';
-import smithCool from '../../puzzles/blacksmithing/media/cool.png?url';
+import smithPerfect from '../../puzzles/swordfight/media/swords/sword11.png?url';
+import smithOneOff from '../../puzzles/swordfight/media/swords/sword1.png?url';
+import smithFarOff from '../../puzzles/swordfight/media/swords/sword127.png?url';
 
 export interface Icon {
   url: string;
@@ -45,6 +45,12 @@ export const ICONS: Record<string, Icon> = {
   'ci-bone-box': frame(cursedChests, 12, 12, 0),
   'ci-fetish-jar': frame(cursedChests, 12, 12, 1),
   'ci-cursed-chest': frame(cursedChests, 12, 12, 2),
+  'haunted-chest-small': frame(hauntedChests, 12, 12, 0),
+  'haunted-chest-medium': frame(hauntedChests, 12, 12, 1),
+  'haunted-chest-large': frame(hauntedChests, 12, 12, 2),
+  'vampirate-chest-small': frame(vampirateChests, 12, 12, 0),
+  'vampirate-chest-medium': frame(vampirateChests, 12, 12, 1),
+  'vampirate-chest-large': frame(vampirateChests, 12, 12, 2),
   'haunted-chest': frame(hauntedChests, 12, 12, 2),
   'vampirate-chest': frame(vampirateChests, 12, 12, 2),
   // Coffins Boarded Up, worst to best.
@@ -78,10 +84,10 @@ export const ICONS: Record<string, Icon> = {
   'smith-chain4': frame(smithTally, 50, 46, 3, 16),
   'smith-chain5': frame(smithTally, 50, 46, 4, 16),
   'smith-chain6': frame(smithTally, 50, 46, 4, 16),
-  // Perfect boards: the sparkle a finished sword gets; one off, a glowing 1; too far off, a cold tile.
-  'smith-perfect': { url: smithTwinkle, area: [76, 0, 48, 48], height: 16 },
-  'smith-one-off': frame(smithHot, 60, 60, 0, 16),
-  'smith-far-off': frame(smithCool, 60, 60, 1, 16),
+  // Perfect, one off, too far off: Falchion, short sword and stick, from the game's sword icons.
+  'smith-perfect': frame(smithPerfect, 30, 58, 0, 30),
+  'smith-one-off': frame(smithOneOff, 30, 58, 0, 30),
+  'smith-far-off': frame(smithFarOff, 30, 58, 0, 30),
 };
 
 /** The game's puzzle icons (24x24), for the station heading. */
