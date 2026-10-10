@@ -82,8 +82,10 @@ const MODES: Option<Mode>[] = [
   { value: 'spawn', label: 'Spawn Chests' },
   { value: 'clear', label: 'Clear Chests' },
 ];
-/** Default cleared-coin threshold for earning a chest; Haunted Seas uses 150. */
-const COINS_PER_CHEST = 200;
+/** Default cleared-coin threshold for earning a chest. */
+const COINS_PER_CHEST = 150;
+/** Keeps historical replay defaults and history keys consistent. */
+const LEGACY_COINS_PER_CHEST = 200;
 /** Low, medium and high value chests at the shallow end of the pool (treasureMinAwesomeness). */
 const CHEST_VALUE_WEIGHTS = [90, 9, 1];
 const ROUNDS: Option<number>[] = [
@@ -291,7 +293,7 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
     (gemRates.every((rate) => rate === 200 / 308) ? '' : `:gems:${gemRates.join('-')}`) +
     (mode === 'spawn' && spawnDelay ? ':delay' : '') +
     (chestRules === 2 && (chestMode() || mode === 'spawn' || mode === 'clear') ? ':rules2' : '') +
-    (chestMode() && coinsPerChest !== COINS_PER_CHEST ? `:coins:${coinsPerChest}` : '');
+    (chestMode() && coinsPerChest !== LEGACY_COINS_PER_CHEST ? `:coins:${coinsPerChest}` : '');
   const actionCount = () => movers.length + fades.length;
   const inFlight = () => flyers.length + minis.length;
 
@@ -1050,7 +1052,7 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
     .number('Coins per chest', () => coinsPerChest, (v) => {
       coinsPerChest = Math.max(1, Math.round(v));
       store.set('coinsPerChest', coinsPerChest);
-    }, { min: 1, max: 2000, step: 10, disabled: () => running, title: 'Coins cleared to earn a chest: 200 by default, or 150 for the Haunted Seas. Earned chests wait at least one second and stay queued until there is room.' });
+    }, { min: 1, max: 2000, step: 10, disabled: () => running, title: 'Coins cleared to earn a chest: 150 by default. Earned chests wait at least one second and stay queued until there is room.' });
   actions.note(() => chestMode() || mode === 'spawn' ? 'Earned chests wait at least one second for a 2x2 opening.' : '');
   const gems = panel.settings.group('Gem spawn rates', { columns: 2 });
   ['Ruby (%)', 'Emerald (%)'].forEach((label, i) => gems.number(label, () => gemRates[i], (v) => {
@@ -1098,7 +1100,7 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
     roundSecs = settings.roundSecs;
     spawnDelay = settings.spawnDelay;
     gemRates = [...settings.gemRates];
-    coinsPerChest = settings.coinsPerChest ?? COINS_PER_CHEST;
+    coinsPerChest = settings.coinsPerChest ?? LEGACY_COINS_PER_CHEST;
     if (!rng.restore(tape.seed)) throw new Error('Invalid Treasure Haul random state');
     start();
   }, () => {

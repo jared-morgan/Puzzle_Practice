@@ -280,7 +280,7 @@ describe('puzzle completion during replay', () => {
       expect(Number(result.rows.find(([label]) => label === 'Rubies spawned')![1])).toBeGreaterThan(0);
       expect(Number(result.rows.find(([label]) => label === 'Emeralds spawned')![1])).toBeGreaterThan(0);
       const coins = Number(result.rows.find(([label]) => label === 'Coins')![1]);
-      expect(result.rows).toContainEqual(['Coins toward next chest', `${coins % 200} / 200`]);
+      expect(result.rows).toContainEqual(['Coins toward next chest', `${coins % 150} / 150`]);
     }
     if (puzzle === 'swordfight') {
       buttons.get('Play::View stats')!();
