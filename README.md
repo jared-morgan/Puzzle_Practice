@@ -24,6 +24,8 @@ vertical/horizontal threes, edge emeralds, and difficult edge chests. Clear Ches
 over the selected round. Gem rates and the one-second spawn delay are configurable in Settings.
 The defaults are two chests, 100 cleared coins per additional chest, and Vampirate artwork.
 Settings > Display offers Classic, Haunted Seas and Vampirate artwork, with a saved preference.
+The optional emerald sight lines appear only while hovering over an emerald. Play, Settings
+and History stay pinned at the top while scrolling the panel.
 
 Forage offers Puzzle, Gauntlet, Chaos and Normal, with optional round timers. Chaos keeps the
 normal move spacing but lifts the chest count, mix and per-board limits. Settings expose chest

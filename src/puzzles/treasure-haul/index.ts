@@ -933,33 +933,32 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
   /** Trace all four diagonals; chests do not block the view or become blast targets. */
   function drawEmeraldSightLines(): void {
     if (!board) return;
+    const x = Math.floor((input.mouse[0] - BOARD_X) / CELL);
+    const y = H - 1 - Math.floor((input.mouse[1] - BOARD_Y) / CELL);
+    if (x < 0 || x >= W || y < 0 || y >= H || board.get(x, y) !== EMERALD) return;
     ctx.save();
-    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
-      if (board.get(x, y) !== EMERALD) continue;
-      const selected = active && cursor[0] === x && (cursor[1] === y || cursor[1] - 1 === y);
-      ctx.strokeStyle = selected ? '#c5ffe0' : '#57e89d';
-      ctx.fillStyle = selected ? 'rgba(87, 232, 157, 0.26)' : 'rgba(87, 232, 157, 0.14)';
-      ctx.lineWidth = selected ? 2.5 : 1.5;
-      const [sx, sy] = cellXY(x, y);
-      ctx.strokeRect(sx + 3, sy + 3, CELL - 6, CELL - 6);
-      for (const [dx, dy] of [[1, 1], [1, -1], [-1, -1], [-1, 1]]) {
-        let endX = sx + CELL / 2;
-        let endY = sy + CELL / 2;
-        for (let xx = x + dx, yy = y + dy; xx >= 0 && xx < W && yy >= 0 && yy < H; xx += dx, yy += dy) {
-          const [px, py] = cellXY(xx, yy);
-          endX = px + CELL / 2;
-          endY = py + CELL / 2;
-          const piece = board.get(xx, yy);
-          if (piece !== EMPTY && !isChest(piece)) {
-            ctx.fillRect(px + 3, py + 3, CELL - 6, CELL - 6);
-            ctx.strokeRect(px + 5, py + 5, CELL - 10, CELL - 10);
-          }
+    ctx.strokeStyle = '#c5ffe0';
+    ctx.fillStyle = 'rgba(87, 232, 157, 0.26)';
+    ctx.lineWidth = 2.5;
+    const [sx, sy] = cellXY(x, y);
+    ctx.strokeRect(sx + 3, sy + 3, CELL - 6, CELL - 6);
+    for (const [dx, dy] of [[1, 1], [1, -1], [-1, -1], [-1, 1]]) {
+      let endX = sx + CELL / 2;
+      let endY = sy + CELL / 2;
+      for (let xx = x + dx, yy = y + dy; xx >= 0 && xx < W && yy >= 0 && yy < H; xx += dx, yy += dy) {
+        const [px, py] = cellXY(xx, yy);
+        endX = px + CELL / 2;
+        endY = py + CELL / 2;
+        const piece = board.get(xx, yy);
+        if (piece !== EMPTY && !isChest(piece)) {
+          ctx.fillRect(px + 3, py + 3, CELL - 6, CELL - 6);
+          ctx.strokeRect(px + 5, py + 5, CELL - 10, CELL - 10);
         }
-        ctx.beginPath();
-        ctx.moveTo(sx + CELL / 2, sy + CELL / 2);
-        ctx.lineTo(endX, endY);
-        ctx.stroke();
       }
+      ctx.beginPath();
+      ctx.moveTo(sx + CELL / 2, sy + CELL / 2);
+      ctx.lineTo(endX, endY);
+      ctx.stroke();
     }
     ctx.restore();
   }
@@ -1179,7 +1178,7 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
     .toggle('Show emerald sight lines', () => showEmeraldSightLines, (on) => {
       showEmeraldSightLines = on;
       store.set('showEmeraldSightLines', on);
-    }, { title: 'Highlight every emerald’s diagonals and the pieces along them. Emeralds in the cursor have brighter sight lines; chests are passed over.' });
+    }, { title: 'Hover over an emerald to highlight its diagonals and the pieces along them; chests are passed over.' });
   actions.note(() => chestMode() || mode === 'spawn' ? 'Earned chests wait at least one second for a 2x2 opening.' : '');
   actions.note(() => mode === 'chests2' && chestRules === 3 ? 'With no chest in play, make a clear to start the one-second wait for the first chest.' : '');
   actions.note(() => mode === 'chests2' && chestRules === 4 ? 'With no chest in play, wait one second for the next chest to become ready for a 2×2 opening.' : '');
