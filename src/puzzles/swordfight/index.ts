@@ -49,6 +49,9 @@ const LEFT_X = 1;
 const RIGHT_X = 313;
 const ROWS_Y = 97;
 const ROW_H = 62;
+const VISIBLE_ROWS = 6;
+const LIST_WIDTH = 136;
+const LIST_ARROWS_Y = ROWS_Y + VISIBLE_ROWS * ROW_H + 8;
 const MINI = 4;
 const FONT = 'Delarobb';
 /** Piece colours' art, by colour number (sword/a/h.p). */
@@ -105,8 +108,8 @@ const DEFAULTS: Settings = {
 };
 
 /** At most this many enemies, and allies, in a fight. */
-const MAX_ENEMIES = 6;
-const MAX_ALLIES = 5;
+const MAX_ENEMIES = 200;
+const MAX_ALLIES = 199;
 const SKILLS = ['cultistSkill', 'homunculusSkill', 'thrallSkill', 'swabbieSkill'] as const;
 const NPC_KINDS: Option<NpcSettings['kind']>[] = (['Cultist', 'Homunculus', 'Thrall', 'Skilled swabbie', 'Custom'] as const)
   .map((kind) => ({ value: kind, label: kind }));
@@ -253,6 +256,8 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
   let messages: Message[] = [];
   let hideOpponents = store.get<boolean>('hideOpponents', true);
   let showQueues = store.get<boolean>('showQueues', false);
+  const listOffsets: [number, number] = [0, 0];
+  let shownTarget = -1;
   /** Left and right held, repeating 7 times a second after 300ms (PuzzlePanel's key bindings). */
   const held = { left: 0, right: 0, leftNext: 0, rightNext: 0 };
 
@@ -272,11 +277,14 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
     if (seed === undefined) replays.begin(structuredClone(settings), { seed: s });
     const now = ticks();
     messages = [];
+    listOffsets[0] = listOffsets[1] = 0;
+    shownTarget = -1;
     held.left = held.right = 0;
     match = new Match(structuredClone(settings), s, now, {
       sound: (name, fighter) => { if (fighter === 0) play(name); },
       message: (text, fighter) => { if (fighter === 0) messages.push({ text, start: ticks(), ms: text.includes('knocked') ? 3000 : text.startsWith('Ye be') && !text.includes('knocked') ? Infinity : MESSAGE_MS }); },
     });
+    shownTarget = match.target;
     running = true;
     finished = false;
     showResults = false;
@@ -327,10 +335,33 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
 
   // ---- Input ----
 
+  function scrollList(event: InputEvent): boolean {
+    if (!match || event.type !== 'mousedown') return false;
+    const [x, y] = event.pos;
+    const side = x >= LEFT_X && x < LEFT_X + LIST_WIDTH ? 0
+      : x >= RIGHT_X && x < RIGHT_X + LIST_WIDTH ? 1 : -1;
+    if (side < 0) return false;
+    const at = side as 0 | 1;
+    if (match.rows[at].length <= VISIBLE_ROWS) return false;
+    let delta = 0;
+    if (y >= ROWS_Y && y < LIST_ARROWS_Y + 24 && (event.button === 4 || event.button === 5)) {
+      delta = event.button === 4 ? -1 : 1;
+    } else if (event.button === 1 && y >= LIST_ARROWS_Y && y < LIST_ARROWS_Y + 24) {
+      const localX = x - (at === 0 ? LEFT_X : RIGHT_X);
+      if (localX >= 4 && localX < 28) delta = -VISIBLE_ROWS;
+      else if (localX >= LIST_WIDTH - 28 && localX < LIST_WIDTH - 4) delta = VISIBLE_ROWS;
+    }
+    if (!delta) return false;
+    listOffsets[at] = Math.max(0, Math.min(match.rows[at].length - VISIBLE_ROWS, listOffsets[at] + delta));
+    if (pause.paused) replays.command(`list-scroll:${at}:${listOffsets[at]}`);
+    return true;
+  }
+
   function handle(events: InputEvent[], now: number): void {
-    if (!match || !running || match.result) return;
+    if (!match) return;
     const f = match.player;
     for (const event of events) {
+      if (scrollList(event) || !running || match.result) continue;
       if (event.type === 'keydown') {
         if (key(event.key, 'left')) { f.move(-1, now); held.left = now; held.leftNext = now + 300; }
         else if (key(event.key, 'right')) { f.move(1, now); held.right = now; held.rightNext = now + 300; }
@@ -350,10 +381,11 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
           // Rows as they're shown; the knocked out can't be targeted.
           const row = Math.floor((my - ROWS_Y) / ROW_H);
           const enemies = match.rows[1];
-          if (row >= 0 && row < enemies.length) match.setTarget(enemies[row]);
+          if (row >= 0 && row < VISIBLE_ROWS && row + listOffsets[1] < enemies.length) match.setTarget(enemies[row + listOffsets[1]]);
         }
       }
     }
+    if (!running || match.result) return;
     for (const side of ['left', 'right'] as const) {
       const next = side === 'left' ? 'leftNext' : 'rightNext';
       while (held[side] && now >= held[next]) {
@@ -603,6 +635,9 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
     }
     ctx.save();
     // The small board.
+    ctx.beginPath();
+    ctx.rect(x, y, LIST_WIDTH, ROW_H);
+    ctx.clip();
     const bx = at.board;
     const by = y + Math.floor((ROW_H - SUMMARY_H) / 2);
     ctx.fillStyle = f.out ? '#92974a' : '#b1ab92';
@@ -720,22 +755,70 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
 
   // ---- The frame ----
 
+  function revealTarget(): void {
+    if (!match || shownTarget === match.target) return;
+    const targetRow = match.rows[1].indexOf(match.target);
+    if (targetRow >= 0 && (targetRow < listOffsets[1] || targetRow >= listOffsets[1] + VISIBLE_ROWS)) {
+      listOffsets[1] = Math.max(0, targetRow - VISIBLE_ROWS + 1);
+    }
+    shownTarget = match.target;
+  }
+
+  function drawList(side: 0 | 1): void {
+    if (!match) return;
+    const rows = match.rows[side];
+    const x = side === 0 ? LEFT_X : RIGHT_X;
+    listOffsets[side] = Math.max(0, Math.min(Math.max(0, rows.length - VISIBLE_ROWS), listOffsets[side]));
+    rows.slice(listOffsets[side], listOffsets[side] + VISIBLE_ROWS)
+      .forEach((i, row) => drawStatus(match!, i, x, ROWS_Y + row * ROW_H, side === 1));
+    if (rows.length <= VISIBLE_ROWS) return;
+    ctx.save();
+    ctx.font = '11px Arial, sans-serif';
+    ctx.textBaseline = 'middle';
+    ctx.textAlign = 'center';
+    for (const [dx, text, disabled] of [
+      [4, '▲', listOffsets[side] === 0],
+      [LIST_WIDTH - 28, '▼', listOffsets[side] + VISIBLE_ROWS >= rows.length],
+    ] as const) {
+      ctx.fillStyle = '#292a2b';
+      ctx.fillRect(x + dx, LIST_ARROWS_Y, 24, 24);
+      ctx.fillStyle = disabled ? '#777' : '#fff';
+      ctx.fillText(text, x + dx + 12, LIST_ARROWS_Y + 12);
+    }
+    ctx.fillStyle = '#fff';
+    ctx.fillText(`${listOffsets[side] + 1}–${listOffsets[side] + VISIBLE_ROWS}/${rows.length}`, x + LIST_WIDTH / 2, LIST_ARROWS_Y + 12);
+    ctx.restore();
+  }
+
   function frame(events: InputEvent[]): void {
     const liveEvents = pause.input(events, 'swordfight', running);
-    if (liveEvents === null) return;
+    if (liveEvents === null) {
+      events.forEach(scrollList);
+      draw(ticks());
+      return;
+    }
     events = liveEvents;
     const routed = replays.frame(events, input.mouse, ticks());
     events = routed.events;
     input.mouse = routed.mouse;
     const now = ticks();
     if (!routed.renderOnly) {
+      for (const command of routed.commands) {
+        const parts = /^list-scroll:([01]):(\d+)$/.exec(command);
+        if (parts) listOffsets[Number(parts[1]) as 0 | 1] = Number(parts[2]);
+      }
       handle(events, now);
       if (match && running) {
         match.update(now);
         if (match.settledAt) stop();
       }
+      revealTarget();
     }
     if (replays.isSeeking || replays.isAdvancing) return;
+    draw(now);
+  }
+
+  function draw(now: number): void {
     screen.fill('#000');
     if (!match) {
       screen.blit(img('howto'), 0, 0);
@@ -746,8 +829,8 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
     drawNext(match.player);
     // Your side on the left, you first; the enemies on the right; the knocked out at the bottom.
     hoveredSword = -1;
-    match.rows[0].forEach((i, row) => drawStatus(match!, i, LEFT_X, ROWS_Y + row * ROW_H, false));
-    match.rows[1].forEach((i, row) => drawStatus(match!, i, RIGHT_X, ROWS_Y + row * ROW_H, true));
+    drawList(0);
+    drawList(1);
     drawBoard(match.player, running ? now : match.settledAt || match.endedAt || now);
     if (finished && !match.result) banner('Stopped', 330);
     if (hoveredSword >= 0) swordTip(match, hoveredSword);
@@ -865,19 +948,26 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
       while (roster.length < Math.round(value)) roster.push(npcDefaults(defaultKind));
       settings[side] = roster;
       saveRoster();
-    }, { ...off, min: 0, max, step: 1 });
-    for (let i = 0; i < max; i++) {
-      const npc = () => rosterOf(side)[i] ?? npcDefaults(defaultKind);
-      const change = (edit: (value: NpcSettings) => void) => {
-        if (settings[side]?.[i]) { edit(settings[side][i]); saveRoster(); }
-      };
-      const g = panel.settings.group(`${label} ${i + 1}`, { hidden: () => i >= rosterOf(side).length });
-      g.select('Type', NPC_KINDS, () => npc().kind, (kind) => change((value) => {
-        Object.assign(value, kind === 'Custom' ? { kind } : npcDefaults(kind));
-      }), off);
-      g.select('Sword', npcSwords, () => npc().sword ?? -1, (sword) => change((value) => { value.sword = sword === -1 ? null : sword; }), off);
-      g.range('Skill', () => npc().skill, (skill) => change((value) => { value.skill = Math.round(skill); }), { ...off, min: 0, max: 100 });
-    }
+    }, { ...off, min: 0, max, step: 1, title: side === 'allyRoster' ? 'NPC teammates in addition to you. 199 teammates makes a team of 200.' : 'Choose up to 200 opponents.' });
+    let selected = 0;
+    let choices: Option<number>[] = [];
+    const index = () => (selected = Math.min(selected, Math.max(0, rosterOf(side).length - 1)));
+    const npc = () => rosterOf(side)[index()] ?? npcDefaults(defaultKind);
+    const change = (edit: (value: NpcSettings) => void) => {
+      const value = settings[side]?.[index()];
+      if (value) { edit(value); saveRoster(); }
+    };
+    const g = panel.settings.group(`Customise ${label.toLowerCase()}`, { hidden: () => !rosterOf(side).length });
+    g.select('NPC', () => {
+      const length = rosterOf(side).length;
+      if (choices.length !== length) choices = Array.from({ length }, (_, i) => ({ value: i, label: `${label} ${i + 1}` }));
+      return choices;
+    }, index, (i) => { selected = i; }, off);
+    g.select('Type', NPC_KINDS, () => npc().kind, (kind) => change((value) => {
+      Object.assign(value, kind === 'Custom' ? { kind } : npcDefaults(kind));
+    }), off);
+    g.select('Sword', npcSwords, () => npc().sword ?? -1, (sword) => change((value) => { value.sword = sword === -1 ? null : sword; }), off);
+    g.range('Skill', () => npc().skill, (skill) => change((value) => { value.skill = Math.round(skill); }), { ...off, min: 0, max: 100 });
   }
   const foes = panel.settings.group('NPC behaviour');
   foes.select('Play style', [
@@ -923,12 +1013,12 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
   panel.settings.group('Reset').button('Reset to defaults', () => { settings = structuredClone(DEFAULTS); save(); }, off);
 
   const replaySettingsCodec: ReplaySettingsCodec = {
-    currentVersion: 7,
+    currentVersion: 8,
     simulatorVersion: 2,
     // Earlier recordings had an opponent that played the board, so they can't be replayed.
     migrate: (version, value) => {
       const upgraded = version < 6 ? upgrade(value) : value;
-      return version >= 3 && version <= 7 && validSettings(upgraded) ? upgraded : null;
+      return version >= 3 && version <= 8 && validSettings(upgraded) ? upgraded : null;
     },
   };
   let savedSettings: Settings | null = null;

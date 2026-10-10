@@ -447,20 +447,30 @@ export class Group {
   }
 
   /** A dropdown of exclusive choices. */
-  select<T extends string | number>(label: string, options: readonly Option<T>[], get: Get<T>, set: (value: T) => void, opts: ControlOptions = {}): this {
+  select<T extends string | number>(label: string, options: readonly Option<T>[] | Get<readonly Option<T>[]>, get: Get<T>, set: (value: T) => void, opts: ControlOptions = {}): this {
     const select = el('select', 'panel-select');
-    for (const [i, option] of options.entries()) {
-      const node = el('option', '', option.label);
-      node.value = String(i);
-      select.append(node);
-    }
+    const choices = typeof options === 'function' ? options : () => options;
+    let current: readonly Option<T>[] | undefined;
+    const syncOptions = () => {
+      const next = choices();
+      if (current === next) return;
+      current = next;
+      select.replaceChildren(...next.map((option, i) => {
+        const node = el('option', '', option.label);
+        node.value = String(i);
+        return node;
+      }));
+    };
+    syncOptions();
     select.addEventListener('change', () => {
-      set(options[Number(select.value)].value);
+      const option = current?.[Number(select.value)];
+      if (option) set(option.value);
       this.panel.used();
     });
     this.field(label, select, opts, select);
     this.panel.addSync(() => {
-      const index = String(options.findIndex((o) => o.value === get()));
+      syncOptions();
+      const index = String(current!.findIndex((o) => o.value === get()));
       if (select.value !== index) select.value = index;
     });
     return this;
