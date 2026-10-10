@@ -1179,9 +1179,6 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
       showEmeraldSightLines = on;
       store.set('showEmeraldSightLines', on);
     }, { title: 'Hover over an emerald to highlight its diagonals and the pieces along them; chests are passed over.' });
-  actions.note(() => chestMode() || mode === 'spawn' ? 'Earned chests wait at least one second for a 2x2 opening.' : '');
-  actions.note(() => mode === 'chests2' && chestRules === 3 ? 'With no chest in play, make a clear to start the one-second wait for the first chest.' : '');
-  actions.note(() => mode === 'chests2' && chestRules === 4 ? 'With no chest in play, wait one second for the next chest to become ready for a 2×2 opening.' : '');
   actions.note(() => coinOnlyEdges() ? 'Clear the edge with coin matches and the emeralds provided.' : '');
   const gems = panel.settings.group('Gem spawn rates', { columns: 2, hidden: coinOnlyEdges });
   ['Ruby (%)', 'Emerald (%)'].forEach((label, i) => gems.number(label, () => gemRates[i], (v) => {

@@ -25,7 +25,7 @@ import {
 import { COL_PX, type Fighter, FAST_SPEED, ROW_PX, secondOf, startSpeed } from './fighter';
 import { type GameStyle, gameSkillStyle, type NpcStyle, skillStyle } from './npc';
 import { drawFace, FACE } from './faces';
-import { Match, type MatchSettings, styleFor } from './match';
+import { Match, type MatchSettings, type NpcSettings } from './match';
 import { PLAIN_SWORDS, SWORD_COLOURS, SWORD_NAMES, isHorizontal } from './strikes';
 import delarobbUrl from './delarobb.ttf?url';
 
@@ -83,7 +83,7 @@ const SOUND_FILES: Record<string, string[]> = {
 
 interface Settings extends MatchSettings {}
 
-/** Jared's settings from 6 October 2026. */
+/** Initial fight and equipment choices. */
 const DEFAULTS: Settings = {
   cultists: 2,
   homunculi: 0,
@@ -99,13 +99,27 @@ const DEFAULTS: Settings = {
   ai: { pairMs: 3000, breakAverage: 40, variation: 41, heightBoost: 1.5, storeChance: 23, comboMax: 3, strikeShare: 85, pairsPerAttack: 1 },
   difficulty: 1,
   breakers: 18,
-  sword: [16, 0, 0],
+  sword: [11, 4, 4],
+  enemyRoster: [{ kind: 'Cultist', skill: 60, sword: 16 }, { kind: 'Cultist', skill: 60, sword: 16 }],
+  allyRoster: [],
 };
 
 /** At most this many enemies, and allies, in a fight. */
 const MAX_ENEMIES = 6;
 const MAX_ALLIES = 5;
 const SKILLS = ['cultistSkill', 'homunculusSkill', 'thrallSkill', 'swabbieSkill'] as const;
+const NPC_KINDS: Option<NpcSettings['kind']>[] = (['Cultist', 'Homunculus', 'Thrall', 'Skilled swabbie', 'Custom'] as const)
+  .map((kind) => ({ value: kind, label: kind }));
+
+function npcDefaults(kind: NpcSettings['kind'], skill = kind === 'Cultist' || kind === 'Homunculus' ? 60 : 50): NpcSettings {
+  return { kind, skill, sword: kind === 'Cultist' ? 16 : kind === 'Homunculus' ? 17 : null };
+}
+
+function validRoster(value: unknown, max: number): value is NpcSettings[] {
+  return Array.isArray(value) && value.length <= max && value.every((npc) => npc && typeof npc === 'object' &&
+    NPC_KINDS.some((option) => option.value === npc.kind) && int(npc.skill, 0, 100) &&
+    (npc.sword === null || PLAIN_SWORDS.includes(npc.sword)));
+}
 
 const KEYS = [
     { id: 'pause', label: 'Pause / resume', defaultKey: 'Escape' },
@@ -147,7 +161,7 @@ function validGameStyle(value: unknown): value is GameStyle {
 }
 
 /** Saved settings without the current opponent options get them from their AI skill. */
-function upgrade(value: unknown): unknown {
+function upgrade(value: unknown, withRoster = false): unknown {
   if (!value || typeof value !== 'object') return value;
   const s = { ...(value as Record<string, unknown>) };
   // One AI skill for everyone became a skill for each kind of pirate.
@@ -167,7 +181,17 @@ function upgrade(value: unknown): unknown {
     s.cultists = int(s.opponents, 0, MAX_ENEMIES) ? s.opponents : 0;
     s.homunculi = 0;
   }
-  s.opponents = (s.cultists as number) + (s.homunculi as number);
+  if (withRoster && s.enemyRoster === undefined && s.allyRoster === undefined) {
+    s.enemyRoster = [
+      ...Array.from({ length: s.cultists as number }, () => npcDefaults('Cultist', s.cultistSkill as number)),
+      ...Array.from({ length: s.homunculi as number }, () => npcDefaults('Homunculus', s.homunculusSkill as number)),
+    ];
+    s.allyRoster = [
+      ...Array.from({ length: s.thralls as number }, () => npcDefaults('Thrall', s.thrallSkill as number)),
+      ...Array.from({ length: s.swabbies as number }, () => npcDefaults('Skilled swabbie', s.swabbieSkill as number)),
+    ];
+  }
+  s.opponents = Array.isArray(s.enemyRoster) ? s.enemyRoster.length : (s.cultists as number) + (s.homunculi as number);
   delete s.enemySword;
   return s;
 }
@@ -175,7 +199,10 @@ function upgrade(value: unknown): unknown {
 function validSettings(value: unknown): value is Settings {
   if (!value || typeof value !== 'object') return false;
   const s = value as Record<string, unknown>;
-  return int(s.cultists, 0, MAX_ENEMIES) && int(s.homunculi, 0, MAX_ENEMIES) && s.opponents === (s.cultists as number) + (s.homunculi as number) &&
+  const rosterValid = s.enemyRoster === undefined && s.allyRoster === undefined
+    ? s.opponents === (s.cultists as number) + (s.homunculi as number)
+    : validRoster(s.enemyRoster, MAX_ENEMIES) && validRoster(s.allyRoster, MAX_ALLIES) && s.opponents === s.enemyRoster.length;
+  return rosterValid && int(s.cultists, 0, MAX_ENEMIES) && int(s.homunculi, 0, MAX_ENEMIES) &&
     int(s.opponents, 0, MAX_ENEMIES) && int(s.thralls, 0, MAX_ALLIES) && int(s.swabbies, 0, MAX_ALLIES) &&
     (s.thralls as number) + (s.swabbies as number) <= MAX_ALLIES && SKILLS.every((k) => int(s[k], 0, 100)) && validStyle(s.ai) && validGameStyle(s.gameAi) &&
     (s.opponentType === 'tally' || s.opponentType === 'game') && int(s.difficulty, 0, 9) &&
@@ -212,7 +239,7 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
     if (files) sounds.play(files[soundPick.randintN(0, files.length - 1)]);
   };
 
-  const saved = upgrade(store.get<unknown>('settings', DEFAULTS));
+  const saved = upgrade(store.get<unknown>('settings', DEFAULTS), true);
   let settings: Settings = structuredClone(validSettings(saved) ? saved : DEFAULTS);
   const seeds = new PyRandom();
   seeds.seedFromCrypto();
@@ -234,7 +261,9 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
     const style = settings.opponentType === 'game' ? settings.gameAi : settings.ai;
     return `${settings.opponentType} ${SKILLS.map((k) => settings[k]).join('/')} ${JSON.stringify(style)}`;
   };
-  const settingsKey = () => `${settings.cultists}c${settings.homunculi}h${settings.thralls}t${settings.swabbies}s:${opponentKey()}:${settings.difficulty}:${settings.breakers}`;
+  const settingsKey = () => settings.enemyRoster && settings.allyRoster
+    ? `roster:${JSON.stringify([settings.enemyRoster, settings.allyRoster, settings.sword])}:${opponentKey()}:${settings.difficulty}:${settings.breakers}`
+    : `${settings.cultists}c${settings.homunculi}h${settings.thralls}t${settings.swabbies}s:${opponentKey()}:${settings.difficulty}:${settings.breakers}`;
   const record = store.get<Record<string, { wins: number; losses: number; best: number }>>('record', {});
 
   function start(seed?: number): void {
@@ -734,32 +763,6 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
   panel.controls(PUZZLE, KEYS);
 
   const session = panel.session();
-  // Cultists and homunculi, up to six between them; none is practice on your own.
-  const enemies = (cultists: number, homunculi: number) => {
-    settings.cultists = cultists;
-    settings.homunculi = Math.min(homunculi, MAX_ENEMIES - cultists);
-    settings.opponents = settings.cultists + settings.homunculi;
-    save();
-  };
-  const counts = (): Option<number>[] => Array.from({ length: MAX_ENEMIES + 1 }, (_, n) => ({ value: n, label: String(n) }));
-  session.select('Cultists (spears)', counts(), () => settings.cultists, (n) => enemies(n, Math.min(settings.homunculi, MAX_ENEMIES - n)), { disabled: () => running });
-  session.select('Homunculi (trunks)', counts(), () => settings.homunculi, (n) => enemies(Math.min(settings.cultists, MAX_ENEMIES - n), n), { disabled: () => running });
-  // Allies on your side: thralls and skilled swabbies, up to five between them.
-  const allies = (thralls: number, swabbies: number) => {
-    settings.thralls = thralls;
-    settings.swabbies = Math.min(swabbies, MAX_ALLIES - thralls);
-    save();
-  };
-  const allyCounts = (): Option<number>[] => Array.from({ length: MAX_ALLIES + 1 }, (_, n) => ({ value: n, label: String(n) }));
-  session.select('Thralls (allies)', allyCounts(), () => settings.thralls, (n) => allies(n, Math.min(settings.swabbies, MAX_ALLIES - n)), { disabled: () => running || !settings.opponents });
-  session.select('Skilled swabbies (allies)', allyCounts(), () => settings.swabbies, (n) => allies(Math.min(settings.thralls, MAX_ALLIES - n), n), { disabled: () => running || !settings.opponents });
-  session.note(() => {
-    const sword = SWORD_NAMES[settings.sword[0]];
-    const speed = `${Math.round(ROW_PX / startSpeed(settings.difficulty))}ms a row`;
-    return settings.opponents
-      ? `Skill: cultists ${settings.cultistSkill}, homunculi ${settings.homunculusSkill}, thralls ${settings.thrallSkill}, swabbies ${settings.swabbieSkill} · starting speed ${speed} · your ${sword.toLowerCase()} (Settings tab)`
-      : `Starting speed ${speed} · your ${sword.toLowerCase()} (Settings tab)`;
-  });
   // Starting while a replay is open closes it and starts a fight of your own.
   session.button('Start', () => {
     if (replays.isPlaying) {
@@ -830,35 +833,59 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
   function save(): void {
     store.set('settings', settings);
   }
-  panel.settings.group('Opponent screens').toggle('Hide opponent screens', () => hideOpponents, (on) => { hideOpponents = on; store.set('hideOpponents', on); }, {
+  const screens = panel.settings.group('Opponent screens');
+  screens.toggle('Hide opponent screens', () => hideOpponents, (on) => { hideOpponents = on; store.set('hideOpponents', on); }, {
     title: 'Shows red boxes where an opponent has pieces, instead of the pieces themselves.',
   });
-  panel.settings.group('Opponent screens').toggle('Show attack queues', () => showQueues, (on) => { showQueues = on; store.set('showQueues', on); }, {
+  screens.toggle('Show attack queues', () => showQueues, (on) => { showQueues = on; store.set('showQueues', on); }, {
     title: "Replaces each enemy's name with the attacks waiting to land on it and how many pieces they hold, as attacks:pieces (5:30 is five attacks of 30 pieces).",
   });
-  const off = { disabled: () => running };
-  const foes = panel.settings.group('Opponents');
-  foes.select('Opponent type', [
+  const off = { disabled: () => running || replays?.isPlaying };
+  const npcSwords: Option<number>[] = [{ value: -1, label: 'Random' }, ...PLAIN_SWORDS.map((value) => ({ value, label: SWORD_NAMES[value] }))];
+  const rosterOf = (side: 'enemyRoster' | 'allyRoster'): NpcSettings[] => {
+    // Older replays retain their original roster generation until playback ends.
+    if (settings[side]) return settings[side];
+    const migrated = upgrade(settings, true) as Settings;
+    return migrated[side]!;
+  };
+  const saveRoster = () => {
+    settings.opponents = settings.enemyRoster!.length;
+    settings.cultists = settings.enemyRoster!.filter((npc) => npc.kind === 'Cultist').length;
+    settings.homunculi = settings.enemyRoster!.filter((npc) => npc.kind === 'Homunculus').length;
+    settings.thralls = settings.allyRoster!.filter((npc) => npc.kind === 'Thrall').length;
+    settings.swabbies = settings.allyRoster!.filter((npc) => npc.kind === 'Skilled swabbie').length;
+    save();
+  };
+  for (const [side, title, label, max, defaultKind] of [
+    ['enemyRoster', 'Opponents', 'Opponent', MAX_ENEMIES, 'Cultist'],
+    ['allyRoster', 'Teammates', 'Teammate', MAX_ALLIES, 'Skilled swabbie'],
+  ] as const) {
+    panel.settings.group(title).number('Number', () => rosterOf(side).length, (value) => {
+      const roster = rosterOf(side).slice(0, Math.round(value));
+      while (roster.length < Math.round(value)) roster.push(npcDefaults(defaultKind));
+      settings[side] = roster;
+      saveRoster();
+    }, { ...off, min: 0, max, step: 1 });
+    for (let i = 0; i < max; i++) {
+      const npc = () => rosterOf(side)[i] ?? npcDefaults(defaultKind);
+      const change = (edit: (value: NpcSettings) => void) => {
+        if (settings[side]?.[i]) { edit(settings[side][i]); saveRoster(); }
+      };
+      const g = panel.settings.group(`${label} ${i + 1}`, { hidden: () => i >= rosterOf(side).length });
+      g.select('Type', NPC_KINDS, () => npc().kind, (kind) => change((value) => {
+        Object.assign(value, kind === 'Custom' ? { kind } : npcDefaults(kind));
+      }), off);
+      g.select('Sword', npcSwords, () => npc().sword ?? -1, (sword) => change((value) => { value.sword = sword === -1 ? null : sword; }), off);
+      g.range('Skill', () => npc().skill, (skill) => change((value) => { value.skill = Math.round(skill); }), { ...off, min: 0, max: 100 });
+    }
+  }
+  const foes = panel.settings.group('NPC behaviour');
+  foes.select('Play style', [
     { value: 'game', label: 'Ingame' },
     { value: 'tally', label: 'Experimental' },
   ] as Option<'tally' | 'game'>[], () => settings.opponentType, (t) => { settings.opponentType = t; save(); }, off);
-  // Each kind of pirate has its own skill, 0 to 100, which sets how much its breakers destroy.
-  const skillLabels: Record<(typeof SKILLS)[number], string> = { cultistSkill: 'Cultist skill', homunculusSkill: 'Homunculus skill', thrallSkill: 'Thrall skill', swabbieSkill: 'Skilled swabbie skill' };
-  for (const k of SKILLS) {
-    foes.range(skillLabels[k], () => settings[k], (v) => { settings[k] = v; save(); }, { ...off, min: 0, max: 100,
-      title: "0 to 100, as the game's own pirates. It sets how much of its colour a breaker destroys (the game's table has a value at every 10, blended between) and, for Ingame, the chain chance." });
-  }
-  foes.note(() => {
-    const at = (skill: number) => {
-      const st = styleFor(settings, skill);
-      return settings.opponentType === 'game'
-        ? `${st.game.baseDestroy}-${st.game.maxDestroy}% destroyed, ${st.game.chainChance}% chained`
-        : `${st.tally.breakAverage}% cleared, height x${st.tally.heightBoost}, stores ${st.tally.storeChance}%, combo ${st.tally.comboMax}`;
-    };
-    return `Cultists: ${at(settings.cultistSkill)}. Homunculi: ${at(settings.homunculusSkill)}. Thralls: ${at(settings.thrallSkill)}. Skilled swabbies: ${at(settings.swabbieSkill)}.`;
-  });
   const ai = (change: (a: NpcStyle) => void) => { change(settings.ai); save(); };
-  const tallyOff = { disabled: () => running, hidden: () => settings.opponentType !== 'tally' };
+  const tallyOff = { ...off, hidden: () => settings.opponentType !== 'tally' };
   foes.number('Time per pair (ms)', () => settings.ai.pairMs, (v) => ai((a) => { a.pairMs = v; }), { ...tallyOff, min: 50, max: 20000, step: 50,
     title: 'How fast an opponent plays: how often it is dealt a pair.' });
   foes.range('Variation (±%)', () => settings.ai.variation, (v) => ai((a) => { a.variation = v; }), { ...tallyOff, min: 0, max: 50,
@@ -868,7 +895,7 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
     title: 'Its style: how much of each clear it sends as swords, the rest as sprinkles. 50 is an even mix.' });
   foes.number('Your attacks land every (pairs)', () => settings.ai.pairsPerAttack, (v) => ai((a) => { a.pairsPerAttack = v; }), { ...tallyOff, min: 0, max: 100,
     title: 'Your attacks land on an opponent at most once per this many of its pairs.' });
-  const gameOff = { disabled: () => running, hidden: () => settings.opponentType !== 'game' };
+  const gameOff = { ...off, hidden: () => settings.opponentType !== 'game' };
   const gai = (change: (a: GameStyle) => void) => { change(settings.gameAi); save(); };
   foes.number('Time per pair (ms)', () => settings.gameAi.pairMs, (v) => gai((a) => { a.pairMs = v; }), { ...gameOff, min: 50, max: 20000, step: 50,
     title: 'How fast an opponent plays when you are not targeting it: how often it is dealt a pair.' });
@@ -881,27 +908,27 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
     title: 'Your attacks land on an opponent at most once per this many of its pairs.' });
   const game = panel.settings.group('Fight');
   game.select('Starting speed', Array.from({ length: 10 }, (_, d) => ({ value: d, label: `${d}: ${Math.round(ROW_PX / startSpeed(d))}ms a row` })),
-    () => settings.difficulty, (d) => { settings.difficulty = d; save(); }, { disabled: () => running });
-  game.number('Breaker chance (%)', () => settings.breakers, (v) => { settings.breakers = v; save(); }, { min: 0, max: 100, step: 0.5, disabled: () => running });
+    () => settings.difficulty, (d) => { settings.difficulty = d; save(); }, off);
+  game.number('Breaker chance (%)', () => settings.breakers, (v) => { settings.breakers = v; save(); }, { ...off, min: 0, max: 100, step: 0.5 });
   game.note(() => `The pair speeds up as it's dealt, to ${Math.round(ROW_PX / 0.25)}ms a row at most; holding drop is ${Math.round(ROW_PX / FAST_SPEED)}ms a row.`);
 
   const swordOptions: Option<number>[] = PLAIN_SWORDS.map((t) => ({ value: t, label: SWORD_NAMES[t] }));
   const colourOptions: Option<number>[] = SWORD_COLOURS.map((name, i) => ({ value: i, label: name }));
   for (const [title, which] of [['Your sword', 'sword']] as const) {
     const g = panel.settings.group(title);
-    g.select('Sword', swordOptions, () => settings[which][0], (t) => { settings[which] = [t, settings[which][1], settings[which][2]]; save(); }, { disabled: () => running });
-    g.select('Colour 1', colourOptions, () => settings[which][1], (c) => { settings[which] = [settings[which][0], c, settings[which][2]]; save(); }, { disabled: () => running || settings[which][0] === 127 });
-    g.select('Colour 2', colourOptions, () => settings[which][2], (c) => { settings[which] = [settings[which][0], settings[which][1], c]; save(); }, { disabled: () => running || settings[which][0] === 127 });
+    g.select('Sword', swordOptions, () => settings[which][0], (t) => { settings[which] = [t, settings[which][1], settings[which][2]]; save(); }, off);
+    g.select('Colour 1', colourOptions, () => settings[which][1], (c) => { settings[which] = [settings[which][0], c, settings[which][2]]; save(); }, { disabled: () => off.disabled() || settings[which][0] === 127 });
+    g.select('Colour 2', colourOptions, () => settings[which][2], (c) => { settings[which] = [settings[which][0], settings[which][1], c]; save(); }, { disabled: () => off.disabled() || settings[which][0] === 127 });
   }
-  panel.settings.group('Reset').button('Reset to defaults', () => { settings = structuredClone(DEFAULTS); save(); }, { disabled: () => running });
+  panel.settings.group('Reset').button('Reset to defaults', () => { settings = structuredClone(DEFAULTS); save(); }, off);
 
   const replaySettingsCodec: ReplaySettingsCodec = {
-    currentVersion: 6,
+    currentVersion: 7,
     simulatorVersion: 2,
     // Earlier recordings had an opponent that played the board, so they can't be replayed.
     migrate: (version, value) => {
       const upgraded = version < 6 ? upgrade(value) : value;
-      return version >= 3 && version <= 6 && validSettings(upgraded) ? upgraded : null;
+      return version >= 3 && version <= 7 && validSettings(upgraded) ? upgraded : null;
     },
   };
   let savedSettings: Settings | null = null;

@@ -1,5 +1,5 @@
-// A fight: your team (you, fighter 0, and any thralls and skilled swabbies) against cultists and
-// homunculi, or you on your own. Deals the pairs, passes each attack to its target, and decides when
+// A fight: you, fighter 0, and the chosen teammates against the chosen opponents,
+// or you on your own. Deals the pairs, passes each attack to its target, and decides when
 // the fight is over. How pairs are dealt and when attacks are sent are choices made here (see
 // docs/swordfight-findings.md).
 import { PyRandom } from '../../core/pyrandom';
@@ -12,15 +12,15 @@ import { GameNpc, type GameStyle, gameSkillStyle, Npc, type NpcStyle, skillStyle
 import { PLAIN_SWORDS, type Shaft, type Strike, Sword } from './strikes';
 
 export interface MatchSettings {
-  /** Enemies: cultists (spears) and homunculi (tree trunks); none is practice on your own. */
+  /** Legacy counts for older recordings; individual rosters choose new fights. */
   cultists: number;
   homunculi: number;
-  /** cultists + homunculi. */
+  /** Total opponents; none is practice on your own. */
   opponents: number;
   /** Allies on your team: thralls and skilled swabbies. */
   thralls: number;
   swabbies: number;
-  /** Each kind's AI skill, 0 to 100. */
+  /** Legacy skills for older recordings, 0 to 100. */
   cultistSkill: number;
   homunculusSkill: number;
   thrallSkill: number;
@@ -36,6 +36,16 @@ export interface MatchSettings {
   breakers: number;
   /** Your sword (type, primary colour, secondary colour). */
   sword: [number, number, number];
+  /** Individual NPCs on each side; omitted by older recordings. */
+  enemyRoster?: NpcSettings[];
+  allyRoster?: NpcSettings[];
+}
+
+export interface NpcSettings {
+  kind: Exclude<Kind, 'You'>;
+  skill: number;
+  /** A sword type, or null to pick a random sword each fight. Colours are always random. */
+  sword: number | null;
 }
 
 /** Each fighter gets the same pairs in the same order, from a generator seeded alike. */
@@ -76,7 +86,7 @@ export interface MatchEvents {
 const SPEAR = 16;
 const TRUNK = 17;
 
-export type Kind = 'You' | 'Cultist' | 'Homunculus' | 'Thrall' | 'Skilled swabbie';
+export type Kind = 'You' | 'Cultist' | 'Homunculus' | 'Thrall' | 'Skilled swabbie' | 'Custom';
 
 /** A name from the game's lists for a kind of pirate. */
 function nameFor(kind: Kind, female: boolean, rng: PyRandom): string {
@@ -85,7 +95,8 @@ function nameFor(kind: Kind, female: boolean, rng: PyRandom): string {
     case 'Cultist': return `${pick(CULTIST_PREFIXES)} Cultist`;
     case 'Homunculus': return `${pick(HOMUNCULUS_PREFIXES)} Homunculus`;
     case 'Thrall': return `${pick(THRALL_PREFIXES)} Zombie`;
-    case 'Skilled swabbie': return `${pick(female ? SWABBIE_FEMALE_NAMES : SWABBIE_MALE_NAMES)} ${pick(SWABBIE_SURNAMES)}`;
+    case 'Skilled swabbie':
+    case 'Custom': return `${pick(female ? SWABBIE_FEMALE_NAMES : SWABBIE_MALE_NAMES)} ${pick(SWABBIE_SURNAMES)}`;
     default: return 'You';
   }
 }
@@ -127,19 +138,21 @@ export class Match {
     const colours = new PyRandom(seed ^ 0x2c1b3c6d);
     const people = new PyRandom(seed ^ 0x68e31da4);
     // You, then your allies, then the enemies.
-    const kinds: Kind[] = [
+    const roster = settings.enemyRoster && settings.allyRoster ? [...settings.allyRoster, ...settings.enemyRoster] : null;
+    const kinds: Kind[] = roster ? roster.map((npc) => npc.kind) : [
       ...Array<Kind>(settings.thralls).fill('Thrall'), ...Array<Kind>(settings.swabbies).fill('Skilled swabbie'),
       ...Array<Kind>(settings.cultists).fill('Cultist'), ...Array<Kind>(settings.homunculi).fill('Homunculus'),
     ];
     const skills: Record<Exclude<Kind, 'You'>, number> = {
-      Cultist: settings.cultistSkill, Homunculus: settings.homunculusSkill, Thrall: settings.thrallSkill, 'Skilled swabbie': settings.swabbieSkill,
+      Cultist: settings.cultistSkill, Homunculus: settings.homunculusSkill, Thrall: settings.thrallSkill, 'Skilled swabbie': settings.swabbieSkill, Custom: 50,
     };
     for (let i = 0; i <= kinds.length; i++) {
       const dealer = new Dealer(seed, settings.breakers);
       const kind: Kind = i === 0 ? 'You' : kinds[i - 1];
       let sword: [number, number, number] = settings.sword;
       if (i > 0) {
-        const type = kind === 'Cultist' ? SPEAR : kind === 'Homunculus' ? TRUNK : PLAIN_SWORDS[colours.randintN(0, PLAIN_SWORDS.length - 1)];
+        const type = roster ? roster[i - 1].sword ?? PLAIN_SWORDS[colours.randintN(0, PLAIN_SWORDS.length - 1)]
+          : kind === 'Cultist' ? SPEAR : kind === 'Homunculus' ? TRUNK : PLAIN_SWORDS[colours.randintN(0, PLAIN_SWORDS.length - 1)];
         sword = [type, colours.randintN(0, 7), colours.randintN(0, 7)];
       }
       this.swords.push(new Sword(...sword));
@@ -150,7 +163,8 @@ export class Match {
       this.names.push(name);
       this.kinds.push(kind);
       this.looks.push(lookFor(kind, female, people));
-      const team = kind === 'You' || kind === 'Thrall' || kind === 'Skilled swabbie' ? 0 : 1;
+      const team = roster ? (i <= settings.allyRoster!.length ? 0 : 1)
+        : kind === 'You' || kind === 'Thrall' || kind === 'Skilled swabbie' ? 0 : 1;
       this.teams.push(team);
       this.rows[team].push(i);
       this.shaftIds.push(0);
@@ -164,7 +178,7 @@ export class Match {
       };
       this.fighters.push(i === 0
         ? new Fighter(i, settings.difficulty, hooks, startedAt)
-        : this.ai(i, skills[kind as Exclude<Kind, 'You'>], hooks, seed, startedAt));
+        : this.ai(i, roster ? roster[i - 1].skill : skills[kind as Exclude<Kind, 'You'>], hooks, seed, startedAt));
     }
     for (let i = 0; i < this.fighters.length; i++) this.targets.push(-1);
     for (let i = 0; i < this.fighters.length; i++) this.retarget(i);

@@ -33,7 +33,7 @@ export interface Look {
   colours: Partial<Record<Zation, string>>;
 }
 
-export type FaceKind = 'You' | 'Cultist' | 'Homunculus' | 'Thrall' | 'Skilled swabbie';
+export type FaceKind = 'You' | 'Cultist' | 'Homunculus' | 'Thrall' | 'Skilled swabbie' | 'Custom';
 
 const pick = <T>(rng: PyRandom, list: readonly T[]): T => list[rng.randintN(0, list.length - 1)];
 const names = coloursOf;
@@ -68,6 +68,14 @@ export function lookFor(kind: FaceKind, female: boolean, rng: PyRandom): Look {
       const hair = female ? [layer('ffemale-hair-ponytail', ['hair'])] : [];
       const layers = [layer(`${g}-mercenary`, head), ...hair, layer(`${g}-shako`, ['textile_p'])];
       return { layers, out: layers, colours };
+    }
+    case 'Custom': {
+      const hair = female ? 'ffemale-hair-ponytail' : 'fmale-hair-messy_short';
+      return {
+        layers: [layer(`${g}-head`, head), layer(hair, ['hair'])],
+        out: [layer(`${g}-head-out`, head), layer(hair, ['hair'])],
+        colours,
+      };
     }
     default:
       return {

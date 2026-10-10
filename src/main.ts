@@ -149,8 +149,7 @@ async function showPuzzle(id: string): Promise<void> {
       'footer',
       { className: 'about' },
       el('p', { className: 'credits' }, 'Based on Puzzle Pirates, created by Three Rings Design and now operated by Grey Havens.'),
-      el('p', { className: 'credits' }, 'Adaptation by Jice.'),
-      el('p', { className: 'credits' }, 'Discord: jeyece.'),
+      el('p', { className: 'credits' }, id === 'blacksmithing' ? 'Adaption by Jice, inspired by Jazz.' : 'Adaptation by Jice.'),
     ),
   );
   try {

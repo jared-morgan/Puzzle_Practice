@@ -27,6 +27,10 @@ Settings > Display offers Classic, Haunted Seas and Vampirate artwork, with a sa
 The optional emerald sight lines appear only while hovering over an emerald. Play, Settings
 and History stay pinned at the top while scrolling the panel.
 
+Swordfight Settings lets you choose the number of opponents and teammates, then each NPC’s
+type, sword and skill. Sword colours randomise for every fight. New players start with a
+blue/blue Falchion; saved equipment choices and older replays keep their original settings.
+
 Forage offers Puzzle, Gauntlet, Chaos and Normal, with optional round timers. Chaos keeps the
 normal move spacing but lifts the chest count, mix and per-board limits. Settings expose chest
 ratios and special-piece toggles. History includes replay play/pause, stop, a scrubber and time

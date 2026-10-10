@@ -796,13 +796,6 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
 
   const setup = panel.settings.group('Game');
   setup.select('Timer', [0, 30, 120, 300].map((value) => ({ value, label: value ? `${value} seconds` : 'No timer' })), roundSeconds, (value) => { settings.roundSeconds = value; saveSettings(); }, { disabled: locked, hidden: isPuzzle });
-  setup.number('Chest mix preset', setting('forageLevel').get, (level) => { settings.forageLevel = Math.round(level); settings.chestRatios = undefined; saveSettings(); }, {
-    min: 0,
-    max: 15,
-    disabled: locked,
-    hidden: () => isPuzzle() || settings.mode === 'normal',
-    title: 'Changes chest spawn rates only',
-  });
   bind(setup, 'Scramble', 'scramble', () => !isPuzzle());
 
   const crateGroup = panel.settings.group('Crates');
@@ -811,6 +804,13 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
   bind(crateGroup, 'Cursed chest', 'cc');
 
   const ratios = panel.settings.group('Chest ratios', { columns: 3, hidden: isPuzzle });
+  ratios.number('Chest mix preset', setting('forageLevel').get, (level) => { settings.forageLevel = Math.round(level); settings.chestRatios = undefined; saveSettings(); }, {
+    min: 0,
+    max: 15,
+    disabled: locked,
+    hidden: () => settings.mode === 'normal',
+    title: 'Changes chest spawn rates only',
+  });
   (['1x1', '2x2', '3x2'] as const).forEach((label, i) =>
     ratios.number(
       label,

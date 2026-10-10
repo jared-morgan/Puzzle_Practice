@@ -35,6 +35,7 @@ function canvasContext() {
 function panelHarness() {
   const buttons = new Map<string, () => void>();
   const setters = new Map<string, (value: number) => void>();
+  const selections = new Map<string, (value: string | number) => void>();
   const toggles = new Map<string, (value: boolean) => void>();
   const tables: Array<() => unknown> = [];
   const results: Array<() => unknown> = [];
@@ -49,7 +50,8 @@ function panelHarness() {
       buttonStates.set(page + ':' + title + ':' + name, options);
       return group(page, title);
     };
-    if (method === 'number') return (name: string, _get: unknown, set: (value: number) => void) => { setters.set(page + ':' + title + ':' + name, set); return group(page, title); };
+    if (method === 'number' || method === 'range') return (name: string, _get: unknown, set: (value: number) => void) => { setters.set(page + ':' + title + ':' + name, set); return group(page, title); };
+    if (method === 'select') return (name: string, _options: unknown, _get: unknown, set: (value: string | number) => void) => { selections.set(page + ':' + title + ':' + name, set); return group(page, title); };
     if (method === 'toggle') return (name: string, _get: unknown, set: (value: boolean) => void) => { toggles.set(page + ':' + title + ':' + name, set); return group(page, title); };
     if (method === 'stats') return (_header: unknown, get: () => unknown) => { tables.push(get); return group(page, title); };
     return () => group(page, title);
@@ -61,7 +63,7 @@ function panelHarness() {
     if (method === 'results') return (get: () => unknown) => { results.push(get); };
     return () => group('Play');
   } });
-  return { panel, buttons, setters, toggles, buttonStates, stats: () => tables.map((get) => get()), results: () => results.map((get) => get()) };
+  return { panel, buttons, setters, selections, toggles, buttonStates, stats: () => tables.map((get) => get()), results: () => results.map((get) => get()) };
 }
 
 beforeEach(async () => {
@@ -567,6 +569,108 @@ describe('Blacksmithing perfect board scoring', () => {
       buttons.get('History:Replays:Stop')!();
       expect(JSON.parse(exportAll()).data).toEqual(data);
     }
+    instance.dispose?.();
+  });
+});
+
+describe('Swordfight roster settings', () => {
+  it.each([3, 6])('keeps historical version %s fights and a saved player sword unchanged', async (version) => {
+    const store = new Store('swordfight');
+    store.set('settings', { cultists: 1, homunculi: 1, opponents: 2, thralls: 1, swabbies: 1,
+      cultistSkill: 20, homunculusSkill: 80, thrallSkill: 40, swabbieSkill: 55,
+      difficulty: 5, breakers: 12.5, sword: [2, 1, 5] });
+    const { panel, buttons } = panelHarness();
+    let now = 0;
+    let match!: Match;
+    const update = Match.prototype.update;
+    vi.spyOn(Match.prototype, 'update').mockImplementation(function (this: Match, time: number) {
+      match = this; update.call(this, time);
+    });
+    const screen = new Proxy({ ctx: canvasContext() }, { get: (target, key) => key === 'ctx' ? target.ctx : () => ({ width: 0, height: 0 }) });
+    const context = { screen, input: { mouse: [-1, -1] }, panel, store, ticks: () => now,
+      setReplayTime: (time: number | null) => { if (time !== null) now = time; },
+    } as unknown as PuzzleContext;
+    const factory = (await import('./swordfight/index')).default;
+    let instance = await factory(context);
+    buttons.get('Play::Start')!();
+    for (now = 0; now <= 4000; now += 20) instance.frame([]);
+    buttons.get('Play::Start')!();
+    expect([match.swords[0].type, match.swords[0].primary, match.swords[0].secondary]).toEqual([2, 1, 5]);
+    expect(match.settings.enemyRoster?.map((npc) => npc.skill)).toEqual([20, 80]);
+    expect(match.settings.allyRoster?.map((npc) => npc.skill)).toEqual([40, 55]);
+    const expected = { swords: match.swords, names: match.names, teams: match.teams, stats: match.fighters.map((fighter) => ({ ...fighter.stats })) };
+    await replayWrites.idle();
+    const [replay] = await listReplayFiles('swordfight');
+    const { readReplayFile, saveReplayFile } = await import('../core/replay-storage');
+    const { decodeReplayBlob, encodeReplayBlob, replayMetadata } = await import('../core/replay');
+    const tape = (await decodeReplayBlob((await readReplayFile(replay))!))!;
+    delete (tape.settings as Record<string, unknown>).enemyRoster;
+    delete (tape.settings as Record<string, unknown>).allyRoster;
+    tape.settingsVersion = version;
+    tape.at++;
+    const blob = await encodeReplayBlob(tape);
+    await saveReplayFile({ blob, metadata: replayMetadata(tape, blob.size) });
+    instance.dispose?.();
+    instance = await factory(context);
+    const recorder = captured.recorders.at(-1)!;
+    await vi.waitFor(() => expect(recorder.hasPlayableAt(tape.at, tape.runId)).toBe(true));
+    const perf = vi.spyOn(performance, 'now').mockReturnValue(0);
+    expect(await recorder.playAt(tape.at, tape.runId)).toBe(true);
+    perf.mockReturnValue(tape.duration);
+    instance.frame([]);
+    expect(match.settings.enemyRoster).toBeUndefined();
+    expect(match.settings.allyRoster).toBeUndefined();
+    expect({ swords: match.swords, names: match.names, teams: match.teams, stats: match.fighters.map((fighter) => ({ ...fighter.stats })) }).toEqual(expected);
+    recorder.stop();
+    instance.dispose?.();
+  });
+
+  it('saves individual NPC choices and restores them through replay and seeking', async () => {
+    const store = new Store('swordfight');
+    const { panel, buttons, setters, selections } = panelHarness();
+    let now = 0;
+    let match!: Match;
+    const update = Match.prototype.update;
+    vi.spyOn(Match.prototype, 'update').mockImplementation(function (this: Match, time: number) {
+      match = this; update.call(this, time);
+    });
+    const screen = new Proxy({ ctx: canvasContext() }, { get: (target, key) => key === 'ctx' ? target.ctx : () => ({ width: 0, height: 0 }) });
+    const factory = (await import('./swordfight/index')).default;
+    const instance = await factory({ screen, input: { mouse: [-1, -1] }, panel, store, ticks: () => now,
+      setReplayTime: (time: number | null) => { if (time !== null) now = time; },
+    } as unknown as PuzzleContext);
+    setters.get('Settings:Opponents:Number')!(3);
+    setters.get('Settings:Teammates:Number')!(1);
+    selections.get('Settings:Opponent 1:Type')!('Custom');
+    selections.get('Settings:Opponent 1:Sword')!(6);
+    setters.get('Settings:Opponent 1:Skill')!(35);
+    selections.get('Settings:Teammate 1:Type')!('Homunculus');
+    selections.get('Settings:Teammate 1:Sword')!(11);
+    setters.get('Settings:Teammate 1:Skill')!(75);
+    const saved = store.get<any>('settings', null);
+    expect(saved.sword).toEqual([11, 4, 4]);
+    expect(saved.enemyRoster).toEqual([{ kind: 'Custom', sword: 6, skill: 35 }, { kind: 'Cultist', sword: 16, skill: 60 }, { kind: 'Cultist', sword: 16, skill: 60 }]);
+    expect(saved.allyRoster).toEqual([{ kind: 'Homunculus', sword: 11, skill: 75 }]);
+    buttons.get('Play::Start')!();
+    for (now = 0; now <= 4000; now += 20) instance.frame([]);
+    buttons.get('Play::Start')!();
+    const expected = { swords: match.swords, names: match.names, teams: match.teams, stats: match.fighters.map((fighter) => ({ ...fighter.stats })) };
+    await replayWrites.idle();
+    const [replay] = await listReplayFiles('swordfight');
+    expect(replay.settingsVersion).toBe(7);
+    const recorder = captured.recorders[0];
+    const perf = vi.spyOn(performance, 'now').mockReturnValue(0);
+    expect(await recorder.playAt(replay.at, replay.runId)).toBe(true);
+    perf.mockReturnValue(replay.duration);
+    instance.frame([]);
+    expect({ swords: match.swords, names: match.names, teams: match.teams, stats: match.fighters.map((fighter) => ({ ...fighter.stats })) }).toEqual(expected);
+    setters.get('History:Replays:Jump to (s)')!(replay.duration / 1000);
+    buttons.get('History:Replays:Jump')!();
+    await vi.waitFor(() => expect(recorder.isSeeking).toBe(false));
+    expect(match.swords).toEqual(expected.swords);
+    expect(match.fighters.map((fighter) => ({ ...fighter.stats }))).toEqual(expected.stats);
+    recorder.stop();
+    expect(store.get('settings', null)).toEqual(saved);
     instance.dispose?.();
   });
 });

@@ -124,6 +124,44 @@ describe("the game-numbers opponents", () => {
 });
 
 describe('a fight', () => {
+  it('uses each NPC’s chosen skill and sword independently of their team or type', () => {
+    const m = new Match({ ...settings, opponentType: 'game', opponents: 3,
+      allyRoster: [{ kind: 'Cultist', skill: 20, sword: 11 }, { kind: 'Homunculus', skill: 75, sword: 2 }],
+      enemyRoster: [{ kind: 'Thrall', skill: 90, sword: 6 }, { kind: 'Skilled swabbie', skill: 30, sword: 16 }, { kind: 'Custom', skill: 65, sword: 17 }],
+    }, 9, 0);
+    expect(m.kinds).toEqual(['You', 'Cultist', 'Homunculus', 'Thrall', 'Skilled swabbie', 'Custom']);
+    expect(m.teams).toEqual([0, 0, 0, 1, 1, 1]);
+    expect(m.swords.slice(1).map((sword) => sword.type)).toEqual([11, 2, 6, 16, 17]);
+    for (const [i, skill] of [20, 75, 90, 30, 65].entries()) {
+      const style = (m.fighters[i + 1] as GameNpc).style;
+      expect(style.baseDestroy).toBe(gameSkillStyle(skill).baseDestroy);
+      expect(style.maxDestroy).toBe(gameSkillStyle(skill).maxDestroy);
+      expect(style.chainChance).toBe(gameSkillStyle(skill).chainChance);
+    }
+    expect(m.alive()).toEqual([3, 4, 5]);
+    for (let i = 1; i < m.targets.length; i++) expect(m.teams[m.targets[i]]).not.toBe(m.teams[i]);
+  });
+
+  it('randomises NPC sword colours by fight seed and reproduces them for playback', () => {
+    const rosterSettings: MatchSettings = { ...settings,
+      enemyRoster: [{ kind: 'Cultist', skill: 60, sword: 11 }, { kind: 'Custom', skill: 40, sword: null }], allyRoster: [], opponents: 2,
+    };
+    const colours = new Set<string>();
+    const randomTypes = new Set<number>();
+    for (let seed = 1; seed <= 20; seed++) {
+      const a = new Match(rosterSettings, seed, 0);
+      const b = new Match(rosterSettings, seed, 0);
+      expect(a.swords).toEqual(b.swords);
+      expect(a.looks).toEqual(b.looks);
+      expect(a.names).toEqual(b.names);
+      expect(a.swords[1].type).toBe(11);
+      colours.add(`${a.swords[1].primary}/${a.swords[1].secondary}`);
+      randomTypes.add(a.swords[2].type);
+    }
+    expect(colours.size).toBeGreaterThan(10);
+    expect(randomTypes.size).toBeGreaterThan(5);
+  });
+
   it('has cultists with spears and homunculi with trunks, in random colours', () => {
     const m = new Match({ ...settings, cultists: 2, homunculi: 1, opponents: 3 }, 9, 0);
     expect(m.names[0]).toBe('You');
