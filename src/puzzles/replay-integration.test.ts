@@ -712,7 +712,7 @@ describe('Swordfight roster settings', () => {
     instance.dispose?.();
   });
 
-  it('saves individual NPC choices and restores them through replay and seeking', async () => {
+  it('copies the first enemy, keeps individual edits independent and restores choices through replay and seeking', async () => {
     const store = new Store('swordfight');
     const { panel, buttons, setters, selections } = panelHarness();
     let now = 0;
@@ -731,12 +731,21 @@ describe('Swordfight roster settings', () => {
     selections.get('Settings:Customise opponent:Type')!('Custom');
     selections.get('Settings:Customise opponent:Sword')!(6);
     setters.get('Settings:Customise opponent:Skill')!(35);
+    selections.get('Settings:Customise opponent:NPC')!(2);
+    buttons.get('Settings:Customise opponent:Apply first enemy to all')!();
+    expect(store.get<any>('settings', null).enemyRoster).toEqual([
+      { kind: 'Custom', sword: 6, skill: 35 },
+      { kind: 'Custom', sword: 6, skill: 35 },
+      { kind: 'Custom', sword: 6, skill: 35 },
+    ]);
+    selections.get('Settings:Customise opponent:NPC')!(1);
+    setters.get('Settings:Customise opponent:Skill')!(70);
     selections.get('Settings:Customise teammate:Type')!('Homunculus');
     selections.get('Settings:Customise teammate:Sword')!(11);
     setters.get('Settings:Customise teammate:Skill')!(75);
     const saved = store.get<any>('settings', null);
     expect(saved.sword).toEqual([11, 4, 4]);
-    expect(saved.enemyRoster).toEqual([{ kind: 'Custom', sword: 6, skill: 35 }, { kind: 'Cultist', sword: 16, skill: 60 }, { kind: 'Cultist', sword: 16, skill: 60 }]);
+    expect(saved.enemyRoster).toEqual([{ kind: 'Custom', sword: 6, skill: 35 }, { kind: 'Custom', sword: 6, skill: 70 }, { kind: 'Custom', sword: 6, skill: 35 }]);
     expect(saved.allyRoster).toEqual([{ kind: 'Homunculus', sword: 11, skill: 75 }]);
     buttons.get('Play::Start')!();
     for (now = 0; now <= 4000; now += 20) instance.frame([]);

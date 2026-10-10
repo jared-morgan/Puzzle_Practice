@@ -968,6 +968,15 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
     }), off);
     g.select('Sword', npcSwords, () => npc().sword ?? -1, (sword) => change((value) => { value.sword = sword === -1 ? null : sword; }), off);
     g.range('Skill', () => npc().skill, (skill) => change((value) => { value.skill = Math.round(skill); }), { ...off, min: 0, max: 100 });
+    if (side === 'enemyRoster') g.button('Apply first enemy to all', () => {
+      const roster = rosterOf(side);
+      if (roster.length < 2) return;
+      settings.enemyRoster = roster.map(() => ({ ...roster[0] }));
+      saveRoster();
+    }, {
+      disabled: () => off.disabled() || rosterOf(side).length < 2,
+      title: 'Copy the first enemy’s type, sword and skill to every enemy. Sword colours remain random for each enemy.',
+    });
   }
   const foes = panel.settings.group('NPC behaviour');
   foes.select('Play style', [
