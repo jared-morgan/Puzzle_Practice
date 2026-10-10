@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { PyRandom } from '../../core/pyrandom';
 import { createDrill, emeraldRowsInColumn, type ClearPack } from './training';
-import { HaulBoard, isChestOrigin, EMERALD, RUBY, W, H } from './logic';
+import { HaulBoard, isChestOrigin, EMERALD, RUBY, EMPTY, W, H } from './logic';
 
 describe('Clear Chests packs', () => {
   it('efficient drills make same-colour threes below the chest and across its other column', () => {
@@ -34,8 +34,8 @@ describe('Clear Chests packs', () => {
         const { board, chest, solution } = drill;
         expect(board.findRuns()).toHaveLength(0);
         expect(board.cells.filter(isChestOrigin)).toHaveLength(1);
-        expect(chest.y).toBeGreaterThanOrEqual(pack === 'emeralds' ? 5 : 3);
-        expect(chest.y).toBeLessThanOrEqual(pack === 'emeralds' ? 6 : 5);
+        expect(chest.y).toBeGreaterThanOrEqual(pack === 'emeralds' ? 5 : pack === 'edges' ? 1 : 3);
+        expect(chest.y).toBeLessThanOrEqual(pack === 'emeralds' ? 6 : pack === 'edges' ? 2 : 5);
         if (pack === 'emeralds') {
           for (const x of [0, 7]) expect([board.get(x, 0), board.get(x, 1)]).toContain(EMERALD);
           expect([0, 2, 3, 4, 6]).toContain(chest.x);
@@ -102,7 +102,7 @@ describe('Clear Chests packs', () => {
     const patterns = new Set<string>();
     for (let seed = 0; seed < 1000; seed++) {
       const rng = new PyRandom(seed);
-      const { board, chest, solution, edgePattern } = createDrill(() => rng.random(), 'edges');
+      const { board, chest, solution, edgePattern } = createDrill(() => rng.random(), 'edges', 3);
       patterns.add(edgePattern!);
       expect(board.cells).not.toContain(RUBY);
       expect(board.findRuns()).toHaveLength(0);
@@ -145,6 +145,95 @@ describe('Clear Chests packs', () => {
     expect(emeraldRowsInColumn(6, 6, 7)).toEqual([5, 7]);
     expect(emeraldRowsInColumn(2, 5, 0)).toEqual([3, 7]);
     expect(emeraldRowsInColumn(0, 7, 0)).toEqual([]);
+  });
+
+  it('varies deep edge routes, colours, heights and emerald geometry across 500 solvable boards', () => {
+    const layouts = new Set<string>();
+    const routes = new Set<string>();
+    const families = new Set<string>();
+    const heights = new Set<number>();
+    const sides = new Set<number>();
+    let verticals = 0;
+    let doubles = 0;
+    for (let seed = 0; seed < 500; seed++) {
+      const rng = new PyRandom(seed);
+      const { board, chest, solution, edgePattern, impossible } = createDrill(() => rng.random(), 'edges');
+      expect(impossible).toBe(false);
+      families.add(edgePattern!); heights.add(chest.y); sides.add(chest.x);
+      const at = (column: number) => chest.x === 0 ? column : W - 1 - column;
+      layouts.add(Array.from({ length: H - chest.y - 1 }, (_, i) => [board.get(at(0), chest.y + i + 1), board.get(at(1), chest.y + i + 1)]).flat().join(''));
+      routes.add(JSON.stringify(solution!.map(([x, y]) => [chest.x === 0 ? x : W - 1 - x, y])));
+      expect(board.findRuns()).toHaveLength(0);
+      expect(board.cells).not.toContain(RUBY);
+      expect(H - 1 - chest.y).toBeGreaterThanOrEqual(5);
+      for (let move = 0; move < solution!.length; move++) {
+        for (let animation = 0; animation < 10; animation++) rng.random();
+        const swap = board.swap(...solution![move]);
+        expect(['swap', 'gem']).toContain(swap.kind);
+        if (swap.kind === 'gem' && swap.cleared.filter((coin) => coin.x === at(0)).length >= 2) doubles++;
+        let hauled = 0;
+        let settled = false;
+        for (let step = 0; step < 300; step++) {
+          const result = board.step();
+          if (!result) { settled = true; break; }
+          if (result.kind === 'haul') hauled += result.chests.length;
+          if (result.kind === 'match') verticals += result.runs.filter((run) => run.dir === 1 && run.x === at(0)).length;
+        }
+        expect(settled).toBe(true);
+        expect(hauled, `seed ${seed}, ${edgePattern}, move ${move}`).toBe(move === solution!.length - 1 ? 1 : 0);
+        board.settle();
+      }
+    }
+    expect(layouts.size).toBeGreaterThan(300);
+    expect(routes.size).toBeGreaterThan(150);
+    expect([...families].sort()).toEqual(['double-emerald', 'horizontal', 'single-emerald', 'vertical']);
+    expect([...heights].sort()).toEqual([1, 2]);
+    expect([...sides].sort()).toEqual([0, 6]);
+    expect(verticals).toBeGreaterThan(50);
+    expect(doubles).toBeGreaterThan(50);
+  });
+
+  it('adds about 20% provably impossible boards only when enabled', () => {
+    let impossibleCount = 0;
+    const layouts = new Set<string>();
+    for (let seed = 0; seed < 1000; seed++) {
+      const rng = new PyRandom(seed);
+      const { board, chest, impossible, solution } = createDrill(() => rng.random(), 'edges', 4, { impossibleChests: true });
+      if (!impossible) { expect(solution).toBeDefined(); continue; }
+      impossibleCount++;
+      const outer = chest.x === 0 ? 0 : W - 1;
+      const inner = chest.x === 0 ? 1 : W - 2;
+      const blockers = Array.from({ length: H - chest.y - 1 }, (_, i) => board.get(outer, chest.y + 1 + i));
+      const counts = [0, 1, 2, 3].map((colour) => blockers.filter((piece) => piece === colour).length);
+      expect(Math.max(...counts)).toBeLessThanOrEqual(2);
+      const innerColour = counts.indexOf(0);
+      for (let row = chest.y + 1; row < H; row++) expect([EMPTY, innerColour]).toContain(board.get(inner, row));
+      expect(board.cells).not.toContain(EMERALD);
+      expect(board.cells).not.toContain(RUBY);
+      expect(board.gemRates).toEqual([0, 0]);
+      expect(board.findRuns()).toHaveLength(0);
+      expect(board.step()).toBeNull();
+      layouts.add(blockers.join(''));
+      // The certificate survives rearranging coins, clearing the adjacent column,
+      // and arbitrary refills elsewhere; it is not a failed search for a solution.
+      for (let move = 0; move < 60; move++) {
+        const column = move % 3 === 0 ? outer : rng.randintN(0, W - 1);
+        const row = rng.randintN(1, H - 1);
+        board.swap(column, row);
+        for (let step = 0; step < 300; step++) {
+          const result = board.step();
+          if (!result) break;
+          expect(result.kind).not.toBe('haul');
+        }
+        board.settle();
+        expect(board.get(chest.x, chest.y)).toSatisfy(isChestOrigin);
+        expect(Array.from({ length: blockers.length }, (_, i) => board.get(outer, chest.y + 1 + i)).sort()).toEqual([...blockers].sort());
+        for (let row = chest.y + 1; row < H; row++) expect([EMPTY, innerColour]).toContain(board.get(inner, row));
+      }
+    }
+    expect(impossibleCount).toBeGreaterThan(160);
+    expect(impossibleCount).toBeLessThan(240);
+    expect(layouts.size).toBeGreaterThan(100);
   });
 
   it('retains earlier edge emerald positions for historical replays', () => {

@@ -1,4 +1,4 @@
-import { HaulBoard, W, H, RUBY, EMERALD } from './logic';
+import { HaulBoard, W, H, RUBY, EMERALD, EMPTY } from './logic';
 import { PyRandom } from '../../core/pyrandom';
 
 export type ClearPack = 'standard' | 'efficient' | 'emeralds' | 'edges';
@@ -10,13 +10,16 @@ export interface Drill {
   /** A complete route through a constructed edge drill. */
   solution?: [number, number][];
   edgePattern?: 'horizontal' | 'vertical' | 'single-emerald' | 'double-emerald';
+  /** Generation metadata; the exercise does not reveal this to the player. */
+  impossible?: boolean;
 }
+export interface DrillOptions { impossibleChests?: boolean }
 
 /** Practice boards have no automatic matches, and never overwrite another chest. */
-export function createDrill(random: () => number, pack: ClearPack, rules: 1 | 2 | 3 = 3): Drill {
+export function createDrill(random: () => number, pack: ClearPack, rules: 1 | 2 | 3 | 4 = 4, options: DrillOptions = {}): Drill {
   if (rules === 1 || pack === 'standard' || pack === 'efficient') return createLegacyDrill(random, pack);
-  if (pack === 'edges') return createEdgeDrill(random);
-  if (rules === 3) return createEmeraldDrill(random);
+  if (pack === 'edges') return rules >= 4 ? createDeepEdgeDrill(random, options) : createEdgeDrill(random);
+  if (rules >= 3) return createEmeraldDrill(random);
   const x = 2 + Math.floor(random() * 3);
   const y = 3 + Math.floor(random() * 3);
   for (let attempt = 0; attempt < 500; attempt++) {
@@ -211,6 +214,136 @@ function createEdgeDrill(random: () => number, fallback = false): Drill {
   if (fallback) throw new Error(`Unable to construct ${edgePattern}`);
   const fixed = new PyRandom(0);
   return createEdgeDrill(() => fixed.random(), true);
+}
+
+/**
+ * Six or five blockers are decomposed into vertical groups, horizontal pairs,
+ * and one or two diagonal targets. Permuted coin reservoirs vary the required
+ * swaps; the complete route and its refill sequence are verified before play.
+ */
+function createDeepEdgeDrill(random: () => number, options: DrillOptions,
+  fallback?: { impossible: boolean; left: boolean; y: number; edgePattern: NonNullable<Drill['edgePattern']> }): Drill {
+  const impossible = fallback?.impossible ?? (!!options.impossibleChests && random() < 0.2);
+  const left = fallback?.left ?? random() < 0.5;
+  const at = (column: number) => left ? column : W - 1 - column;
+  const x = left ? 0 : W - 2;
+  const y = fallback?.y ?? 1 + Math.floor(random() * 2);
+  const depth = H - 1 - y;
+  const patterns = ['horizontal', 'vertical', 'single-emerald', 'double-emerald'] as const;
+  const edgePattern = fallback?.edgePattern ?? patterns[Math.floor(random() * patterns.length)];
+  const shuffle = <T>(values: T[]): T[] => {
+    for (let i = values.length - 1; i > 0; i--) {
+      const j = Math.floor(random() * (i + 1));
+      [values[i], values[j]] = [values[j], values[i]];
+    }
+    return values;
+  };
+  for (let attempt = 0; attempt < 500; attempt++) {
+    const refills: number[] = [];
+    let refill = 0;
+    const board = new HaulBoard(() => refill < refills.length ? refills[refill++] : random());
+    board.populate();
+    board.placeChest(x, y, Math.floor(random() * 3));
+    board.gemRates = [0, 0];
+    const set = (column: number, row: number, piece: number) => board.set(at(column), row, piece);
+    const [a, b, c, d] = shuffle([0, 1, 2, 3]);
+    const solution: [number, number][] = [];
+    if (impossible) {
+      // Each outer colour occurs at most twice, so no vertical three is possible.
+      // Only the fourth colour can occupy the inner segment. Clearing those coins
+      // leaves gaps above the anchored chest, which cannot be refilled from below.
+      const outer = shuffle([a, a, b, b, c, c].slice(0, depth));
+      for (let i = 0; i < depth; i++) {
+        set(0, y + 1 + i, outer[i]);
+        set(1, y + 1 + i, EMPTY);
+      }
+      const inner = 1 + Math.floor(random() * 2);
+      for (let i = 0; i < inner; i++) set(1, H - 1 - i, d);
+      if (!board.findRuns().length) return { board, chest: { x, y }, impossible: true };
+      continue;
+    }
+    if (edgePattern === 'horizontal' || edgePattern === 'vertical') {
+      const tail = edgePattern === 'vertical'
+        ? shuffle([b, c, d]).slice(0, depth - 3)
+        : shuffle([a, a, b, b, c, d]).slice(0, depth);
+      const blockers = edgePattern === 'vertical' ? [a, a, a, ...tail] : tail;
+      const outer = Array<number>(H).fill(-1);
+      const inner = Array<number>(H).fill(-1);
+      const reservoir = edgePattern === 'horizontal'
+        ? shuffle([...tail, c, d].slice(0, H))
+        : shuffle([...tail, ...Array.from({ length: H - tail.length }, () => [b, c, d][Math.floor(random() * 3)])]);
+      // With five blockers, fill the remaining reservoir square with a spare colour.
+      while (reservoir.length < H) reservoir.unshift(Math.floor(random() * 4));
+      for (const [column, values] of [[0, outer], [1, inner]] as const) {
+        shuffle([...blockers]).forEach((piece, i) => { values[y + 1 + i] = piece; set(column, y + 1 + i, piece); });
+      }
+      reservoir.forEach((piece, row) => set(2, row, piece));
+      const bubble = (column: number, values: number[], colour: number, target: number): boolean => {
+        let source = values.lastIndexOf(colour, target);
+        if (source < 0) return false;
+        while (source < target) {
+          [values[source], values[source + 1]] = [values[source + 1], values[source]];
+          solution.push([at(column), ++source]);
+        }
+        return true;
+      };
+      if (edgePattern === 'vertical') {
+        for (const [column, values] of [[0, outer], [1, inner]] as const) {
+          for (let row = H - 1; row >= H - 3; row--) bubble(column, values, a, row);
+          values.splice(H - 3, 3);
+          values.unshift(-1, -1, -1);
+        }
+      }
+      const pairs = edgePattern === 'vertical' ? depth - 3 : depth;
+      for (let i = 0; i < pairs; i++) {
+        const colour = outer[H - 1];
+        bubble(1, inner, colour, H - 1);
+        bubble(2, reservoir, colour, H - 1);
+        outer.pop(); outer.unshift(-1);
+        inner.pop(); inner.unshift(-1);
+        reservoir.pop(); reservoir.unshift(-1);
+      }
+    } else {
+      const remaining = edgePattern === 'single-emerald' ? 1 : 3;
+      const pairs = depth - remaining;
+      // C and D cap the final matches; prefix colours must differ from both.
+      const colours = shuffle(edgePattern === 'double-emerald'
+        ? Array.from({ length: pairs }, (_, i) => i % 2 ? b : a)
+        : [a, a, b, b, a].slice(0, pairs));
+      for (let i = 0; i < pairs; i++) {
+        set(0, y + 1 + remaining + i, colours[i]);
+        set(1, y + 1 + remaining + i, colours[i]);
+        set(2, H - 2 - (pairs - 1 - i), colours[i]);
+      }
+      solution.push(...Array.from({ length: pairs }, (): [number, number] => [at(2), H - 1]));
+      if (edgePattern === 'single-emerald') {
+        set(0, y + 1, d); set(1, y + 1, c);
+        set(2, H - 1, c); set(2, 5 - pairs, EMERALD);
+        set(3, 7, d); set(3, 6, d); set(3, 5, c);
+        // Prefix clears lift the emerald to row 5. Its diagonal removes the last
+        // outer coin; the resulting gap lifts the inner-column match into place.
+        solution.push([at(2), 5], [at(3), 7]);
+      } else {
+        set(0, y + 1, c); set(0, y + 2, a); set(0, y + 3, c);
+        set(1, y + 1, b); set(1, y + 2, EMERALD); set(1, y + 3, a);
+        // The three remaining rows end at 5, 6 and 7 after the prefix clears.
+        // One emerald reaches both outer rows 5 and 7 before the A and B matches.
+        set(2, 7, c); set(2, 6 - pairs, a); set(2, 5 - pairs, c); set(2, 4 - pairs, b);
+        set(3, 7, d); set(3, 6, d); set(3, 5, b);
+        solution.push([at(1), 6], [at(3), 6], [at(3), 7]);
+      }
+    }
+    if (board.findRuns().length || !solution.length) continue;
+    const checked = checkSolution(board, solution, random);
+    if (checked) {
+      refills.push(...checked);
+      return { board, chest: { x, y }, solution, edgePattern, impossible: false };
+    }
+  }
+  if (fallback) throw new Error(`Unable to construct deep ${edgePattern}`);
+  const fixed = new PyRandom(0);
+  // A fallback retains the requested family and the solvable/impossible decision.
+  return createDeepEdgeDrill(() => fixed.random(), options, { impossible, left, y, edgePattern });
 }
 
 /** Retain the tested refills so the playable board follows the verified route. */
