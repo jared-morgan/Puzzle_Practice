@@ -1000,7 +1000,8 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
   /** How full the meter should be, 0-100%: each crate is one banana. */
   const meterTarget = () => Math.min(100, (crates * 100) / BANANAS);
   /** Every crate this board will bring has been collected. */
-  const boardDone = () => crates >= BANANAS && meterShown >= 100;
+  // The board's done when the move that brings in its last crate ends, as the meter is still filling.
+  const boardDone = () => crates >= BANANAS;
 
   /** Moves the drawn meter toward its target at 500ms a banana. */
   function stepMeter(now: number): void {
@@ -1083,7 +1084,7 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
     stepMeter(now);
     if (!boardActive) return;
     timePassed = Math.max(0, now - startTime);
-    if (playing.length || flight) return;
+    if (playing.length || flight || now < settledAt) return;
     if (!isPuzzle() && roundSeconds() > 0 && timePassed >= roundDuration()) finishScored();
     else if (pendingNextBoard) newBoard();
     else if (isPuzzle() && game.crateCount() === 0) { finishPuzzle(); outro(); }
