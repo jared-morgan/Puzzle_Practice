@@ -505,12 +505,20 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
       ctx.lineJoin = 'round';
       ctx.lineWidth = 4;
       ctx.strokeStyle = '#000';
+      const lines: string[] = [];
+      for (const word of m.text.split(/\s+/)) {
+        const last = lines.length - 1;
+        if (last >= 0 && ctx.measureText(`${lines[last]} ${word}`).width <= BOARD_W - 8) lines[last] += ` ${word}`;
+        else lines.push(word);
+      }
       const ty = y - 30 * Math.min(p, 0.7);
-      ctx.strokeText(m.text, BOARD_W / 2, ty, BOARD_W - 4);
       ctx.fillStyle = '#fff';
-      ctx.fillText(m.text, BOARD_W / 2, ty, BOARD_W - 4);
+      for (let i = 0; i < lines.length; i++) {
+        ctx.strokeText(lines[i], BOARD_W / 2, ty + i * 36);
+        ctx.fillText(lines[i], BOARD_W / 2, ty + i * 36);
+      }
       ctx.restore();
-      y += 36;
+      y += lines.length * 36;
     }
   }
 

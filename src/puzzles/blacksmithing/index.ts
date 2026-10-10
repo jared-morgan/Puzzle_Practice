@@ -70,7 +70,7 @@ const BLADE_NAMES = ['Club', 'Hefty blade', 'Finely balanced', 'Keen edge', 'Mas
 
 /**
  * Duty report ratings: a classic sword by how far its blade got (0 Club up to 4 Masterpiece), a
- * perfect-board run by points a board (3 cleared, 1 one off).
+ * perfect-board run by points a board (3 cleared, 1 one off, -1 too far off).
  */
 const RATING_SCALES: RatingScale[] = [
   { id: 'blade', label: 'Classic, blade (0 Club to 4 Masterpiece)', cutoffs: [0, 1, 2, 3, 4] },
@@ -198,15 +198,16 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
   const glowSheets = TILE_SHEETS.map((name) => (name ? [silhouette(img(name), GLOW), silhouette(img(name), GLOW_HOT)] : []));
 
   let difficulty = store.get<number>('difficulty', 4);
-  let mode = store.get<Mode>('mode', 'classic');
+  let mode = store.get<Mode>('mode', 'perfect');
+  let scoringRules: 1 | 2 = 2;
   let perfectSize = store.get<number>('perfectSize', 3);
   const bests = store.get<Record<string, number>>('bestStrikes', {});
   const perfectRecords = store.get<Record<string, PerfectRecord>>('perfectRecords', {});
-  const perfectKey = () => `${perfectSize}-${difficulty}`;
+  const perfectKey = () => `${perfectSize}-${difficulty}${scoringRules === 2 ? ':scoring2' : ''}`;
   const runHistoryKey = () => `${timerMs ? 'run' : 'untimed-run'}:${perfectKey()}`;
   /** Points from the perfect board just finished, or null. */
   let lastPoints: number | null = null;
-  let timerMs = store.get<number>('perfectTimer', 0);
+  let timerMs = store.get<number>('perfectTimer', 120000);
   const timedBests = store.get<Record<string, number>>('perfectTimedBests', {});
   /** A perfect-board run: boards dealt one after another, with the points they've scored. */
   const run = { active: false, start: 0, end: 0, points: 0, boards: 0, perfect: 0, oneOff: 0, farOff: 0, timeUp: false };
@@ -536,7 +537,8 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
     if (mode === 'perfect') {
       const left = board!.remaining();
       lastPoints = perfectPoints(left);
-      say(left === 0 ? 'Perfect! +3' : left === 1 ? 'One off! +1' : `${left} left`, left === 0 ? 5 : 3, 2000);
+      if (scoringRules === 1 && lastPoints === -1) lastPoints = 0;
+      say(left === 0 ? 'Perfect! +3' : left === 1 ? 'One off! +1' : `${left} left${scoringRules === 2 ? ' −1' : ''}`, left === 0 ? 5 : 3, 2000);
     }
     if (mode === 'perfect' ? lastPoints === 3 : board!.doneLevel() >= 2) {
       const gleam = img('gleam');
@@ -621,7 +623,7 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
   function startRun(): void {
     pause.resume();
     duty.clear();
-    replays.begin({ mode, difficulty, perfectSize, timerMs }, rng.snapshot());
+    replays.begin({ mode, difficulty, perfectSize, timerMs, scoringRules }, rng.snapshot());
     Object.assign(run, { active: true, start: ticks(), end: ticks(), points: 0, boards: 0, perfect: 0, oneOff: 0, farOff: 0, timeUp: false });
     newSword();
   }
@@ -649,7 +651,7 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
     if (!timerMs || timeUp) store.addHistory(runHistoryKey(), { score: run.points, boards: run.boards, ...duty.fields(report), ...(finishedReplay ? { replayAt: finishedReplay.at, replayId: finishedReplay.runId ?? ''} : {}) });
     if (!timeUp) return;
     say("Time's up!", 4, 2500);
-    if (run.points > (timedBests[key] ?? -1)) {
+    if (timedBests[key] === undefined || run.points > timedBests[key]) {
       timedBests[key] = run.points;
       store.set('perfectTimedBests', timedBests);
     }
@@ -919,7 +921,7 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
       if (run.active) endRun(false);
       else startRun();
     } else if (running) { abortBoard(); replays.finish('Stopped'); }
-    else { duty.clear(); replays.begin({ mode, difficulty, perfectSize, timerMs }, rng.snapshot()); newSword(); }
+    else { duty.clear(); replays.begin({ mode, difficulty, perfectSize, timerMs, scoringRules }, rng.snapshot()); newSword(); }
   }, { variant: 'primary', label: () => (replays?.isPlaying ? 'Start' : busy() ? 'Stop' : !finished || mode === 'perfect' ? 'Start' : 'New sword') });
 
   const best = () => bests[String(difficulty)];
@@ -939,9 +941,10 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
       ['Boards', '', String(record?.boards ?? 0)],
       ['Cleared (3)', '', String(record?.cleared ?? 0)],
       ['One off (1)', '', String(record?.oneOff ?? 0)],
+      [`Too far off (${scoringRules === 2 ? '-1' : '0'})`, '', String(record ? record.boards - record.cleared - record.oneOff : 0)],
       ['Points / board', '', record?.boards ? (record.points / record.boards).toFixed(2) : '-'],
     ];
-  }).note(() => `Totals are for ${perfectSize}x${perfectSize} at difficulty ${difficulty}.`)
+  }).note(() => `Totals are for ${perfectSize}x${perfectSize} at difficulty ${difficulty}. Cleared: +3; one square left: +1; two or more left: ${scoringRules === 2 ? '−1' : '0'}.`)
     .button('Reset totals', () => {
       delete perfectRecords[perfectKey()];
       store.set('perfectRecords', perfectRecords);
@@ -1024,10 +1027,10 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
     store.set('perfectTimer', ms);
   }, { disabled: busy, hidden: () => mode !== 'perfect', title: 'Boards keep coming until Stop, or until the time runs out' });
   settings.button('Reset to defaults', () => {
-    mode = 'classic';
+    mode = 'perfect';
     difficulty = 4;
     perfectSize = 3;
-    timerMs = 0;
+    timerMs = 120000;
     store.set('mode', mode);
     store.set('difficulty', difficulty);
     store.set('perfectSize', perfectSize);
@@ -1035,19 +1038,22 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
   }, { disabled: busy });
 
   const replaySettingsCodec: ReplaySettingsCodec = {
-    currentVersion: 1,
-    simulatorVersion: 1,
+    currentVersion: 2,
+    simulatorVersion: 2,
     migrate: (version, value) => {
-      if (version !== 1 || !value || typeof value !== 'object') return null;
+      if ((version !== 1 && version !== 2) || !value || typeof value !== 'object') return null;
       const s = value as Record<string, unknown>;
       return (s.mode === 'classic' || s.mode === 'perfect') && Number.isFinite(s.difficulty) &&
-        Number.isInteger(s.perfectSize) && Number.isFinite(s.timerMs) && (s.timerMs as number) >= 0 ? value : null;
+        Number.isInteger(s.perfectSize) && Number.isFinite(s.timerMs) && (s.timerMs as number) >= 0 &&
+        (version === 1 || s.scoringRules === 2) ? { ...s, scoringRules: version === 1 ? 1 : 2 } : null;
     },
   };
-  let savedReplaySettings: { mode: Mode; difficulty: number; perfectSize: number; timerMs: number } | null = null;
+  type SmithSettings = { mode: Mode; difficulty: number; perfectSize: number; timerMs: number; scoringRules?: 1 | 2 };
+  let savedReplaySettings: SmithSettings | null = null;
   replays = new ReplayRecorder('blacksmithing', store, panel, ticks, (tape: PuzzleReplay) => {
-    savedReplaySettings ??= { mode, difficulty, perfectSize, timerMs };
-    const settings = tape.settings as { mode: Mode; difficulty: number; perfectSize: number; timerMs: number };
+    savedReplaySettings ??= { mode, difficulty, perfectSize, timerMs, scoringRules };
+    const settings = tape.settings as SmithSettings;
+    scoringRules = settings.scoringRules ?? 1;
     mode = settings.mode;
     difficulty = settings.difficulty;
     perfectSize = settings.perfectSize;
@@ -1062,6 +1068,7 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
     else if (running) abortBoard();
     if (savedReplaySettings) {
       ({ mode, difficulty, perfectSize, timerMs } = savedReplaySettings);
+      scoringRules = savedReplaySettings.scoringRules ?? 2;
       savedReplaySettings = null;
     }
   }, (seed) => new PyRandom(0).restore(seed), setReplayTime, () => frame([]), replaySettingsCodec, () => !busy() || replays.isPlaying);

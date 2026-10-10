@@ -7,6 +7,10 @@ import type { ReplayRecorder } from '../core/replay';
 import type { PuzzleContext, PuzzleFactory } from '../core/puzzle';
 import { createDrill } from './treasure-haul/training';
 import { HaulBoard, isChestOrigin, RUBY } from './treasure-haul/logic';
+import { FOUR, IronBoard } from './blacksmithing/logic';
+import { Match } from './swordfight/match';
+import { W as SWORD_COLUMNS } from './swordfight/board';
+import { COL_PX as SWORD_COLUMN_PX } from './swordfight/fighter';
 
 const captured = vi.hoisted(() => ({ recorders: [] as ReplayRecorder[] }));
 vi.mock('../core/replay', async (original) => {
@@ -399,6 +403,104 @@ describe('Treasure Haul dismissal during a cascade', () => {
     buttons.get('Play::Dismiss')!();
     for (let frame = 0; frame < 150; frame++) { now += 50; instance.frame([]); }
     expect(stats()[0]).toContainEqual(['Chests hauled', '2', expect.any(String)]);
+    instance.dispose?.();
+  });
+});
+
+describe('Blacksmithing perfect board scoring', () => {
+  it.each([[0, 3], [1, 1], [2, -1]] as const)('scores %i squares left as %i, including negative bests and replays', async (remaining, points) => {
+    const populate = IronBoard.prototype.populate;
+    vi.spyOn(IronBoard.prototype, 'populate').mockImplementation(function (this: IronBoard) {
+      populate.call(this);
+      // The final strike is a 4 on a 3x3 board, so no further move is possible.
+      this.pieces.flat().forEach((piece, i) => { piece.type = FOUR; piece.condition = i <= remaining ? 1 : 0; });
+      this.numHits = 8 - remaining;
+    });
+    const store = new Store('blacksmithing');
+    // No saved settings: a new session should be Perfect board with a two-minute timer.
+    const { panel, buttons, setters, stats, results } = panelHarness();
+    let now = 0;
+    const input = { mouse: [-1, -1] };
+    const screen = new Proxy({ ctx: canvasContext() }, { get: (target, key) => key === 'ctx' ? target.ctx : () => ({ width: 0, height: 0 }) });
+    const factory = (await import('./blacksmithing/index')).default;
+    const context = { screen, input, panel, store, ticks: () => now,
+      setReplayTime: (time: number | null) => { if (time !== null) now = time; } } as unknown as PuzzleContext;
+    let instance = await factory(context);
+    buttons.get('Play::Start')!();
+    for (; now <= 1000; now += 25) instance.frame([]);
+    const pos: [number, number] = [162, 177];
+    instance.frame([{ type: 'mousedown', button: 1, pos }, { type: 'mouseup', button: 1, pos }]);
+    for (; now <= 5000; now += 25) instance.frame([]);
+    expect(stats().flat()).toContainEqual(['Points', String(points), '']);
+    now = 120000; instance.frame([]);
+    expect(results()[0]).toMatchObject({ rows: expect.arrayContaining([['Points', String(points)], ['Boards', '1']]) });
+    expect(store.get<Record<string, number>>('perfectTimedBests', {})).toEqual({ '3-4:scoring2': points });
+    await replayWrites.idle();
+    const replay = (await listReplayFiles('blacksmithing'))[0];
+    expect(replay).toMatchObject({ settingsVersion: 2, simulatorVersion: 2, duration: 120000 });
+    const data = JSON.parse(exportAll()).data;
+    const perf = vi.spyOn(performance, 'now').mockReturnValue(0);
+    const recorder = captured.recorders[0];
+    expect(await recorder.playAt(replay.at, replay.runId)).toBe(true);
+    perf.mockReturnValue(replay.duration); instance.frame([]);
+    expect(stats().flat()).toContainEqual(['Points', String(points), String(points)]);
+    setters.get('History:Replays:Jump to (s)')!(120);
+    buttons.get('History:Replays:Jump')!();
+    await vi.waitFor(() => expect(recorder.isSeeking).toBe(false));
+    expect(stats().flat()).toContainEqual(['Points', String(points), String(points)]);
+    expect(JSON.parse(exportAll()).data).toEqual(data);
+    buttons.get('History:Replays:Stop')!();
+    if (remaining === 2) {
+      const { decodeReplayBlob, encodeReplayBlob, replayMetadata } = await import('../core/replay');
+      const { readReplayFile, saveReplayFile } = await import('../core/replay-storage');
+      const tape = (await decodeReplayBlob((await readReplayFile(replay))!))!;
+      tape.at++;
+      tape.settingsVersion = 1; tape.simulatorVersion = 1;
+      delete (tape.settings as Record<string, unknown>).scoringRules;
+      delete tape.report;
+      tape.result = 'Points 0';
+      const blob = await encodeReplayBlob(tape);
+      await saveReplayFile({ metadata: replayMetadata(tape, blob.size), blob });
+      instance.dispose?.();
+      instance = await factory(context);
+      const legacyRecorder = captured.recorders.at(-1)!;
+      await vi.waitFor(() => expect(legacyRecorder.hasPlayableAt(tape.at, tape.runId)).toBe(true));
+      perf.mockReturnValue(0);
+      expect(await legacyRecorder.playAt(tape.at, tape.runId)).toBe(true);
+      perf.mockReturnValue(tape.duration); instance.frame([]);
+      expect(stats().flat()).toContainEqual(['Points', '0', '']);
+      buttons.get('History:Replays:Stop')!();
+      expect(JSON.parse(exportAll()).data).toEqual(data);
+    }
+    instance.dispose?.();
+  });
+});
+
+describe('Swordfight knockout messages', () => {
+  it('wraps a long opponent knockout at normal text width', async () => {
+    const update = Match.prototype.update;
+    vi.spyOn(Match.prototype, 'update').mockImplementation(function (this: Match, now: number) {
+      const target = this.targets[0];
+      this.names[target] = 'Wrathful Cultist';
+      this.fighters[target].out = true;
+      update.call(this, now);
+    });
+    const store = new Store('swordfight');
+    const { panel, buttons } = panelHarness();
+    const ctx = canvasContext();
+    const fillText = vi.fn();
+    Object.assign(ctx, { fillText });
+    const screen = new Proxy({ ctx }, { get: (target, key) => key === 'ctx' ? target.ctx : () => ({ width: 0, height: 0 }) });
+    const factory = (await import('./swordfight/index')).default;
+    const instance = await factory({ screen, input: { mouse: [-1, -1] }, panel, store, ticks: () => 100 } as unknown as PuzzleContext);
+    buttons.get('Play::Start')!();
+    instance.frame([]);
+    const boardWidth = SWORD_COLUMNS * SWORD_COLUMN_PX;
+    const lines = fillText.mock.calls.filter((args) => args[1] === boardWidth / 2 && /Wrathful|knocked/.test(args[0]));
+    expect(lines.map(([text]) => text).join(' ')).toBe('Wrathful Cultist was knocked out!');
+    expect(lines).toHaveLength(2);
+    expect(lines.every((args) => args.length === 3 && ctx.measureText(args[0]).width <= boardWidth - 8)).toBe(true);
+    expect(lines[1][2] - lines[0][2]).toBe(36);
     instance.dispose?.();
   });
 });

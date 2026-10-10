@@ -246,7 +246,7 @@ describe('perfect boards', () => {
     expect(board.findHittable().map((p) => `${p.x},${p.y}`).sort()).toEqual(['0,1', '1,0', '1,2', '2,1']);
   });
 
-  it('scores 3 for a cleared board, 1 for one square left, otherwise 0', () => {
-    expect([0, 1, 2, 9].map(perfectPoints)).toEqual([3, 1, 0, 0]);
+  it('scores 3 for a cleared board, 1 for one square left, otherwise -1', () => {
+    expect([0, 1, 2, 9].map(perfectPoints)).toEqual([3, 1, -1, -1]);
   });
 });

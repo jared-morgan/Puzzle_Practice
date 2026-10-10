@@ -432,9 +432,9 @@ export function perfectBoard(size: number, difficulty: number, random: () => num
   }
 }
 
-/** Points for a perfect board: 3 for clearing it, 1 for leaving one square, otherwise none. */
+/** Points for a perfect board: 3 for clearing it, 1 for leaving one square, otherwise -1. */
 export function perfectPoints(remaining: number): number {
-  return remaining === 0 ? 3 : remaining === 1 ? 1 : 0;
+  return remaining === 0 ? 3 : remaining === 1 ? 1 : -1;
 }
 
 // ---- Messages (rsrc/en/i18n/puzzle/iron.properties) ----
