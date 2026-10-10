@@ -14,6 +14,8 @@ import { SoundBank } from '../../core/audio';
 import { copyText } from '../../core/clipboard';
 import { keyMatches } from '../../core/controls';
 import { loadFont } from '../../core/fonts';
+import { dutyDesk } from '../../core/duty/desk';
+import type { RatingScale } from '../../core/duty/ratings';
 import { historyGroup } from '../../core/history';
 import { ReplayRecorder, type PuzzleReplay, type ReplaySettingsCodec } from '../../core/replay';
 import type { InputEvent } from '../../core/input';
@@ -73,6 +75,8 @@ const STAR_MS_PER_PCT = (STARS * 500) / 100;
 const LEVEL_TEXT = 'Nice work!';
 
 const SESSION_SHORT = 120000;
+/** Duty report ratings: score a hole (Slipshod -1, Creaky 1, Vampire proof 2). */
+const RATING_SCALES: RatingScale[] = [{ id: 'perHole', label: 'Score a hole', cutoffs: [0, 0.5, 1, 1.4, 1.75], step: 0.05 }];
 const SESSION_LONG = 999999999999999999;
 /** Board seeds are 48-bit, like java.util.Random's. */
 const MAX_SEED = 2 ** 48 - 1;
@@ -282,6 +286,7 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
 
   function startSession(): void {
     stats = newStats();
+    duty.clear();
     cheatsUsed = seeded || config.unlimited;
     sightUsed = false;
     if (!seeded) seed = Math.floor(Math.random() * MAX_SEED);
@@ -310,13 +315,27 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
     return (config.ghost ? 'a' : 'b') + (config.speed ? 'a' : 'b') + (config.speed ? `${config.speedHoles}${config.speedSize}${config.speedLetter}` : '000');
   }
 
+  /** The session's duty report: holes patched by grade, rated by score a hole. */
+  function endReport() {
+    return duty.end({
+      performance: duty.rate('perHole', stats.holesFilled ? score() / stats.holesFilled : -Infinity),
+      score: { label: 'Score', value: String(score()) },
+      cleared: [{ label: 'Holes Patched', items: [
+        { icon: 'carp-vampire-proof', label: 'vampire proof', count: stats.grades[2] },
+        { icon: 'carp-creaky', label: 'creaky', count: stats.grades[1] },
+        { icon: 'carp-slipshod', label: 'slipshod', count: stats.grades[0] },
+      ] }],
+    });
+  }
+
   function endSession(): void {
     boardActive = false;
-    const finishedReplay = replays.finish(`Score ${score()}`);
+    const report = endReport();
+    const finishedReplay = replays.finish(`Score ${score()}`, report);
     if (!endProcedureComplete) {
       // As the simulator's scores.yaml: every counted session's score, and the PB, per settings.
       if (!replays.isPlaying && !cheatsUsed && scoreCounting && !(config.ghost && sightUsed)) {
-        store.addHistory(bestScoresKey, { score: score(), ...(finishedReplay ? { replayAt: finishedReplay.at, replayId: finishedReplay.runId ?? ''} : {}) });
+        store.addHistory(bestScoresKey, { score: score(), ...duty.fields(report), ...(finishedReplay ? { replayAt: finishedReplay.at, replayId: finishedReplay.runId ?? ''} : {}) });
         if (score() > bestScore) {
           bestScore = score();
           if (!config.ghost) play('audio_pb_sound');
@@ -597,8 +616,10 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
   /** str(round(x, n)) in Python. */
 
   /** The simulator's end-of-session table. */
+  const duty = dutyDesk(panel, store, 'vampire-carp', 'Carpentry', RATING_SCALES);
   panel.results(() => endProcedureComplete && !boardActive && endProcedureKey === bestScoresKey ? {
     title: 'Carpentry results',
+    report: duty.last,
     rows: [
       ['Score', String(score())],
       ['Time', `${(timePassed / 1000).toFixed(1)}s`],
@@ -709,7 +730,7 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
       () => {
         if (replays.isPlaying) { replays.stop(); if (replays.isPlaying) return; }
         if (!boardActive) { replayBoardSeeds = null; replaySpeedState = null; startSession(); }
-        else replays.finish(`Score ${score()}`);
+        else replays.finish(`Score ${score()}`, endReport());
         boardActive = !boardActive;
       },
       { variant: 'primary', label: () => (replays?.isPlaying ? 'Start' : boardActive ? 'Stop' : 'Start') },

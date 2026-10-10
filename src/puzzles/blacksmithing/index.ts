@@ -13,6 +13,8 @@
 import { Images } from '../../core/assets';
 import { SoundBank } from '../../core/audio';
 import { loadFont } from '../../core/fonts';
+import { dutyDesk } from '../../core/duty/desk';
+import type { RatingScale } from '../../core/duty/ratings';
 import { historyGroup } from '../../core/history';
 import { keyMatches } from '../../core/controls';
 import { ReplayRecorder, type PuzzleReplay, type ReplaySettingsCodec } from '../../core/replay';
@@ -74,6 +76,15 @@ const FLOAT_PX = 30;
 
 /** Short names for the done levels, for the panel (the messages are in logic.ts). */
 const BLADE_NAMES = ['Club', 'Hefty blade', 'Finely balanced', 'Keen edge', 'Masterpiece'];
+
+/**
+ * Duty report ratings: a classic sword by how far its blade got (0 Club up to 4 Masterpiece), a
+ * perfect-board run by points a board (3 cleared, 1 one off).
+ */
+const RATING_SCALES: RatingScale[] = [
+  { id: 'blade', label: 'Classic, blade (0 Club to 4 Masterpiece)', cutoffs: [0, 1, 2, 3, 4] },
+  { id: 'perfect', label: 'Perfect board, points a board', cutoffs: [0.5, 1, 1.5, 2.25, 2.75], step: 0.05 },
+];
 
 type Mode = 'classic' | 'perfect';
 const MODES: Option<Mode>[] = [
@@ -567,10 +578,26 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
       else replays.finish(`Points ${run.points}`);
       return;
     }
-    const finishedReplay = replays.finish(`Strikes ${board?.numHits ?? 0}`);
+    const report = duty.end({
+      mode: 'Classic',
+      performance: duty.rate('blade', board ? board.doneLevel() : -1),
+      score: { label: 'Strikes', value: String(board?.numHits ?? 0) },
+      cleared: [
+        { label: 'Sets Struck', items: [
+          { icon: 'smith-number-set', label: 'number sets', count: tally.numberSets },
+          { icon: 'smith-ordered-set', label: 'ordered sets', count: tally.orderedSets },
+          { icon: 'smith-chess-set', label: 'chess sets', count: tally.chessSets },
+        ] },
+        { label: 'Chains', items: [2, 3, 4, 5, 6].map((n) => ({
+          icon: `smith-chain${n}`, label: ['double', 'triple', 'bingo', 'donkey', 'vegas'][n - 2], count: tally.chains[n] ?? 0,
+        })) },
+      ],
+    });
+    const finishedReplay = replays.finish(`Strikes ${board?.numHits ?? 0}`, report);
     const key = String(difficulty);
     if (board && !replays.isPlaying) store.addHistory(`classic:${key}`, {
       score: board.numHits,
+      ...duty.fields(report),
       ...(finishedReplay ? { replayAt: finishedReplay.at, replayId: finishedReplay.runId ?? ''} : {}),
     });
     if (!replays.isPlaying && board && board.numHits > (bests[key] ?? 0)) {
@@ -594,6 +621,7 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
   }
 
   function startRun(): void {
+    duty.clear();
     replays.begin({ mode, difficulty, perfectSize, timerMs }, rng.snapshot());
     Object.assign(run, { active: true, start: ticks(), end: ticks(), points: 0, boards: 0, timeUp: false });
     newSword();
@@ -604,12 +632,18 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
     run.active = false;
     run.end = ticks();
     run.timeUp = timeUp;
-    const finishedReplay = replays.finish(`Points ${run.points}`);
+    const report = duty.end({
+      mode: 'Perfect board',
+      performance: duty.rate('perfect', run.boards ? run.points / run.boards : 0),
+      score: { label: 'Points', value: String(run.points) },
+      cleared: [],
+    });
+    const finishedReplay = replays.finish(`Points ${run.points}`, report);
     abortBoard();
     if (!timeUp || replays.isPlaying) return;
     say("Time's up!", 4, 2500);
     const key = perfectKey();
-    store.addHistory(`run:${key}`, { score: run.points, boards: run.boards, ...(finishedReplay ? { replayAt: finishedReplay.at, replayId: finishedReplay.runId ?? ''} : {}) });
+    store.addHistory(`run:${key}`, { score: run.points, boards: run.boards, ...duty.fields(report), ...(finishedReplay ? { replayAt: finishedReplay.at, replayId: finishedReplay.runId ?? ''} : {}) });
     if (run.points > (timedBests[key] ?? -1)) {
       timedBests[key] = run.points;
       store.set('perfectTimedBests', timedBests);
@@ -874,7 +908,7 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
       if (run.active) endRun(false);
       else startRun();
     } else if (running) { abortBoard(); replays.finish('Stopped'); }
-    else { replays.begin({ mode, difficulty, perfectSize, timerMs }, rng.snapshot()); newSword(); }
+    else { duty.clear(); replays.begin({ mode, difficulty, perfectSize, timerMs }, rng.snapshot()); newSword(); }
   }, { variant: 'primary', label: () => (replays?.isPlaying ? 'Start' : busy() ? 'Stop' : !finished || mode === 'perfect' ? 'Start' : 'New sword') });
 
   const best = () => bests[String(difficulty)];
@@ -935,8 +969,12 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
     ['Rum jugs', String(tally.jugs)],
   ]);
 
+  const duty = dutyDesk(panel, store, 'blacksmithing', 'Blacksmithing', RATING_SCALES, {
+    shown: (id) => (id === 'perfect') === (mode === 'perfect'),
+  });
   panel.results(() => finished && !busy() ? {
     title: mode === 'perfect' ? 'Perfect board results' : 'Sword results',
+    report: duty.last,
     rows: mode === 'perfect' ? [
       ['Points', String(run.points)], ['Boards', String(run.boards)],
       ['Time', `${(Math.max(0, run.end - run.start) / 1000).toFixed(2)}s`],

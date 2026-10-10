@@ -1,11 +1,21 @@
 // A puzzle's past games on the panel's History tab: how many were played with the current
 // settings, and the most recent ones, newest first. The games come from Store.history / Store.addHistory.
-import type { Panel } from './panel';
+// A game saved with a duty report (its `duty` field) has a button that shows the report again.
+import { decodeReport, type DutyReport } from './duty/report';
+import type { Panel, RowAction } from './panel';
 import type { GameRecord } from './storage';
 
 export interface HistoryColumn {
   label: string;
   value: (game: GameRecord) => string;
+}
+
+const reports = new WeakMap<GameRecord, DutyReport | null>();
+/** A game's saved duty report, decoded once. */
+function reportOf(game: GameRecord | undefined): DutyReport | null {
+  if (!game) return null;
+  if (!reports.has(game)) reports.set(game, decodeReport(game.duty));
+  return reports.get(game)!;
 }
 
 /** How many recent games the table lists. */
@@ -43,11 +53,19 @@ export function historyGroup(
       ['', ...columns.map((c) => c.label)],
       () => shownGames().map((game) => [when(game.at), ...columns.map((c) => c.value(game))]),
       {},
-      replayAction ? {
-        label: '▶',
-        title: 'Play this game replay',
-        onClick: (index) => { const game = shownGames()[index]; if (game) replayAction.play(game); },
-        disabled: (index) => { const game = shownGames()[index]; return !game || !replayAction.available(game); },
-      } : undefined,
+      [
+        {
+          label: '📜',
+          title: 'Show this game’s duty report',
+          onClick: (index) => { const report = reportOf(shownGames()[index]); if (report) panel.showReport(report); },
+          disabled: (index) => !reportOf(shownGames()[index]),
+        },
+        ...(replayAction ? [{
+          label: '▶',
+          title: 'Play this game replay',
+          onClick: (index: number) => { const game = shownGames()[index]; if (game) replayAction.play(game); },
+          disabled: (index: number) => { const game = shownGames()[index]; return !game || !replayAction.available(game); },
+        }] : []),
+      ] satisfies RowAction[],
     );
 }

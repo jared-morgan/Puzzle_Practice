@@ -11,6 +11,8 @@
 //             Sound last.
 //   History   past games and replays only.
 //
+// Every puzzle's Settings tab starts with the Pirate card (name and face for duty reports).
+//
 //   panel.clock(() => (timed ? { label: 'Time left', ms: left, countdown: true } : null));
 //   const session = panel.session();
 //   session.select('Mode', MODES, () => settings.mode, (m) => (settings.mode = m), { disabled: () => running });
@@ -21,6 +23,8 @@
 
 import { getVolume, setVolume } from './audio';
 import { keyFor, keyLabel, resetKeys, setKey, type KeyBinding } from './controls';
+import type { DutyReport } from './duty/report';
+import { pirateSettings, renderReport } from './duty/view';
 import { Store } from './storage';
 
 type Get<T> = () => T;
@@ -69,6 +73,37 @@ export interface TextOptions extends ControlOptions {
   placeholder?: string;
   /** Hint for on-screen keyboards, e.g. 'numeric'. */
   inputMode?: string;
+}
+
+/** What a puzzle shows when a session ends. */
+export interface SessionResults {
+  /** Heading for the plain table, when there's no report. */
+  title?: string;
+  /** A line above a duty report, e.g. who won. */
+  headline?: string;
+  /** The session's duty report; `rows` then become its folded-away details. */
+  report?: DutyReport | null;
+  rows: readonly (readonly string[])[];
+}
+
+/** A button at the end of each row of a stats table. */
+export interface RowAction {
+  label: string;
+  title: string;
+  onClick: (index: number) => void;
+  disabled?: (index: number) => boolean;
+}
+
+function rowsTable(rows: readonly (readonly string[])[]): HTMLElement {
+  const table = el('table', 'panel-stats');
+  const body = el('tbody');
+  for (const row of rows) {
+    const tr = el('tr');
+    row.forEach((cell, i) => tr.append(el(i === 0 ? 'th' : 'td', '', cell)));
+    body.append(tr);
+  }
+  table.append(body);
+  return table;
 }
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, className = '', text = ''): HTMLElementTagNameMap[K] {
@@ -157,6 +192,7 @@ export class Panel {
     this.sessionPage = new Page(this, session);
     this.live = new Page(this, live);
     live.append(this.clockCard);
+    pirateSettings(this.settings);
     this.settings.group('Display').toggle('Hide timer', () => this.hideTimer, (on) => {
       this.hideTimer = on;
       this.preferences.set('hideTimer', on);
@@ -238,8 +274,11 @@ export class Panel {
     return this.live.group(title, options);
   }
 
-  /** Compact, accessible results in the main board area. */
-  results(get: Get<{ title?: string; rows: readonly (readonly string[])[] } | null>): void {
+  /**
+   * The end-of-session screen over the board: a duty report when the puzzle gives one (its rows
+   * folded away beneath as details), otherwise a table of the rows.
+   */
+  results(get: Get<SessionResults | null>): void {
     if (!this.canvas?.parentElement) return;
     const overlay = el('section', 'game-results');
     overlay.setAttribute('aria-label', 'Session results');
@@ -248,13 +287,39 @@ export class Panel {
     overlay.append(heading, content);
     this.canvas.parentElement.append(overlay);
     overlay.hidden = true;
-    new Group(this, content).stats([], () => get()?.rows ?? []);
+    let shown = '';
     this.addSync(() => {
       const result = get();
-      overlay.hidden = !result;
-      heading.textContent = result?.title ?? 'Session results';
+      overlay.hidden = !result || !!this.viewing;
+      if (!result) return;
+      heading.textContent = result.report ? result.headline ?? '' : result.title ?? 'Session results';
+      heading.hidden = !heading.textContent;
+      const key = JSON.stringify([result.report ?? null, result.rows]);
+      if (key === shown) return;
+      shown = key;
+      content.replaceChildren(result.report ? renderReport(result.report, result.rows) : rowsTable(result.rows));
     });
   }
+
+  private viewing: DutyReport | null = null;
+  private viewer: HTMLElement | null = null;
+
+  /** Shows a saved report over the board (from History or a replay) until it's closed; null closes it. */
+  showReport(report: DutyReport | null): void {
+    this.viewing = report;
+    if (!this.canvas?.parentElement) return;
+    if (!this.viewer) {
+      this.viewer = el('section', 'game-results duty-viewer');
+      this.viewer.setAttribute('aria-label', 'Duty report');
+      this.canvas.parentElement.append(this.viewer);
+    }
+    this.viewer.hidden = !report;
+    this.viewer.replaceChildren(...(report ? [renderReport(report, [], () => { this.showReport(null); this.used(); })] : []));
+    this.sync();
+  }
+
+  /** The saved report being shown, if any. */
+  get shownReport(): DutyReport | null { return this.viewing; }
 
   /**
    * The clock below session controls. Null readings and Hide timer hide the card.
@@ -482,13 +547,14 @@ export class Group {
     header: readonly string[],
     rows: Get<readonly (readonly string[])[]>,
     opts: ControlOptions = {},
-    rowAction?: { label: string; title: string; onClick: (index: number) => void; disabled?: (index: number) => boolean },
+    rowAction?: RowAction | readonly RowAction[],
   ): this {
+    const actions: readonly RowAction[] = !rowAction ? [] : Array.isArray(rowAction) ? rowAction : [rowAction as RowAction];
     const table = el('table', 'panel-stats');
     if (header.some(Boolean)) {
       const head = el('tr');
       for (const cell of header) head.append(el('th', '', cell));
-      if (rowAction) head.append(el('th', '', ''));
+      for (const _ of actions) head.append(el('th', '', ''));
       table.append(el('thead'));
       table.tHead!.append(head);
     }
@@ -496,37 +562,37 @@ export class Group {
     table.append(body);
     this.element.append(table);
     this.panel.watch(table, opts);
-    let rowButtons: HTMLButtonElement[] = [];
+    let rowButtons: HTMLButtonElement[][] = [];
     let last = '';
     this.panel.addSync(() => {
       const data = rows();
       const key = JSON.stringify(data);
       if (key !== last) {
         last = key;
-        rowButtons = [];
+        rowButtons = actions.map(() => []);
         body.replaceChildren(
           ...data.map((row, index) => {
-          const tr = el('tr');
-          row.forEach((cell, i) => tr.append(el(i === 0 ? 'th' : 'td', '', cell)));
-          if (rowAction) {
-            const td = el('td', 'panel-stats-action-cell');
-            const button = el('button', 'panel-stats-action', rowAction.label);
-            button.type = 'button';
-            button.title = rowAction.title;
-            button.setAttribute('aria-label', rowAction.title);
-            button.addEventListener('click', () => {
-              rowAction.onClick(index);
-              this.panel.used();
+            const tr = el('tr');
+            row.forEach((cell, i) => tr.append(el(i === 0 ? 'th' : 'td', '', cell)));
+            actions.forEach((action, a) => {
+              const td = el('td', 'panel-stats-action-cell');
+              const button = el('button', 'panel-stats-action', action.label);
+              button.type = 'button';
+              button.title = action.title;
+              button.setAttribute('aria-label', action.title);
+              button.addEventListener('click', () => {
+                action.onClick(index);
+                this.panel.used();
+              });
+              td.append(button);
+              tr.append(td);
+              rowButtons[a].push(button);
             });
-            td.append(button);
-            tr.append(td);
-            rowButtons.push(button);
-          }
-          return tr;
+            return tr;
           }),
         );
       }
-      if (rowAction) rowButtons.forEach((button, index) => { button.disabled = rowAction.disabled?.(index) ?? false; });
+      actions.forEach((action, a) => rowButtons[a].forEach((button, index) => { button.disabled = action.disabled?.(index) ?? false; }));
     });
     return this;
   }

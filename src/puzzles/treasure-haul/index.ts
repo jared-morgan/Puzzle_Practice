@@ -12,6 +12,8 @@
 import { Images } from '../../core/assets';
 import { SoundBank } from '../../core/audio';
 import { loadFont } from '../../core/fonts';
+import { dutyDesk } from '../../core/duty/desk';
+import type { RatingScale } from '../../core/duty/ratings';
 import { historyGroup } from '../../core/history';
 import { ReplayRecorder, type PuzzleReplay, type ReplaySettingsCodec } from '../../core/replay';
 import { keyMatches } from '../../core/controls';
@@ -154,6 +156,9 @@ interface Tally {
   bestMove: number;
   coins: number;
   gems: number;
+  /** The gems by kind, for the duty report. */
+  rubies: number;
+  emeralds: number;
   chests: number;
   /** Spawn mode: chests that came in, those in the middle four columns, and the score (see scoreSpawn). */
   spawned: number;
@@ -161,7 +166,10 @@ interface Tally {
   spawnScore: number;
 }
 
-const emptyTally = (): Tally => ({ moves: 0, points: 0, bestMove: 0, coins: 0, gems: 0, chests: 0, spawned: 0, middle: 0, spawnScore: 0 });
+/** Duty report ratings for the chest modes (0-2 chests): points a minute. Spawn and Clear drills are Learning. */
+const RATING_SCALES: RatingScale[] = [{ id: 'points', label: 'Points a minute (0-2 chests)', cutoffs: [40, 80, 130, 180, 240] }];
+
+const emptyTally = (): Tally => ({ moves: 0, points: 0, bestMove: 0, coins: 0, gems: 0, rubies: 0, emeralds: 0, chests: 0, spawned: 0, middle: 0, spawnScore: 0 });
 
 /** A copy of the purple hands tinted to a skin tone, keeping their shading. */
 function tint(img: HTMLImageElement): HTMLCanvasElement {
@@ -385,6 +393,7 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
     texts = [];
     timers = [];
     tally = emptyTally();
+    duty.clear();
     gold = 0;
     netStart = 0;
     hauling = false;
@@ -417,9 +426,11 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
     // A round counts when its time is up, or in clear mode when the board is cleared; not when stopped early.
     const completed = timed() && !!roundEnd && ticks() >= roundEnd;
     const wasRunning = running;
-    const finishedReplay = replays.finish(`${score()} ${mode === 'clear' ? 'chests' : 'points'}`);
+    const report = wasRunning ? endReport() : duty.last;
+    const finishedReplay = replays.finish(`${score()} ${mode === 'clear' ? 'chests' : 'points'}`, report);
     if (completed && wasRunning && !replays.isPlaying) store.addHistory(bestKey(), {
       score: score(),
+      ...duty.fields(report),
       ...(finishedReplay ? { replayAt: finishedReplay.at, replayId: finishedReplay.runId ?? ''} : {}),
     });
     stoppedAt = ticks();
@@ -434,6 +445,23 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
       bests[bestKey()] = score();
       store.set('bestPoints', bests);
     }
+  }
+
+  /** The session's duty report: what was hauled, rated by points a minute in the chest modes. */
+  function endReport() {
+    const minutes = clockStart ? Math.max(0, ticks() - clockStart) / 60000 : 0;
+    const rated = mode === '0' || mode === '1' || mode === '2';
+    return duty.end({
+      mode: MODES.find((m) => m.value === mode)?.label,
+      performance: duty.rate(rated ? 'points' : null, rated ? (minutes > 0 ? tally.points / minutes : 0) : null),
+      score: { label: mode === 'spawn' ? 'Spawn score' : mode === 'clear' ? 'Chests cleared' : 'Points', value: String(score()) },
+      cleared: [{ label: 'Treasure Hauled', items: [
+        { icon: 'haul-coin', label: 'coins', count: tally.coins },
+        { icon: 'haul-ruby', label: 'rubies', count: tally.rubies },
+        { icon: 'haul-emerald', label: 'emeralds', count: tally.emeralds },
+        { icon: 'chest-large', label: 'chests', count: tally.chests },
+      ] }],
+    });
   }
 
   /** Moves a square's piece to another square over the duration (DropBoardView.a_). */
@@ -476,7 +504,11 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
 
   function countCleared(cleared: Cleared[]): void {
     for (const c of cleared) {
-      if (c.piece === RUBY || c.piece === EMERALD) tally.gems++;
+      if (c.piece === RUBY || c.piece === EMERALD) {
+        tally.gems++;
+        if (c.piece === RUBY) tally.rubies++;
+        else tally.emeralds++;
+      }
       else if (!isChest(c.piece)) tally.coins++;
     }
   }
@@ -891,8 +923,12 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
     mode === 'spawn' ? 'Spawn score' : mode === 'clear' ? 'Chests cleared' : 'Points',
     String(score()), timed() && best() !== undefined ? String(best()) : '—',
   ]]);
+  const duty = dutyDesk(panel, store, 'treasure-haul', 'Treasure Haul', RATING_SCALES, {
+    shown: () => mode === '0' || mode === '1' || mode === '2',
+  });
   panel.results(() => finished ? {
     title: 'Treasure Haul results',
+    report: duty.last,
     rows: [
       [mode === 'spawn' ? 'Spawn score' : mode === 'clear' ? 'Chests cleared' : 'Points', String(score())],
       ['Time', `${(clockStart ? Math.max(0, stoppedAt - clockStart) / 1000 : 0).toFixed(2)}s`],

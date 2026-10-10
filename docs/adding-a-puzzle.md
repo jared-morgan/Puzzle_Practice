@@ -58,6 +58,14 @@ All in `src/core/`:
   separately for each puzzle. `addHistory(key, { score, ... })` keeps every finished game under a
   settings key (the desktop games' score lists), and `historyGroup(panel, () => store.history(key), columns)`
   (`history.ts`) shows the recent ones in the panel. The landing page backs everything up to a file.
+  When storage is full, old games and replays are trimmed first; settings and the pirate profile stay.
+- **Duty reports** (`duty/`): the end-of-session screen is the game's duty report: the player's
+  pirate (name and face, set on every Settings tab), a rating word, the score and what was cleared.
+  Make a desk with `dutyDesk(panel, store, id, station, scales)` (each scale is a measure with five
+  cut-offs the player can change in Settings), call `duty.end({ performance: duty.rate(scale, value),
+  score, cleared })` when a session ends, pass the report to `replays.finish(result, report)` and
+  `...duty.fields(report)` to `addHistory`, and give `panel.results` `report: duty.last`. Tally icons
+  are named in `duty/icons.ts`.
 - **`ticks()`**: milliseconds since the puzzle opened, like `pygame.time.get_ticks()`.
 - **`Images.load(glob)`** (`assets.ts`): loads every image from an `import.meta.glob` by file name.
 - **`SoundBank`** (`audio.ts`): plays sounds by file name, with a volume.

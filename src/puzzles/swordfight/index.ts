@@ -8,6 +8,8 @@ import { Images } from '../../core/assets';
 import { SoundBank } from '../../core/audio';
 import { keyMatches } from '../../core/controls';
 import { loadFont } from '../../core/fonts';
+import { dutyDesk } from '../../core/duty/desk';
+import type { RatingScale } from '../../core/duty/ratings';
 import { historyGroup } from '../../core/history';
 import type { InputEvent } from '../../core/input';
 import type { Option } from '../../core/panel';
@@ -49,6 +51,9 @@ const MINI = 4;
 const FONT = 'Delarobb';
 /** Piece colours' art, by colour number (sword/a/h.p). */
 const COLOUR_NAMES = ['red', 'green', 'blue', 'yellow'];
+
+/** Duty report ratings: damage sent a minute. */
+const RATING_SCALES: RatingScale[] = [{ id: 'damage', label: 'Damage sent a minute', cutoffs: [10, 25, 40, 60, 80] }];
 /** Floating messages show for 1.5s, knock-outs 3s, the result 4s (s.d, s.a_). */
 const MESSAGE_MS = 1500;
 /** The eight sword colours (red, orange, yellow, green, blue, purple, white, black), for attacker dots. */
@@ -242,6 +247,7 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
     running = true;
     finished = false;
     showResults = false;
+    duty.clear();
     startedAt = now;
     play('fanfare');
   }
@@ -259,10 +265,21 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
     const now = ticks();
     const completed = !!match.result;
     const f = match.player;
-    const finishedReplay = replays.finish(outcome());
+    const minutes = Math.max(0, (match.endedAt || now) - startedAt) / 60000;
+    const report = duty.end({
+      mode: settings.opponents ? outcome() : 'Practice',
+      performance: duty.rate('damage', minutes > 0 ? f.stats.sent / minutes : 0),
+      score: { label: 'Damage sent', value: String(f.stats.sent) },
+      cleared: [
+        { label: 'Pieces Shattered', items: COLOUR_NAMES.map((name, i) => ({ icon: `sword-${name}`, label: `${name} pieces`, count: f.stats.shatteredBy[i] })) },
+        { label: 'Swords Sent', items: [{ icon: 'sword-strike', label: 'swords', count: f.stats.swordsSent }] },
+      ],
+    });
+    const finishedReplay = replays.finish(outcome(), report);
     if (completed && !replays.isPlaying) {
       store.addHistory(settingsKey(), {
         score: f.stats.sent,
+        ...duty.fields(report),
         result: outcome(),
         won: match.result === 'won' ? 1 : 0,
         ms: Math.round((match.endedAt || now) - startedAt),
@@ -755,8 +772,11 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
     ['Damage sent', match ? String(match.player.stats.sent) : '0', String(recordNow().best || '—')],
     ...(settings.opponents ? [['Wins', String(recordNow().wins), `of ${recordNow().wins + recordNow().losses}`]] : []),
   ]);
+  const duty = dutyDesk(panel, store, 'swordfight', 'Swordfighting', RATING_SCALES);
   panel.results(() => finished && showResults && match && match.result ? {
     title: settings.opponents ? (match.result === 'won' ? 'Ye be the victor!' : 'Ye be defeated!') : 'Practice results',
+    headline: settings.opponents ? (match.result === 'won' ? 'Ye be the victor!' : 'Ye be defeated!') : undefined,
+    report: duty.last,
     rows: [
       ['Result', outcome()],
       ['Time', `${((match.endedAt - startedAt) / 1000).toFixed(1)}s`],

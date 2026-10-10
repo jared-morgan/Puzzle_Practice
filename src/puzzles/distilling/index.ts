@@ -16,6 +16,8 @@ import { SoundBank } from '../../core/audio';
 import { copyText, pasteText } from '../../core/clipboard';
 import { loadFont } from '../../core/fonts';
 import { keyMatches } from '../../core/controls';
+import { dutyDesk } from '../../core/duty/desk';
+import type { RatingScale } from '../../core/duty/ratings';
 import { historyGroup } from '../../core/history';
 import { ReplayRecorder, type PuzzleReplay, type ReplaySettingsCodec } from '../../core/replay';
 import { PyRandom } from '../../core/pyrandom';
@@ -153,6 +155,9 @@ const MODES: { value: Mode; label: string }[] = [
   { value: 'Create', label: 'Create' },
   { value: 'Practice', label: 'Practice' },
 ];
+/** Duty report ratings for Standard and Seeded: the score (points a column distilled). Practice and Create are Learning. */
+const RATING_SCALES: RatingScale[] = [{ id: 'score', label: 'Score (points a column)', cutoffs: [1, 3, 5, 7, 9], step: 0.25 }];
+
 /** The simulator's spawn weights, in its piece order: black, brown, burnt, spice, white. */
 const DEFAULT_SPAWN = [10, 10, 0, 1, 10];
 /** The simulator's spawn rate boxes, in the order it showed them. */
@@ -485,6 +490,7 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
   function start(): void {
     const now = ticks();
     resultRows = null;
+    duty.clear();
     game = newGame(now);
     replays.begin({ mode, timerOn, createTimerOn, timerSeconds, difficulty, spawnRates: [...spawnRates], practiceNum: [...practiceNum] }, lastReplayState, now);
     startedMode = mode;
@@ -510,7 +516,7 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
     if (!running || !game) return;
     resultRows = makeResultRows();
     if (completed) saveCompletedSession();
-    else replays.finish(`Score ${sessionScore().toFixed(2)}`);
+    else replays.finish(`Score ${sessionScore().toFixed(2)}`, endReport());
     game.finished = true;
     game.burnDue = false;
     running = false;
@@ -726,11 +732,30 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
     later(FLOAT_MS, () => (active = false));
   }
 
+  /** The session's duty report: pieces distilled by weight, rated by the score in Standard and Seeded. */
+  function endReport() {
+    const rated = startedMode === 'Standard' || startedMode === 'Seeded';
+    const lights = game?.jugLights ?? 0;
+    const heavies = game?.jugHeavies ?? 0;
+    return duty.end({
+      mode: startedMode,
+      performance: duty.rate(rated ? 'score' : null, rated ? sessionScore() : null),
+      score: { label: 'Score', value: sessionScore().toFixed(2) },
+      cleared: [{ label: 'Pieces Distilled', items: [
+        { icon: 'brew-white', label: 'light pieces', count: lights },
+        { icon: 'brew-mid', label: 'middling pieces', count: Math.max(0, (game?.distilled ?? 0) - lights - heavies) },
+        { icon: 'brew-dark', label: 'heavy pieces', count: heavies },
+      ] }],
+    });
+  }
+
   function saveCompletedSession(): void {
     const key = historyKey(startedMode);
-    const finishedReplay = replays.finish(`Score ${sessionScore().toFixed(2)}`);
+    const report = endReport();
+    const finishedReplay = replays.finish(`Score ${sessionScore().toFixed(2)}`, report);
     if (key && game && !replays.isPlaying) store.addHistory(key, {
       score: Number(sessionScore().toFixed(2)),
+      ...duty.fields(report),
       ...(finishedReplay ? { replayAt: finishedReplay.at, replayId: finishedReplay.runId ?? ''} : {}),
     });
   }
@@ -1155,8 +1180,10 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
       ['Pieces distilled', String(game?.distilled ?? 0)], ['Crystal chain', String(game?.board.consecCrystal ?? 0)],
     ];
   }
+  const duty = dutyDesk(panel, store, 'distilling', 'Distilling', RATING_SCALES, { shown: () => mode === 'Standard' || mode === 'Seeded' });
   panel.results(() => resultRows && !running ? {
     title: 'Distilling results',
+    report: duty.last,
     rows: resultRows,
   } : null);
 

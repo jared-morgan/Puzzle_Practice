@@ -613,3 +613,63 @@ a {
   font-size: 0.88rem;
   text-align: center;
 }
+
+/* ---- Duty report (core/duty/view.ts), in the game's report colours ---- */
+
+.duty-report {
+  --duty-bg: #98adb6;
+  --duty-text: #022158;
+  --duty-rating: #fff262;
+  max-width: 420px;
+  margin: 0 auto;
+  padding: 10px 16px 14px;
+  border: 3px solid #6b5420;
+  border-radius: var(--radius-sm);
+  outline: 1px solid #c9a650;
+  outline-offset: -6px;
+  background: var(--duty-bg);
+  color: var(--duty-text);
+  box-shadow: var(--shadow);
+}
+.duty-report canvas { image-rendering: pixelated; }
+.duty-title {
+  margin: 0 0 8px;
+  text-align: center;
+  font-size: 1.6rem;
+  font-weight: 800;
+  color: #fff;
+  text-shadow: -2px 0 #000, 2px 0 #000, 0 -2px #000, 0 2px #000, -1px -1px #000, 1px 1px #000, -1px 1px #000, 1px -1px #000;
+}
+.duty-station { display: flex; align-items: center; gap: 6px; }
+.duty-station-text { flex: 1; min-width: 0; }
+.duty-station-name { font-weight: 700; }
+.duty-rule { margin: 2px 0 0; border: 0; border-top: 1px solid var(--duty-text); opacity: 0.6; }
+.duty-entry { display: flex; align-items: flex-start; gap: 10px; margin: 10px 0 6px; padding: 4px 6px; background: rgb(255 255 255 / 0.25); border-radius: 6px; }
+.duty-face { width: 116px; height: 116px; flex: none; }
+.duty-face.is-small { width: 58px; height: 58px; }
+.duty-who { display: flex; flex-direction: column; gap: 2px; min-width: 0; padding-top: 8px; }
+.duty-name { font-weight: 700; font-size: 1.1rem; }
+.duty-rating {
+  font-weight: 800;
+  font-size: 1.25rem;
+  color: var(--duty-rating);
+  text-shadow: -1px 0 #000, 1px 0 #000, 0 -1px #000, 0 1px #000;
+}
+.duty-rating.is-learning { color: #00ff00; }
+.duty-score { font-variant-numeric: tabular-nums; }
+.duty-stack { width: 200px; margin-top: 4px; }
+.duty-totals { margin-top: 10px; text-align: center; }
+.duty-totals-label { margin: 0; font-size: 0.95rem; }
+.duty-gold-bar { height: 3px; margin: 3px 0 6px; background: linear-gradient(90deg, transparent, #c9a650 15%, #f3d77a 50%, #c9a650 85%, transparent); }
+.duty-totals-line { display: flex; flex-wrap: wrap; justify-content: center; gap: 4px 16px; }
+.duty-total { display: inline-flex; align-items: center; gap: 4px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.duty-details { margin-top: 12px; }
+.duty-details summary { cursor: pointer; font-weight: 600; }
+.duty-details .panel-stats { margin-top: 6px; color: var(--duty-text); }
+.duty-details .panel-stats th { color: var(--duty-text); }
+.duty-close { display: block; margin: 12px auto 0; }
+.game-results.duty-viewer { z-index: 3; }
+.game-results > h2[hidden] + .results-content { margin-top: 0; }
+.duty-preview { display: flex; align-items: center; justify-content: center; gap: 8px; padding: 6px; border-radius: var(--radius-sm); background: #98adb6; }
+.duty-preview canvas { image-rendering: pixelated; }
+.duty-moods { display: grid; grid-template-columns: repeat(2, 58px); gap: 0; }

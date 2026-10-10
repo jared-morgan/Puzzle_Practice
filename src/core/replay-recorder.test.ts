@@ -3,6 +3,9 @@ import { IDBFactory } from 'fake-indexeddb';
 import { ReplayRecorder, type PuzzleReplay } from './replay';
 import { listReplayFiles, replayWrites } from './replay-storage';
 import { Store } from './storage';
+import { currentPirate } from './duty/profile';
+import { makeReport } from './duty/report';
+import { DEFAULT_FACE } from './duty/face';
 import type { Panel } from './panel';
 import type { InputEvent, Point } from './input';
 
@@ -29,7 +32,12 @@ function harness(puzzle = 'distilling') {
     select: (label: string, _options: unknown, _get: unknown, set: (value: number) => void) => { setters.set(label, set); return group; },
     note: (get: () => string) => { note = get; return group; },
   };
-  const panel = { tab: () => ({ group: () => group }) } as unknown as Panel;
+  const reports: unknown[] = [];
+  const panel = {
+    tab: () => ({ group: () => group }),
+    showReport: (report: unknown) => reports.push(report),
+    get shownReport() { return reports.at(-1) ?? null; },
+  } as unknown as Panel;
   const store = new Store(puzzle);
   let cursor = -1;
   let painting = false;
@@ -60,7 +68,7 @@ function harness(puzzle = 'distilling') {
   (time) => { if (time !== null) now = time; },
   () => simulate(recorder.frame([], [-1, -1], now)));
   return {
-    recorder, store, buttons, setters, note: () => note(),
+    recorder, store, buttons, setters, reports, note: () => note(),
     frame: (time: number, events: InputEvent[], mouse: Point) => { now = time; simulate(recorder.frame(events, mouse, now)); },
     finish: (time: number) => { now = time; return recorder.finish('Finished')!; },
     state: () => ({ strikes: [...strikes], painted: [...painted], updates: [...updates] }),
@@ -82,6 +90,34 @@ beforeEach(async () => {
   vi.stubGlobal('document', { createElement: () => { const el = new Element(); elements.push(el); return el; } });
 });
 afterEach(async () => { await replayWrites.idle(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+
+describe('duty reports with replays', () => {
+  it("saves the run's report, plays it back as that pirate and shows the report when it ends", async () => {
+    localStorage.setItem('puzzle-practice:global:profile', JSON.stringify({ name: 'Anne', face: DEFAULT_FACE }));
+    const h = harness('test');
+    h.recorder.begin({}, {});
+    h.frame(10, [{ type: 'keydown', key: 'space' }], [1, 0]);
+    const report = makeReport({ puzzle: 'test', station: 'Test', performance: 3, score: { label: 'Score', value: '1' } });
+    const now = 20;
+    const tape = h.recorder.finish('Finished', report)!;
+    await replayWrites.idle();
+    expect(tape.report).toEqual(report);
+    // A new profile since; the replay still shows who played it.
+    localStorage.setItem('puzzle-practice:global:profile', JSON.stringify({ name: 'Mary', face: DEFAULT_FACE }));
+    const perf = vi.spyOn(performance, 'now').mockReturnValue(0);
+    expect(await h.recorder.playAt(tape.at)).toBe(true);
+    expect(currentPirate().name).toBe('Anne');
+    perf.mockReturnValue(now * 10);
+    h.recorder.frame([], [-1, -1], 0);
+    h.recorder.frame([], [-1, -1], 0);
+    expect(h.recorder.isPlaying).toBe(false);
+    expect(h.reports.at(-1)).toEqual(report);
+    // Starting a game of your own closes it and goes back to today's pirate.
+    h.recorder.begin({}, {});
+    expect(h.reports.at(-1)).toBeNull();
+    expect(currentPirate().name).toBe('Mary');
+  });
+});
 
 describe('recording and playback regressions', () => {
   it('keeps distinct runs when two instances start at the same timestamp', async () => {

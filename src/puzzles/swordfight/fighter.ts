@@ -6,7 +6,7 @@
 // so the same inputs at the same times always play out the same way.
 import { type Attack, addAttack, attackFor, attackSize, emptyAttack } from './attack';
 import {
-  Board, type Block, EMPTY, fall, findClear, findJoins, H, isStrike, NORTH, SOUTH, W, WEST,
+  Board, type Block, colour, EMPTY, fall, findClear, findJoins, H, isStrike, NORTH, SOUTH, W, WEST,
 } from './board';
 import { isHorizontal, type Shaft, type Strike, StrikePlacer, sprinkleColumns, sprinklePieces, type Sword } from './strikes';
 
@@ -103,6 +103,8 @@ export interface FighterStats {
   received: number;
   swordsSent: number;
   biggestSword: number;
+  /** Pieces shattered by colour: red, green, blue, yellow. */
+  shatteredBy: number[];
 }
 
 export interface FighterHooks {
@@ -143,7 +145,7 @@ export class Fighter {
   joins: Join[] = [];
   /** Where an incoming sword hit something on landing, for the sparks. */
   impacts: Array<{ x: number; y: number; start: number; size: number }> = [];
-  stats: FighterStats = { pairs: 0, shattered: 0, bestChain: 0, sent: 0, received: 0, swordsSent: 0, biggestSword: 0 };
+  stats: FighterStats = { pairs: 0, shattered: 0, bestChain: 0, sent: 0, received: 0, swordsSent: 0, biggestSword: 0, shatteredBy: [0, 0, 0, 0] };
   /** The attack built up by the current cascade, sent when the board settles. */
   private cascade: Attack = emptyAttack();
   private stable = false;
@@ -404,6 +406,7 @@ export class Fighter {
     }
     this.busyUntil = Math.max(this.busyUntil, last + EXPLODE_MS, now + 150);
     this.stats.shattered += clear.cells.length;
+    for (const cell of clear.cells) if (colour(cell.piece) < 4) this.stats.shatteredBy[colour(cell.piece)]++;
     this.chain++;
     this.stats.bestChain = Math.max(this.stats.bestChain, this.chain);
     addAttack(this.cascade, attackFor(clear, this.chain));

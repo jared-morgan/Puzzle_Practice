@@ -1,4 +1,8 @@
-/** Replay payloads live in binary storage; listing runs only reads the small index. */
+/**
+ * Replay payloads live in binary storage; listing runs only reads the small index. Replays are the
+ * first thing to go when the browser runs out of room: a save that doesn't fit removes the oldest
+ * replays until it does. Settings, the profile and scores live elsewhere (storage.ts).
+ */
 export interface ReplayMetadata {
   id: string;
   runId?: string;
@@ -55,23 +59,68 @@ function openDb(): Promise<IDBDatabase> {
   });
 }
 
+function isQuotaError(error: unknown): boolean {
+  const e = error as { name?: string } | null;
+  return !!e && (e.name === 'QuotaExceededError' || e.name === 'NS_ERROR_DOM_QUOTA_REACHED');
+}
+
+async function putReplayFile(blob: Blob, metadata: ReplayMetadata): Promise<void> {
+  const db = await openDb();
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction([FILES, INDEX], 'readwrite');
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error);
+      try {
+        tx.objectStore(FILES).put(blob, metadata.id);
+        tx.objectStore(INDEX).put(metadata);
+      } catch (error) {
+        try { tx.abort(); } catch { /* Already finished. */ }
+        reject(error);
+      }
+    });
+  } finally { db.close(); }
+}
+
+/** Removes one replay's payload and index entry. */
+export async function deleteReplayFile(id: string): Promise<void> {
+  const db = await openDb();
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction([FILES, INDEX], 'readwrite');
+      tx.objectStore(FILES).delete(id);
+      tx.objectStore(INDEX).delete(id);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error);
+    });
+  } finally { db.close(); }
+}
+
+/** Removes the oldest replay other than `keep`; false if there's none. */
+async function dropOldestReplay(keep: string): Promise<boolean> {
+  const oldest = (await listReplayFiles()).filter((entry) => entry.id !== keep).at(-1);
+  if (!oldest) return false;
+  await deleteReplayFile(oldest.id);
+  return true;
+}
+
 /** Payload and metadata commit together. Appending one run never overwrites another run. */
 export async function saveReplayFile(file: ReplayFile): Promise<ReplayMetadata> {
   if (!isReplayMetadata(file.metadata) || file.blob.size !== file.metadata.bytes) throw new Error('Invalid replay file');
   const checksum = await replayChecksum(file.blob);
   if (file.metadata.checksum && file.metadata.checksum !== checksum) throw new Error('Damaged replay file');
   const metadata = { ...file.metadata, checksum };
-  const db = await openDb();
-  try {
-    await new Promise<void>((resolve, reject) => {
-      const tx = db.transaction([FILES, INDEX], 'readwrite');
-      tx.objectStore(FILES).put(file.blob, file.metadata.id);
-      tx.objectStore(INDEX).put(metadata);
-      tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(tx.error);
-      tx.onabort = () => reject(tx.error);
-    });
-  } finally { db.close(); }
+  for (;;) {
+    try {
+      await putReplayFile(file.blob, metadata);
+      break;
+    } catch (error) {
+      // Out of room: older replays make way for this one.
+      if (!isQuotaError(error) || !(await dropOldestReplay(metadata.id))) throw error;
+    }
+  }
   if (typeof window !== 'undefined') window.dispatchEvent(new Event('puzzle-practice-data-changed'));
   return metadata;
 }

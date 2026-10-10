@@ -87,7 +87,7 @@ interface BaseStyle {
 abstract class TallyNpc<S extends BaseStyle> {
   board = new Board();
   out = false;
-  stats: FighterStats = { pairs: 0, shattered: 0, bestChain: 0, sent: 0, received: 0, swordsSent: 0, biggestSword: 0 };
+  stats: FighterStats = { pairs: 0, shattered: 0, bestChain: 0, sent: 0, received: 0, swordsSent: 0, biggestSword: 0, shatteredBy: [0, 0, 0, 0] };
   protected nextAt: number;
   private incoming: number[] = [];
   private pairsSinceAttack = 0;
