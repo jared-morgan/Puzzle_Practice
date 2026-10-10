@@ -238,6 +238,8 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
   let clearPack: ClearPack = savedPack === 'diamonds' ? 'emeralds' : savedPack;
   let spawnDelay = true;
   let gemRates = store.get<[number, number]>('gemRates', [200 / 308, 200 / 308]);
+  let showCoinProgress = store.get<boolean>('showCoinProgress', false);
+  let showWaitingChests = store.get<boolean>('showWaitingChests', false);
   let firstClearAt: number | null = null;
   let trainingChest: { x: number; y: number } | null = null;
 
@@ -1023,8 +1025,8 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
     scoreLabel(),
     String(score()), timed() && best() !== undefined ? String(best()) : '—',
   ], ...(chestMode() && chestRules >= 2 ? [
-    ['Coins toward next chest', `${chestMeter.coins} / ${coinsPerChest}`, '—'],
-    ['Chests waiting', String(waitingChests()), '—'],
+    ...(showCoinProgress ? [['Coins toward next chest', `${chestMeter.coins} / ${coinsPerChest}`, '—']] : []),
+    ...(showWaitingChests ? [['Chests waiting', String(waitingChests()), '—']] : []),
   ] : [])]);
   const duty = dutyDesk(panel, store, 'treasure-haul', 'Treasure Haul', RATING_SCALES, {
     shown: (id) => id === 'vampirateChests' ? (mode === '2' || mode === 'chests2') : mode === '0',
@@ -1036,12 +1038,10 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
       { scoreLabel: scoreLabel() }),
     rows: [
       [scoreLabel(), String(score())],
-      ...(chestMode() ? [['Points', String(tally.points)], ['Coins toward next chest', `${chestMeter.coins} / ${coinsPerChest}`],
-        ...(chestRules >= 2 ? [['Chests waiting', String(waitingChests())]] : [])] : []),
       ['Time', `${(clockStart ? Math.max(0, stoppedAt - clockStart) / 1000 : 0).toFixed(2)}s`],
       ['Moves', String(tally.moves)],
-      ...(!chestMode() ? [['Best move', String(tally.bestMove)]] : []),
-      ['Coins', String(tally.coins)], ['Gems', String(tally.gems)], ['Chests hauled', String(tally.chests)],
+      ...(mode === '0' ? [['Best move', String(tally.bestMove)], ['Coins', String(tally.coins)]] : []),
+      ['Gems', String(tally.gems)], ['Chests hauled', String(tally.chests)],
       ['Rubies spawned', String(tally.rubiesSpawned)], ['Emeralds spawned', String(tally.emeraldsSpawned)],
       ...(mode === 'spawn' ? [['Chests in middle', `${tally.middle} / ${tally.spawned}`]] : []),
     ],
@@ -1062,6 +1062,15 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
       coinsPerChest = Math.max(1, Math.round(v));
       store.set('coinsPerChest', coinsPerChest);
     }, { min: 1, max: 2000, step: 10, disabled: () => running, title: 'Coins cleared to earn a chest: 150 by default. Earned chests wait at least one second and stay queued until there is room.' });
+  panel.settings.group('Display', { hidden: () => !chestMode() })
+    .toggle('Show coin progress', () => showCoinProgress, (on) => {
+      showCoinProgress = on;
+      store.set('showCoinProgress', on);
+    }, { title: 'Show coins toward the next chest in the sidebar.' })
+    .toggle('Show waiting chests', () => showWaitingChests, (on) => {
+      showWaitingChests = on;
+      store.set('showWaitingChests', on);
+    }, { title: 'Show the number of waiting chests in the sidebar.' });
   actions.note(() => chestMode() || mode === 'spawn' ? 'Earned chests wait at least one second for a 2x2 opening.' : '');
   actions.note(() => mode === 'chests2' && chestRules === 3 ? 'With no chest in play, make a clear to start the one-second wait for the first chest.' : '');
   actions.note(() => coinOnlyEdges() ? 'Clear the edge with coin matches and the emeralds provided.' : '');
@@ -1078,6 +1087,10 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
     spawnDelay = true;
     gemRates = [200 / 308, 200 / 308];
     coinsPerChest = COINS_PER_CHEST;
+    showCoinProgress = false;
+    showWaitingChests = false;
+    store.set('showCoinProgress', showCoinProgress);
+    store.set('showWaitingChests', showWaitingChests);
     store.set('coinsPerChest', coinsPerChest);
     store.set('mode', mode);
     store.set('round', roundSecs);

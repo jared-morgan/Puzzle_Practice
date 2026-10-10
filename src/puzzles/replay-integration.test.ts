@@ -31,6 +31,7 @@ function canvasContext() {
 function panelHarness() {
   const buttons = new Map<string, () => void>();
   const setters = new Map<string, (value: number) => void>();
+  const toggles = new Map<string, (value: boolean) => void>();
   const tables: Array<() => unknown> = [];
   const results: Array<() => unknown> = [];
   const buttonStates = new Map<string, { disabled?: () => boolean; label?: () => string }>();
@@ -45,6 +46,7 @@ function panelHarness() {
       return group(page, title);
     };
     if (method === 'number') return (name: string, _get: unknown, set: (value: number) => void) => { setters.set(page + ':' + title + ':' + name, set); return group(page, title); };
+    if (method === 'toggle') return (name: string, _get: unknown, set: (value: boolean) => void) => { toggles.set(page + ':' + title + ':' + name, set); return group(page, title); };
     if (method === 'stats') return (_header: unknown, get: () => unknown) => { tables.push(get); return group(page, title); };
     return () => group(page, title);
   } });
@@ -55,7 +57,7 @@ function panelHarness() {
     if (method === 'results') return (get: () => unknown) => { results.push(get); };
     return () => group('Play');
   } });
-  return { panel, buttons, setters, buttonStates, stats: () => tables.map((get) => get()), results: () => results.map((get) => get()) };
+  return { panel, buttons, setters, toggles, buttonStates, stats: () => tables.map((get) => get()), results: () => results.map((get) => get()) };
 }
 
 beforeEach(async () => {
@@ -255,6 +257,39 @@ describe('preset Treasure Haul drills', () => {
   });
 });
 
+describe('Treasure Haul score display', () => {
+  it('keeps progress optional in the sidebar and removes coin scores from every chest-mode result', async () => {
+    const store = new Store('treasure-haul');
+    const factory = (await import('./treasure-haul/index')).default;
+    const screen = new Proxy({ ctx: canvasContext() }, { get: (target, key) => key === 'ctx' ? target.ctx : () => ({ width: 0, height: 0 }) });
+    for (const mode of ['0', 'chests1', 'chests2', 'spawn', 'clear']) {
+      store.set('mode', mode);
+      const { panel, buttons, toggles, stats, results } = panelHarness();
+      const instance = await factory({ screen, input: { mouse: [-1, -1] }, panel, store, ticks: () => 100 } as unknown as PuzzleContext);
+      const labels = () => (stats()[0] as string[][]).map(([label]) => label);
+      toggles.get('Settings:Display:Show coin progress')!(false);
+      toggles.get('Settings:Display:Show waiting chests')!(false);
+      expect(labels()).not.toContain('Coins toward next chest');
+      expect(labels()).not.toContain('Chests waiting');
+      toggles.get('Settings:Display:Show coin progress')!(true);
+      if (mode === 'chests1' || mode === 'chests2') expect(labels()).toContain('Coins toward next chest');
+      expect(labels()).not.toContain('Chests waiting');
+      toggles.get('Settings:Display:Show waiting chests')!(true);
+      if (mode === 'chests1' || mode === 'chests2') expect(labels()).toContain('Chests waiting');
+      expect(store.get('showCoinProgress', false)).toBe(true);
+      expect(store.get('showWaitingChests', false)).toBe(true);
+      buttons.get('Play::Start')!();
+      buttons.get('Play::Start')!();
+      const resultLabels = (results()[0] as { rows: string[][] }).rows.map(([label]) => label);
+      expect(resultLabels).not.toContain('Coins toward next chest');
+      expect(resultLabels).not.toContain('Chests waiting');
+      if (mode === '0') expect(resultLabels).toEqual(expect.arrayContaining(['Points', 'Coins', 'Best move']));
+      else for (const label of ['Points', 'Coins', 'Best move']) expect(resultLabels).not.toContain(label);
+      instance.dispose?.();
+    }
+  });
+});
+
 describe('puzzle completion during replay', () => {
   it.each([
     ['blacksmithing', 500, 20, { mode: 'perfect', perfectTimer: 100 }],
@@ -330,8 +365,9 @@ describe('puzzle completion during replay', () => {
       expect(result.rows.some(([label]) => label === 'Best move')).toBe(false);
       expect(Number(result.rows.find(([label]) => label === 'Rubies spawned')![1])).toBeGreaterThan(0);
       expect(Number(result.rows.find(([label]) => label === 'Emeralds spawned')![1])).toBeGreaterThan(0);
-      const coins = Number(result.rows.find(([label]) => label === 'Coins')![1]);
-      expect(result.rows).toContainEqual(['Coins toward next chest', `${coins % 150} / 150`]);
+      expect(result.rows.map(([label]) => label)).not.toEqual(expect.arrayContaining(['Points', 'Coins']));
+      expect(result.rows.map(([label]) => label)).not.toContain('Coins toward next chest');
+      expect(result.rows.map(([label]) => label)).not.toContain('Chests waiting');
     }
     if (puzzle === 'swordfight') {
       buttons.get('Play::View stats')!();
