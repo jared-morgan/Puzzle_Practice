@@ -240,6 +240,7 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
   let gemRates = store.get<[number, number]>('gemRates', [200 / 308, 200 / 308]);
   let showCoinProgress = store.get<boolean>('showCoinProgress', false);
   let showWaitingChests = store.get<boolean>('showWaitingChests', false);
+  let showEmeraldSightLines = store.get<boolean>('showEmeraldSightLines', false);
   let firstClearAt: number | null = null;
   let trainingChest: { x: number; y: number } | null = null;
 
@@ -852,6 +853,7 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
       const t = Math.min(1, (now - m.start) / m.duration);
       drawPiece(m.piece, Math.trunc(m.from[0] + (m.to[0] - m.from[0]) * t), Math.trunc(m.from[1] + (m.to[1] - m.from[1]) * t));
     }
+    if (showEmeraldSightLines && board && !intro && stable && actionCount() === 0) drawEmeraldSightLines();
     if (active && board) {
       ctx.drawImage(img('cursor'), cursor[0] * CELL - 4, (H - 1 - cursor[1]) * CELL - 4);
     }
@@ -873,6 +875,40 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
       else drawFrame(img(`piece${f.piece}`), CELL, f.fps, f.start, now, x, y);
     }
     drawTexts(now);
+    ctx.restore();
+  }
+
+  /** Trace all four diagonals; chests do not block the view or become blast targets. */
+  function drawEmeraldSightLines(): void {
+    if (!board) return;
+    ctx.save();
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      if (board.get(x, y) !== EMERALD) continue;
+      const selected = active && cursor[0] === x && (cursor[1] === y || cursor[1] - 1 === y);
+      ctx.strokeStyle = selected ? '#c5ffe0' : '#57e89d';
+      ctx.fillStyle = selected ? 'rgba(87, 232, 157, 0.26)' : 'rgba(87, 232, 157, 0.14)';
+      ctx.lineWidth = selected ? 2.5 : 1.5;
+      const [sx, sy] = cellXY(x, y);
+      ctx.strokeRect(sx + 3, sy + 3, CELL - 6, CELL - 6);
+      for (const [dx, dy] of [[1, 1], [1, -1], [-1, -1], [-1, 1]]) {
+        let endX = sx + CELL / 2;
+        let endY = sy + CELL / 2;
+        for (let xx = x + dx, yy = y + dy; xx >= 0 && xx < W && yy >= 0 && yy < H; xx += dx, yy += dy) {
+          const [px, py] = cellXY(xx, yy);
+          endX = px + CELL / 2;
+          endY = py + CELL / 2;
+          const piece = board.get(xx, yy);
+          if (piece !== EMPTY && !isChest(piece)) {
+            ctx.fillRect(px + 3, py + 3, CELL - 6, CELL - 6);
+            ctx.strokeRect(px + 5, py + 5, CELL - 10, CELL - 10);
+          }
+        }
+        ctx.beginPath();
+        ctx.moveTo(sx + CELL / 2, sy + CELL / 2);
+        ctx.lineTo(endX, endY);
+        ctx.stroke();
+      }
+    }
     ctx.restore();
   }
 
@@ -1062,15 +1098,19 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
       coinsPerChest = Math.max(1, Math.round(v));
       store.set('coinsPerChest', coinsPerChest);
     }, { min: 1, max: 2000, step: 10, disabled: () => running, title: 'Coins cleared to earn a chest: 150 by default. Earned chests wait at least one second and stay queued until there is room.' });
-  panel.settings.group('Display', { hidden: () => !chestMode() })
+  panel.settings.group('Display')
     .toggle('Show coin progress', () => showCoinProgress, (on) => {
       showCoinProgress = on;
       store.set('showCoinProgress', on);
-    }, { title: 'Show coins toward the next chest in the sidebar.' })
+    }, { hidden: () => !chestMode(), title: 'Show coins toward the next chest in the sidebar.' })
     .toggle('Show waiting chests', () => showWaitingChests, (on) => {
       showWaitingChests = on;
       store.set('showWaitingChests', on);
-    }, { title: 'Show the number of waiting chests in the sidebar.' });
+    }, { hidden: () => !chestMode(), title: 'Show the number of waiting chests in the sidebar.' })
+    .toggle('Show emerald sight lines', () => showEmeraldSightLines, (on) => {
+      showEmeraldSightLines = on;
+      store.set('showEmeraldSightLines', on);
+    }, { title: 'Highlight every emerald’s diagonals and the pieces along them. Emeralds in the cursor have brighter sight lines; chests are passed over.' });
   actions.note(() => chestMode() || mode === 'spawn' ? 'Earned chests wait at least one second for a 2x2 opening.' : '');
   actions.note(() => mode === 'chests2' && chestRules === 3 ? 'With no chest in play, make a clear to start the one-second wait for the first chest.' : '');
   actions.note(() => coinOnlyEdges() ? 'Clear the edge with coin matches and the emeralds provided.' : '');
@@ -1089,8 +1129,10 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
     coinsPerChest = COINS_PER_CHEST;
     showCoinProgress = false;
     showWaitingChests = false;
+    showEmeraldSightLines = false;
     store.set('showCoinProgress', showCoinProgress);
     store.set('showWaitingChests', showWaitingChests);
+    store.set('showEmeraldSightLines', showEmeraldSightLines);
     store.set('coinsPerChest', coinsPerChest);
     store.set('mode', mode);
     store.set('round', roundSecs);

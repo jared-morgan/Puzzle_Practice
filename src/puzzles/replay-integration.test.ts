@@ -215,6 +215,7 @@ describe('preset Treasure Haul drills', () => {
     store.set('mode', 'clear');
     store.set('clearPack', pack);
     store.set('round', 30);
+    store.set('showEmeraldSightLines', true);
     // Difficult edge drills must override saved ruby rates, including on refills.
     store.set('gemRates', [100, 0]);
     const { panel, buttons, buttonStates, stats } = panelHarness();
