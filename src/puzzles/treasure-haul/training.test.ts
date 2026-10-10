@@ -1,7 +1,86 @@
 import { describe, expect, it } from 'vitest';
 import { PyRandom } from '../../core/pyrandom';
-import { createDrill, emeraldRowsInColumn, type ClearPack } from './training';
+import { createDrill, createRubyBoard, rubySpawnScore, emeraldRowsInColumn, type ClearPack } from './training';
 import { HaulBoard, isChestOrigin, EMERALD, RUBY, EMPTY, W, H } from './logic';
+
+describe('Rubies spawn practice', () => {
+  it('generates stable coin boards with inner rubies and about 20% adjacent pairs', () => {
+    let pairs = 0;
+    const columns = new Set<number>();
+    const rows = new Set<number>();
+    const layouts = new Set<string>();
+    for (let seed = 0; seed < 1000; seed++) {
+      const rng = new PyRandom(seed);
+      const board = createRubyBoard(() => rng.random());
+      const rubies = board.cells.flatMap((piece, i) => piece === RUBY ? [{ x: i % W, y: Math.floor(i / W) }] : []);
+      expect([1, 2]).toContain(rubies.length);
+      for (const ruby of rubies) {
+        expect(ruby.x).toBeGreaterThan(0); expect(ruby.x).toBeLessThan(W - 1);
+        expect(ruby.y).toBeGreaterThanOrEqual(2);
+        columns.add(ruby.x); rows.add(ruby.y);
+      }
+      if (rubies.length === 2) {
+        pairs++;
+        expect(rubies[1]).toEqual({ x: rubies[0].x + 1, y: rubies[0].y });
+      }
+      expect(board.findRuns()).toHaveLength(0);
+      expect(board.cells).not.toContain(EMERALD);
+      expect(board.cells.some(isChestOrigin)).toBe(false);
+      expect(board.gemRates).toEqual([0, 0]);
+      layouts.add(board.cells.join(','));
+      for (let refill = 0; refill < 100; refill++) expect(board.nextPiece()).toBeLessThan(RUBY);
+    }
+    expect(pairs).toBeGreaterThan(160); expect(pairs).toBeLessThan(240);
+    expect([...columns].sort()).toEqual([1, 2, 3, 4, 5, 6]);
+    expect([...rows].sort()).toEqual([2, 3, 4, 5, 6, 7]);
+    expect(layouts.size).toBe(1000);
+  });
+
+  const quiet = () => {
+    const board = new HaulBoard(() => { throw new Error('Scoring must not consume random draws'); });
+    for (let x = 0; x < W; x++) for (let y = 0; y < H; y++) board.set(x, y, (x + 2 * y) % 4);
+    return board;
+  };
+
+  it('checks both outer columns on each side against the real blast at every chest position', () => {
+    for (let chestX = 0; chestX < W - 1; chestX++) for (let row = 1; row < H - 1; row++) {
+      for (const rubyX of [chestX, chestX + 1].filter((x) => x > 0 && x < W - 1)) {
+        const board = quiet(); board.placeChest(chestX, row, 0); board.set(rubyX, row + 1, RUBY);
+        const before = [...board.cells];
+        const other = rubyX === chestX ? chestX + 1 : chestX;
+        const badOther = other < 2 || other >= W - 2;
+        expect(rubySpawnScore(board, chestX), `chest ${chestX}, row ${row}, ruby ${rubyX}`).toBe(badOther && row < H - 2 ? 0 : 1);
+        expect(board.cells).toEqual(before);
+        expect(board.scorer.total).toBe(0);
+      }
+    }
+  });
+
+  it('awards two for chained rubies covering both chest columns, and one for multiple rubies in one column', () => {
+    for (let x = 1; x < W - 2; x++) {
+      const board = quiet(); board.placeChest(x, 2, 0);
+      board.set(x, 5, RUBY); board.set(x + 1, 5, RUBY);
+      expect(rubySpawnScore(board, x)).toBe(2);
+    }
+    const board = quiet(); board.placeChest(2, 2, 0);
+    board.set(2, 5, RUBY); board.set(2, 7, RUBY);
+    expect(rubySpawnScore(board, 2)).toBe(1);
+    board.set(3, 6, RUBY);
+    expect(rubySpawnScore(board, 2)).toBe(1);
+  });
+
+  it('allows a safe outer chest and rejects off-column or lower rubies and missing chests', () => {
+    const board = quiet(); board.placeChest(0, 5, 0); board.set(1, 6, RUBY);
+    expect(rubySpawnScore(board, 0)).toBe(0);
+    board.set(0, 7, EMPTY);
+    expect(rubySpawnScore(board, 0)).toBe(1);
+    board.set(1, 6, 0); board.set(2, 6, RUBY);
+    expect(rubySpawnScore(board, 0)).toBe(0);
+    board.set(0, 3, RUBY);
+    expect(rubySpawnScore(board, 0)).toBe(0);
+    expect(rubySpawnScore(board, 3)).toBe(0);
+  });
+});
 
 describe('Clear Chests packs', () => {
   it('efficient drills make same-colour threes below the chest and across its other column', () => {

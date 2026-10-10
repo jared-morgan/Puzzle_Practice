@@ -328,7 +328,7 @@ describe('preset Treasure Haul drills', () => {
     const { readReplayFile } = await import('../core/replay-storage');
     const { decodeReplayBlob } = await import('../core/replay');
     const tape = (await decodeReplayBlob((await readReplayFile(replay))!))!;
-    expect(tape).toMatchObject({ settingsVersion: 7, settings: { trainingRules: 4, impossibleChests: true } });
+    expect(tape).toMatchObject({ settingsVersion: 8, settings: { trainingRules: 4, impossibleChests: true } });
     toggles.get(setting)!(false);
     const data = JSON.parse(exportAll()).data;
     const perf = vi.spyOn(performance, 'now').mockReturnValue(0);
@@ -388,7 +388,7 @@ describe('preset Treasure Haul drills', () => {
     const finalStats = stats();
     if (pack === 'edges') expect(finalStats[0]).toContainEqual(['Chests cleared', '1', expect.any(String)]);
     const [replay] = await listReplayFiles('treasure-haul');
-    expect(replay.settingsVersion).toBe(7);
+    expect(replay.settingsVersion).toBe(8);
     const data = JSON.parse(exportAll()).data;
     const perf = vi.spyOn(performance, 'now').mockReturnValue(0);
     expect(await captured.recorders[0].playAt(replay.at, replay.runId)).toBe(true);
@@ -405,7 +405,7 @@ describe('preset Treasure Haul drills', () => {
     instance.dispose?.();
   });
 
-  it.each([['emeralds', 5, 2], ['edges', 6, 3]] as const)('plays historical %s layouts and restores the new pack afterward', async (pack, version, rules) => {
+  it.each([['emeralds', 5, 2], ['edges', 6, 3], ['edges', 7, 4]] as const)('plays historical %s version %i layouts and restores the new pack afterward', async (pack, version, rules) => {
     const { encodeReplayBlob, replayMetadata } = await import('../core/replay');
     const { saveReplayFile } = await import('../core/replay-storage');
     const tape: PuzzleReplay = {
@@ -413,7 +413,8 @@ describe('preset Treasure Haul drills', () => {
       settingsVersion: version, simulatorVersion: version, result: 'Historical drill', frames: [], steps: [],
       seed: new PyRandom(7).snapshot(),
       settings: { mode: 'clear', clearPack: pack, roundSecs: 30, spawnDelay: false, gemRates: [0, 0],
-        coinsPerChest: 100, chestRules: 4, trainingRules: rules, dismissRules: 2 },
+        coinsPerChest: 100, chestRules: 4, trainingRules: rules, dismissRules: 2,
+        ...(version >= 7 ? { impossibleChests: false } : {}) },
     };
     const blob = await encodeReplayBlob(tape);
     await saveReplayFile({ metadata: replayMetadata(tape, blob.size), blob });
@@ -447,7 +448,7 @@ describe('Treasure Haul score display', () => {
     const store = new Store('treasure-haul');
     const factory = (await import('./treasure-haul/index')).default;
     const screen = new Proxy({ ctx: canvasContext() }, { get: (target, key) => key === 'ctx' ? target.ctx : () => ({ width: 0, height: 0 }) });
-    for (const mode of ['0', 'chests1', 'chests2', 'spawn', 'clear']) {
+    for (const mode of ['0', 'chests1', 'chests2', 'spawn', 'rubies', 'clear']) {
       store.set('mode', mode);
       const { panel, buttons, toggles, stats, results } = panelHarness();
       const instance = await factory({ screen, input: { mouse: [-1, -1] }, panel, store, ticks: () => 100 } as unknown as PuzzleContext);
@@ -472,6 +473,98 @@ describe('Treasure Haul score display', () => {
       else for (const label of ['Points', 'Coins', 'Best move']) expect(resultLabels).not.toContain(label);
       instance.dispose?.();
     }
+  });
+});
+
+describe('Rubies spawn mode', () => {
+  it.each([
+    { rubies: [2], chestX: 2, points: 1 },
+    { rubies: [2, 3], chestX: 2, points: 2 },
+    { rubies: [6], chestX: 2, points: 0 },
+    { rubies: [2], chestX: 1, points: 0 },
+  ])('scores $points for rubies $rubies over chest column $chestX, refreshes and replays', async ({ rubies, chestX, points }) => {
+    const training = await import('./treasure-haul/training');
+    const create = training.createRubyBoard;
+    const boards = vi.spyOn(training, 'createRubyBoard').mockImplementation((random) => {
+      const board = create(random);
+      for (let x = 0; x < 8; x++) for (let y = 0; y < 8; y++) board.set(x, y, (x + y) % 4);
+      for (const x of rubies) board.set(x, 7, RUBY);
+      // An isolated vertical clear starts the one-second chest wait.
+      board.set(7, 0, 0); board.set(7, 1, 1); board.set(7, 2, 0); board.set(7, 3, 0);
+      // A subsequent swap makes two horizontal threes, opening both chest columns.
+      for (const x of [chestX, chestX + 1]) { board.set(x, 2, 0); board.set(x, 1, 1); }
+      board.set(chestX + 2, 2, 1); board.set(chestX + 2, 1, 0);
+      for (const x of [chestX - 1, chestX + 3]) { board.set(x, 2, 2); board.set(x, 1, 2); }
+      expect(board.findRuns()).toHaveLength(0);
+      return board;
+    });
+    vi.spyOn(HaulBoard.prototype, 'findChestPosition').mockImplementation(function (this: HaulBoard) {
+      return this.riseDistance(chestX, -1) >= 2 && this.riseDistance(chestX + 1, -1) >= 2 ? chestX : -1;
+    });
+    const store = new Store('treasure-haul'); store.set('round', 30); store.set('gemRates', [100, 0]);
+    const { panel, buttons, selections, setters, stats, results } = panelHarness();
+    let now = 100;
+    const input = { mouse: [-1, -1] };
+    const screen = new Proxy({ ctx: canvasContext() }, { get: (target, key) => key === 'ctx' ? target.ctx : () => ({ width: 0, height: 0 }) });
+    const factory = (await import('./treasure-haul/index')).default;
+    const instance = await factory({ screen, input, panel, store, ticks: () => now,
+      setReplayTime: (time: number | null) => { if (time !== null) now = time; } } as unknown as PuzzleContext);
+    selections.get('Play::Mode')!('rubies');
+    expect(store.get('mode', '')).toBe('rubies');
+    const swap = (x: number, y: number) => {
+      input.mouse = [44 + x * 45 + 10, 205 + (8 - y) * 45 + 10];
+      instance.frame([{ type: 'mousedown', button: 1, pos: input.mouse as [number, number] }]);
+    };
+    buttons.get('Play::Start')!();
+    const firstBoard = boards.mock.results[0].value as HaulBoard;
+    expect(firstBoard.gemRates).toEqual([0, 0]);
+    for (; now <= 5000; now += 25) instance.frame([]);
+    expect(firstBoard.chestReady()).toBe(false);
+    expect(firstBoard.cells.some(isChestOrigin)).toBe(false);
+    const step = HaulBoard.prototype.step;
+    let clearAt = 0; let spawnAt = 0;
+    vi.spyOn(HaulBoard.prototype, 'step').mockImplementation(function (this: HaulBoard) {
+      const result = step.call(this);
+      if (this === firstBoard && result?.kind === 'match' && !clearAt) clearAt = now;
+      if (this === firstBoard && result?.kind === 'rise' && result.moves.some((move) => isChestOrigin(move.piece) && move.fy < 0)) spawnAt = now;
+      return result;
+    });
+    swap(7, 1);
+    while (!clearAt) { now += 25; instance.frame([]); }
+    now = clearAt + 999;
+    expect(firstBoard.chestReady()).toBe(false);
+    now++;
+    expect(firstBoard.chestReady()).toBe(true);
+    for (let frame = 0; frame < 120; frame++) { now += 25; instance.frame([]); }
+    expect(spawnAt).toBe(0);
+    swap(chestX + 2, 2);
+    for (let frame = 0; frame < 250 && boards.mock.calls.length < 2; frame++) { now += 25; instance.frame([]); }
+    expect(spawnAt).toBeGreaterThanOrEqual(clearAt + 1000);
+    expect(boards.mock.calls).toHaveLength(2);
+    expect(stats()[0]).toContainEqual(['Ruby score', String(points), expect.any(String)]);
+    buttons.get('Play::Dismiss')!();
+    for (let frame = 0; frame < 120; frame++) { now += 25; instance.frame([]); }
+    expect(boards.mock.calls).toHaveLength(3);
+    expect(stats()[0]).toContainEqual(['Ruby score', String(points), expect.any(String)]);
+    now = 35100; instance.frame([]);
+    const finalStats = stats();
+    expect((results()[0] as { rows: string[][] }).rows).toContainEqual(['Ruby score', String(points)]);
+    await replayWrites.idle();
+    const [replay] = await listReplayFiles('treasure-haul');
+    expect(replay.settingsVersion).toBe(8);
+    const data = JSON.parse(exportAll()).data;
+    const perf = vi.spyOn(performance, 'now').mockReturnValue(0);
+    const recorder = captured.recorders[0];
+    expect(await recorder.playAt(replay.at, replay.runId)).toBe(true);
+    perf.mockReturnValue(replay.duration); instance.frame([]);
+    expect(stats()).toEqual(finalStats);
+    setters.get('History:Replays:Jump to (s)')!(replay.duration / 1000);
+    buttons.get('History:Replays:Jump')!();
+    await vi.waitFor(() => expect(recorder.isSeeking).toBe(false));
+    expect(stats()).toEqual(finalStats);
+    expect(JSON.parse(exportAll()).data).toEqual(data);
+    buttons.get('History:Replays:Stop')!();
+    instance.dispose?.();
   });
 });
 
@@ -533,7 +626,7 @@ describe('Treasure Haul vacant-board chest wait', () => {
     const expectedStats = stats();
     await replayWrites.idle();
     const [replay] = await listReplayFiles('treasure-haul');
-    expect(replay.settingsVersion).toBe(7);
+    expect(replay.settingsVersion).toBe(8);
     const data = JSON.parse(exportAll()).data;
     const perf = vi.spyOn(performance, 'now').mockReturnValue(0);
     const recorder = captured.recorders[0];

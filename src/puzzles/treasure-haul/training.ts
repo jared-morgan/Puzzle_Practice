@@ -1,4 +1,4 @@
-import { HaulBoard, W, H, RUBY, EMERALD, EMPTY } from './logic';
+import { HaulBoard, W, H, RUBY, EMERALD, EMPTY, isChestOrigin } from './logic';
 import { PyRandom } from '../../core/pyrandom';
 
 export type ClearPack = 'standard' | 'efficient' | 'emeralds' | 'edges';
@@ -14,6 +14,46 @@ export interface Drill {
   impossible?: boolean;
 }
 export interface DrillOptions { impossibleChests?: boolean }
+
+/** Spawn practice: one ruby, or a neighbouring pair, above the bottom opening. */
+export function createRubyBoard(random: () => number): HaulBoard {
+  const pair = random() < 0.2;
+  const column = 1 + Math.floor(random() * (pair ? W - 3 : W - 2));
+  const row = 2 + Math.floor(random() * (H - 2));
+  const board = new HaulBoard(random);
+  board.populate();
+  board.gemRates = [0, 0];
+  board.set(column, row, RUBY);
+  if (pair) board.set(column + 1, row, RUBY);
+  return board;
+}
+
+/**
+ * Check the actual chained blast without changing the board or consuming random
+ * draws. A point requires a ruby above that chest column. The outer two columns
+ * on each side must have no blockers left above the chest after one ruby click.
+ */
+export function rubySpawnScore(original: HaulBoard, chestX: number): number {
+  const row = Array.from({ length: H }, (_, y) => y).find((y) => isChestOrigin(original.get(chestX, y)));
+  if (row === undefined) return 0;
+  let score = 0;
+  for (const column of [chestX, chestX + 1]) {
+    for (let y = row + 1; y < H; y++) {
+      if (original.get(column, y) !== RUBY) continue;
+      const blast = new HaulBoard(() => 0);
+      blast.cells.splice(0, blast.cells.length, ...original.cells);
+      const result = blast.swap(column, y);
+      if (result.kind !== 'gem') continue;
+      const blocked = [chestX, chestX + 1].some((x) => (x < 2 || x >= W - 2) &&
+        Array.from({ length: H - row - 1 }, (_, i) => blast.get(x, row + 1 + i)).some((piece) => piece !== EMPTY));
+      if (blocked) continue;
+      const rubyColumns = new Set(result.cleared.filter((piece) => piece.piece === RUBY && piece.y > row &&
+        piece.x >= chestX && piece.x <= chestX + 1).map((piece) => piece.x));
+      score = Math.max(score, rubyColumns.size);
+    }
+  }
+  return score;
+}
 
 /** Practice boards have no automatic matches, and never overwrite another chest. */
 export function createDrill(random: () => number, pack: ClearPack, rules: 1 | 2 | 3 | 4 = 4, options: DrillOptions = {}): Drill {
