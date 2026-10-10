@@ -18,6 +18,7 @@ import { loadFont } from '../../core/fonts';
 import { keyMatches } from '../../core/controls';
 import { dutyDesk } from '../../core/duty/desk';
 import type { RatingScale } from '../../core/duty/ratings';
+import { columnOrbs } from './report';
 import { historyGroup } from '../../core/history';
 import { ReplayRecorder, type PuzzleReplay, type ReplaySettingsCodec } from '../../core/replay';
 import { PyRandom } from '../../core/pyrandom';
@@ -732,20 +733,14 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
     later(FLOAT_MS, () => (active = false));
   }
 
-  /** The session's duty report: pieces distilled by weight, rated by the score in Standard and Seeded. */
+  /** The session's duty report: the columns sent up, rated by the score in Standard and Seeded. */
   function endReport() {
     const rated = startedMode === 'Standard' || startedMode === 'Seeded';
-    const lights = game?.jugLights ?? 0;
-    const heavies = game?.jugHeavies ?? 0;
     return duty.end({
       mode: startedMode,
       performance: duty.rate(rated ? 'score' : null, rated ? sessionScore() : null),
       score: { label: 'Score', value: sessionScore().toFixed(2) },
-      cleared: [{ label: 'Pieces Distilled', items: [
-        { icon: 'brew-white', label: 'light pieces', count: lights },
-        { icon: 'brew-mid', label: 'middling pieces', count: Math.max(0, (game?.distilled ?? 0) - lights - heavies) },
-        { icon: 'brew-dark', label: 'heavy pieces', count: heavies },
-      ] }],
+      cleared: [{ label: 'Columns Sent Up', style: 'row', items: columnOrbs(game?.columns ?? []) }],
     });
   }
 
@@ -1184,6 +1179,7 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
   panel.results(() => resultRows && !running ? {
     title: 'Distilling results',
     report: duty.last,
+    averages: duty.averages(historyKey(startedMode) ? store.history(historyKey(startedMode)!) : null),
     rows: resultRows,
   } : null);
 

@@ -7,11 +7,11 @@
 //
 //   Play      session choices (Mode) with Start / Stop, the clock and main score, then any other
 //             controls that matter during a game.
-//   Settings  everything chosen before a game: the rest of the game's options, then Look and
-//             Sound last.
+//   Settings  everything chosen before a game, in two parts: this puzzle's options (the game's
+//             own, then Look and keys), then what applies to every puzzle (pirate, display, sound,
+//             replays).
 //   History   past games and replays only.
 //
-// Every puzzle's Settings tab starts with the Pirate card (name and face for duty reports).
 //
 //   panel.clock(() => (timed ? { label: 'Time left', ms: left, countdown: true } : null));
 //   const session = panel.session();
@@ -81,6 +81,8 @@ export interface SessionResults {
   title?: string;
   /** A line above a duty report, e.g. who won. */
   headline?: string;
+  /** Sessions so far with these settings: shown below the report, apart from this session's rows. */
+  averages?: readonly (readonly string[])[];
   /** The session's duty report; `rows` then become its folded-away details. */
   report?: DutyReport | null;
   rows: readonly (readonly string[])[];
@@ -168,8 +170,10 @@ export class Panel {
   onUsed: () => void = () => {};
   /** Play controls beneath the shared mode, clock and score. `panel.group()` adds here. */
   readonly play: Page;
-  /** What's chosen before a game. */
+  /** What's chosen before a game, for this puzzle only. */
   readonly settings: Page;
+  /** Settings shared by every puzzle, below this puzzle's own on the Settings tab. */
+  readonly globalSettings: Page;
   private readonly preferences = new Store('global');
   private hideTimer = this.preferences.get<boolean>('hideTimer', false);
   private readonly live: Page;
@@ -181,7 +185,14 @@ export class Panel {
     this.tabs.setAttribute('role', 'tablist');
     root.append(this.tabs);
     this.play = this.tab('Play');
-    this.settings = this.tab('Settings');
+    const settingsTab = this.tab('Settings').element;
+    const part = (title: string) => {
+      const area = el('div', 'panel-settings-part');
+      settingsTab.append(el('h2', 'panel-part-title', title), area);
+      return new Page(this, area);
+    };
+    this.settings = part('This puzzle');
+    this.globalSettings = part('All puzzles');
     this.tab('History');
     this.clockCard.hidden = true;
     const session = el('div', 'panel-page panel-session');
@@ -192,13 +203,13 @@ export class Panel {
     this.sessionPage = new Page(this, session);
     this.live = new Page(this, live);
     live.append(this.clockCard);
-    pirateSettings(this.settings);
-    this.settings.group('Display').toggle('Hide timer', () => this.hideTimer, (on) => {
+    pirateSettings(this.globalSettings);
+    this.globalSettings.group('Display').toggle('Hide timer', () => this.hideTimer, (on) => {
       this.hideTimer = on;
       this.preferences.set('hideTimer', on);
     });
-    this.settings.group('Sound').range('Volume', getVolume, setVolume, { min: 0, max: 100 });
-    const replayPreferences = this.settings.group('Replays');
+    this.globalSettings.group('Sound').range('Volume', getVolume, setVolume, { min: 0, max: 100 });
+    const replayPreferences = this.globalSettings.group('Replays');
     replayPreferences.toggle('Save replays',
       () => this.preferences.get<boolean>('saveReplays', true),
       (on) => this.preferences.set('saveReplays', on),
@@ -294,10 +305,10 @@ export class Panel {
       if (!result) return;
       heading.textContent = result.report ? result.headline ?? '' : result.title ?? 'Session results';
       heading.hidden = !heading.textContent;
-      const key = JSON.stringify([result.report ?? null, result.rows]);
+      const key = JSON.stringify([result.report ?? null, result.rows, result.averages ?? []]);
       if (key === shown) return;
       shown = key;
-      content.replaceChildren(result.report ? renderReport(result.report, result.rows) : rowsTable(result.rows));
+      content.replaceChildren(result.report ? renderReport(result.report, result.rows, result.averages) : rowsTable(result.rows));
     });
   }
 
@@ -314,7 +325,7 @@ export class Panel {
       this.canvas.parentElement.append(this.viewer);
     }
     this.viewer.hidden = !report;
-    this.viewer.replaceChildren(...(report ? [renderReport(report, [], () => { this.showReport(null); this.used(); })] : []));
+    this.viewer.replaceChildren(...(report ? [renderReport(report, [], [], () => { this.showReport(null); this.used(); })] : []));
     this.sync();
   }
 

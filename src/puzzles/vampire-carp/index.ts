@@ -75,8 +75,11 @@ const STAR_MS_PER_PCT = (STARS * 500) / 100;
 const LEVEL_TEXT = 'Nice work!';
 
 const SESSION_SHORT = 120000;
-/** Duty report ratings: score a hole (Slipshod -1, Creaky 1, Vampire proof 2). */
-const RATING_SCALES: RatingScale[] = [{ id: 'perHole', label: 'Score a hole', cutoffs: [0, 0.5, 1, 1.4, 1.75], step: 0.05 }];
+/**
+ * Duty report ratings, as vampirate board-ups are rated (YPPedia, Vampirate expedition): Asleep up
+ * to Frenetic by the score (Vampire proof 2, Creaky 1, Slipshod -1), then our own four words above Frenetic.
+ */
+const RATING_SCALES: RatingScale[] = [{ id: 'boardUps', label: 'Score', cutoffs: [3, 6, 9, 12, 15, 20, 25, 30, 35], gauntlet: true }];
 const SESSION_LONG = 999999999999999999;
 /** Board seeds are 48-bit, like java.util.Random's. */
 const MAX_SEED = 2 ** 48 - 1;
@@ -315,15 +318,15 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
     return (config.ghost ? 'a' : 'b') + (config.speed ? 'a' : 'b') + (config.speed ? `${config.speedHoles}${config.speedSize}${config.speedLetter}` : '000');
   }
 
-  /** The session's duty report: holes patched by grade, rated by score a hole. */
+  /** The session's duty report: coffins boarded up by grade, rated by the score. */
   function endReport() {
     return duty.end({
-      performance: duty.rate('perHole', stats.holesFilled ? score() / stats.holesFilled : -Infinity),
+      performance: duty.rate('boardUps', score()),
       score: { label: 'Score', value: String(score()) },
-      cleared: [{ label: 'Holes Patched', items: [
-        { icon: 'carp-vampire-proof', label: 'vampire proof', count: stats.grades[2] },
-        { icon: 'carp-creaky', label: 'creaky', count: stats.grades[1] },
-        { icon: 'carp-slipshod', label: 'slipshod', count: stats.grades[0] },
+      cleared: [{ label: 'Coffins Boarded Up', inScore: true, items: [
+        { icon: 'coffin-vampire-proof', label: 'vampire proof', count: stats.grades[2] },
+        { icon: 'coffin-creaky', label: 'creaky', count: stats.grades[1] },
+        { icon: 'coffin-slipshod', label: 'slipshod', count: stats.grades[0] },
       ] }],
     });
   }
@@ -636,6 +639,9 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
       ['Slowest / quickest hole', `${(stats.holeTimes[0] / 1000).toFixed(1)}s / ${Number.isFinite(stats.holeTimes[1]) ? (stats.holeTimes[1] / 1000).toFixed(1) : '—'}s`],
       ['Pieces drawn', Object.entries(stats.found).map(([piece, count]) => `${piece.toUpperCase()}: ${count}`).join(' · ')],
       ['Seed', String(seedAtStart)],
+    ],
+    // Every counted session with these settings, apart from this one's details.
+    averages: [
       ...(sessionScores[bestScoresKey] ? (() => {
         const totals = sessionScores[bestScoresKey];
         return [

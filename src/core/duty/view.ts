@@ -1,13 +1,14 @@
-// Draws a duty report the way the game lays one out: the "Duty Report" title, the station heading
-// with its icon and a rule, then the pirate's entry (face with the rating's expression, name, the
-// rating in yellow, and a stack of what they cleared), then the totals under a gold bar.
+// Draws a duty report the way the game lays out a pirate's entry: the station heading with its
+// icon and a rule, then the face with the rating's expression, the name, the rating in yellow and
+// stacks of what they cleared. The game's totals for the whole crew are left out: it's one pirate.
 // Also the pirate settings card: name and face, shown on every puzzle's Settings tab.
 import type { Group, Page } from '../panel';
 import { drawFaceInto, faceOptions, FACE, type FaceSpec } from './face';
 import { ICONS, iconWidth, loadIcon, stationIcon, type Icon } from './icons';
 import { loadProfile, NAME_LIMIT, saveProfile, type PirateProfile } from './profile';
 import { LEARNING, moodFor, MOODS, performanceWord } from './ratings';
-import type { ClearedGroup, DutyReport } from './report';
+import { SPACE, type ClearedGroup, type DutyReport } from './report';
+import { Store } from '../storage';
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, className = '', text = ''): HTMLElementTagNameMap[K] {
   const node = document.createElement(tag);
@@ -120,10 +121,74 @@ export function faceCanvas(face: FaceSpec, mood: Parameters<typeof drawFaceInto>
   return canvas;
 }
 
-/** A report as a card; `details` is the puzzle's full table of numbers, folded away beneath. */
-export function renderReport(report: DutyReport, details: readonly (readonly string[])[] = [], onClose?: () => void): HTMLElement {
+/** Which folds of a report the player last had open, the same for every puzzle. */
+const prefs = new Store('global');
+type Fold = 'details' | 'averages';
+const foldOpen = (fold: Fold) => prefs.get<Partial<Record<Fold, boolean>>>('reportFolds', {})[fold] ?? false;
+function setFoldOpen(fold: Fold, open: boolean): void {
+  prefs.set('reportFolds', { ...prefs.get<Partial<Record<Fold, boolean>>>('reportFolds', {}), [fold]: open });
+}
+
+function foldTable(fold: Fold, title: string, rows: readonly (readonly string[])[]): HTMLElement {
+  const box = el('details', `duty-fold duty-${fold}`);
+  box.open = foldOpen(fold);
+  box.addEventListener('toggle', () => setFoldOpen(fold, box.open));
+  box.append(el('summary', '', title));
+  const table = el('table', 'panel-stats');
+  const body = el('tbody');
+  for (const row of rows) {
+    const tr = el('tr');
+    row.forEach((cell, i) => tr.append(el(i === 0 ? 'th' : 'td', '', cell)));
+    body.append(tr);
+  }
+  table.append(body);
+  box.append(table);
+  return box;
+}
+
+/** A row-style group: every one drawn side by side in order, with gaps where the items say. */
+function rowCanvas(group: ClearedGroup): HTMLCanvasElement | null {
+  const items = group.items.filter((item) => item.count > 0);
+  if (!items.some((item) => item.icon !== SPACE)) return null;
+  const icons = items.map((item) => (item.icon === SPACE ? null : ICONS[item.icon] ?? null));
+  if (items.some((item, i) => item.icon !== SPACE && !icons[i])) return null;
+  const height = Math.max(...icons.map((icon) => icon?.height ?? 0));
+  const gap = Math.max(3, Math.round(height / 2));
+  // Lay out the orbs, wrapping at the stack width.
+  const placed: Array<{ icon: Icon; x: number; y: number }> = [];
+  let x = 0;
+  let y = 0;
+  items.forEach((item, i) => {
+    const icon = icons[i];
+    for (let k = 0; k < item.count; k++) {
+      if (!icon) { x += gap; continue; }
+      const w = iconWidth(icon);
+      if (x + w > STACK_WIDTH) { x = 0; y += height + 1; }
+      placed.push({ icon, x, y });
+      x += w + 1;
+    }
+  });
+  const canvas = el('canvas', 'duty-stack');
+  canvas.width = STACK_WIDTH;
+  canvas.height = y + height;
+  canvas.title = `${group.label}: ${items.filter((i) => i.icon !== SPACE).map((i) => `${i.count} ${i.label}`).join(', ')}`;
+  void Promise.all(placed.map((p) => loadIcon(p.icon.url))).then((images) => {
+    const ctx = canvas.getContext('2d')!;
+    ctx.imageSmoothingEnabled = false;
+    placed.forEach((p, i) => { if (images[i]) ctx.drawImage(images[i]!, ...p.icon.area, p.x, p.y + height - p.icon.height, iconWidth(p.icon), p.icon.height); });
+  });
+  return canvas;
+}
+
+const counts = (group: ClearedGroup) => `[${group.items.map((item) => item.count).join(', ')}]`;
+
+/**
+ * A report as a card. `details` is the session's full table of numbers and `averages` the
+ * sessions so far with these settings, each folded away (and left open if the player opened it).
+ */
+export function renderReport(report: DutyReport, details: readonly (readonly string[])[] = [],
+  averages: readonly (readonly string[])[] = [], onClose?: () => void): HTMLElement {
   const card = el('div', 'duty-report');
-  card.append(el('h2', 'duty-title', 'Duty Report'));
 
   const station = el('div', 'duty-station');
   const icon = stationIcon(report.puzzle);
@@ -139,45 +204,21 @@ export function renderReport(report: DutyReport, details: readonly (readonly str
   who.append(el('div', 'duty-name', report.pirate.name));
   const rating = el('div', 'duty-rating', performanceWord(report.performance));
   rating.classList.toggle('is-learning', report.performance === LEARNING);
-  who.append(rating, el('div', 'duty-score', `${report.score.label}: ${report.score.value}`));
+  const inScore = report.cleared.filter((group) => group.inScore).map(counts);
+  who.append(rating, el('div', 'duty-score', `${report.score.label}: ${[report.score.value, ...inScore].join(' ')}`));
   for (const group of report.cleared) {
-    const stack = stackCanvas(group);
-    if (stack) who.append(stack);
+    const art = group.style === 'row' ? rowCanvas(group) : stackCanvas(group);
+    if (!art) continue;
+    const line = el('div', 'duty-tally');
+    line.append(art);
+    if (!group.inScore && group.style !== 'row') line.append(el('span', 'duty-tally-counts', counts(group)));
+    who.append(line);
   }
   entry.append(who);
   card.append(entry);
 
-  for (const group of report.cleared) {
-    if (!group.items.some((item) => item.count > 0)) continue;
-    const totals = el('section', 'duty-totals');
-    totals.append(el('h3', 'duty-totals-label', group.label), el('div', 'duty-gold-bar'));
-    const line = el('div', 'duty-totals-line');
-    for (const item of group.items) {
-      const cell = el('span', 'duty-total');
-      cell.title = item.label;
-      cell.append(el('span', 'duty-total-count', String(item.count)));
-      const art = ICONS[item.icon];
-      cell.append(art ? iconImage(art) : el('span', 'duty-total-label', item.label));
-      line.append(cell);
-    }
-    totals.append(line);
-    card.append(totals);
-  }
-
-  if (details.length) {
-    const fold = el('details', 'duty-details');
-    fold.append(el('summary', '', 'Details'));
-    const table = el('table', 'panel-stats');
-    const body = el('tbody');
-    for (const row of details) {
-      const tr = el('tr');
-      row.forEach((cell, i) => tr.append(el(i === 0 ? 'th' : 'td', '', cell)));
-      body.append(tr);
-    }
-    table.append(body);
-    fold.append(table);
-    card.append(fold);
-  }
+  if (details.length) card.append(foldTable('details', 'This session', details));
+  if (averages.length) card.append(foldTable('averages', 'Session averages', averages));
   if (onClose) {
     const close = el('button', 'panel-button duty-close', 'Close');
     close.type = 'button';

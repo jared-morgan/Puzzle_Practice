@@ -95,12 +95,13 @@ const MODES: Option<Mode>[] = [
   { value: 'normal', label: 'Normal' },
 ];
 /**
- * Duty report ratings. Normal foraging goes by points a move; Gauntlet and Chaos, like the game's
- * Gauntlet foraging, rate speed (Asleep up to Frenetic) by crate points a minute. Puzzles are Learning.
+ * Duty report ratings. Normal foraging goes by points a move. Gauntlet and Chaos are rated like
+ * cursed isle foraging (YPPedia, Cursed Isles): Asleep up to Frenetic by points (bone box 1, fetish
+ * jar 2, cursed chest 3), then our own four words above Frenetic. Puzzles are Learning.
  */
 const RATING_SCALES: RatingScale[] = [
   { id: 'normal', label: 'Normal, points a move', cutoffs: [0.25, 0.5, 0.8, 1.2, 1.6], step: 0.05 },
-  { id: 'gauntlet', label: 'Gauntlet and Chaos, points a minute', cutoffs: [4, 8, 12, 16, 20], gauntlet: true },
+  { id: 'gauntletPoints', label: 'Gauntlet and Chaos, points', cutoffs: [3, 6, 9, 12, 15, 20, 25, 30, 35], gauntlet: true },
 ];
 
 /** Modes that end and keep a best score. */
@@ -418,18 +419,17 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
   /** The session's duty report: what it's rated on depends on the mode. */
   function endReport(): DutyReport {
     const gauntlet = settings.mode === 'ci' || settings.mode === 'chaos';
-    const minutes = timePassed / 60000;
     const performance = settings.mode === 'normal' ? duty.rate('normal', shownScore())
-      : gauntlet ? duty.rate('gauntlet', minutes > 0 ? score / minutes : 0) : duty.rate(null, null);
+      : gauntlet ? duty.rate('gauntletPoints', score) : duty.rate(null, null);
     return duty.end({
       mode: MODES.find((m) => m.value === settings.mode)?.label,
       performance,
       score: isPuzzle() ? { label: 'Moves', value: String(movesUsed) }
         : { label: settings.mode === 'normal' ? 'Points a move' : 'Score', value: scoreText(shownScore()) },
-      cleared: [{ label: 'Crates Collected', items: [
-        { icon: 'chest-small', label: 'small crates', count: sessionCrates[0] },
-        { icon: 'chest-medium', label: 'medium crates', count: sessionCrates[1] },
-        { icon: 'chest-large', label: 'large crates', count: sessionCrates[2] },
+      cleared: [{ label: 'Crates Collected', inScore: true, items: [
+        { icon: 'ci-bone-box', label: 'bone boxes', count: sessionCrates[0] },
+        { icon: 'ci-fetish-jar', label: 'fetish jars', count: sessionCrates[1] },
+        { icon: 'ci-cursed-chest', label: 'cursed chests', count: sessionCrates[2] },
       ] }],
     });
   }
@@ -708,9 +708,14 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
     report: duty.last,
     rows: [
       [isPuzzle() ? 'Moves' : 'Score', isPuzzle() ? String(movesUsed) : scoreText(shownScore())],
-      ['Time', `${(timePassed / 1000).toFixed(2)}s`], ['Moves', String(movesUsed)],
-      ['Points', String(score)], ['Crates collected on last board', String(crates)],
+      ['Time', `${(timePassed / 1000).toFixed(2)}s`],
+      ...(isPuzzle() ? [] : [['Moves', String(movesUsed)]]),
+      // Points are the score except in Normal, where the score is points a move.
+      ...(settings.mode === 'normal' ? [['Points', String(score)]] : []),
     ],
+    averages: duty.averages(historyKey() && !settings.scramble ? store.history(historyKey()!) : null, isPuzzle()
+      ? { scoreLabel: 'Moves', lowerIsBetter: true, digits: 1 }
+      : { scoreLabel: settings.mode === 'normal' ? 'Points a move' : 'Score' }),
   } : null);
 
   // Every scored game, kept per settings key as the desktop version's score lists were.

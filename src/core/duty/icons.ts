@@ -1,7 +1,12 @@
 // Small pictures for what a session cleared, by name, so saved reports keep working when the
-// art's file names change. Forage and Treasure Haul use the duty report's own chest tiles
-// (12x12, small to large); the other puzzles use a frame of their own piece art.
+// art's file names change. Forage, Treasure Haul and Carpentry use the duty report's own 12x12
+// tiles (cursed isle containers, haunted and vampirate chests, coffins); the other puzzles use a
+// frame of their own piece art.
 import chests from './media/chests.png?url';
+import cursedChests from './media/cursed_chests.png?url';
+import hauntedChests from './media/haunted_chests.png?url';
+import vampirateChests from './media/vampirate_chests.png?url';
+import coffins from './media/vampirate_patches.png?url';
 import puzzles from './media/puzzles.png?url';
 import haulCoin from '../../puzzles/treasure-haul/media/minipiece0.png?url';
 import haulRuby from '../../puzzles/treasure-haul/media/minipiece4.png?url';
@@ -18,6 +23,9 @@ import brewSpice from '../../puzzles/distilling/media/piece_spice.png?url';
 import carpStars from '../../puzzles/vampire-carp/media/stars.png?url';
 import smithBonus from '../../puzzles/blacksmithing/media/bonus.png?url';
 import smithTally from '../../puzzles/blacksmithing/media/tally.png?url';
+import smithTwinkle from '../../puzzles/blacksmithing/media/twinkle.png?url';
+import smithHot from '../../puzzles/blacksmithing/media/hot.png?url';
+import smithCool from '../../puzzles/blacksmithing/media/cool.png?url';
 
 export interface Icon {
   url: string;
@@ -33,6 +41,16 @@ export const ICONS: Record<string, Icon> = {
   'chest-small': frame(chests, 12, 12, 0),
   'chest-medium': frame(chests, 12, 12, 1),
   'chest-large': frame(chests, 12, 12, 2),
+  // Cursed isle containers: bone box (1x1), fetish jar (2x2), cursed chest (3x2).
+  'ci-bone-box': frame(cursedChests, 12, 12, 0),
+  'ci-fetish-jar': frame(cursedChests, 12, 12, 1),
+  'ci-cursed-chest': frame(cursedChests, 12, 12, 2),
+  'haunted-chest': frame(hauntedChests, 12, 12, 2),
+  'vampirate-chest': frame(vampirateChests, 12, 12, 2),
+  // Coffins Boarded Up, worst to best.
+  'coffin-slipshod': frame(coffins, 12, 12, 0),
+  'coffin-creaky': frame(coffins, 12, 12, 1),
+  'coffin-vampire-proof': frame(coffins, 12, 12, 2),
   'haul-coin': frame(haulCoin, 23, 23, 0, 14),
   'haul-ruby': frame(haulRuby, 16, 23, 0, 14),
   'haul-emerald': frame(haulEmerald, 16, 23, 0, 14),
@@ -45,6 +63,10 @@ export const ICONS: Record<string, Icon> = {
   'brew-mid': frame(brewMid, 40, 40, 0, 14),
   'brew-dark': frame(brewDark, 40, 40, 0, 14),
   'brew-spice': frame(brewSpice, 40, 40, 0, 14),
+  // Distilling's columns as they went up: one orb each.
+  'orb-clear': frame(brewWhite, 40, 40, 0, 10),
+  'orb-spicy': frame(brewSpice, 40, 40, 0, 10),
+  'orb-bad': frame(brewMid, 40, 40, 0, 10),
   'carp-slipshod': frame(carpStars, 21, 21, 0, 14),
   'carp-creaky': frame(carpStars, 21, 21, 1, 14),
   'carp-vampire-proof': frame(carpStars, 21, 21, 2, 14),
@@ -56,6 +78,10 @@ export const ICONS: Record<string, Icon> = {
   'smith-chain4': frame(smithTally, 50, 46, 3, 16),
   'smith-chain5': frame(smithTally, 50, 46, 4, 16),
   'smith-chain6': frame(smithTally, 50, 46, 4, 16),
+  // Perfect boards: the sparkle a finished sword gets; one off, a glowing 1; too far off, a cold tile.
+  'smith-perfect': { url: smithTwinkle, area: [76, 0, 48, 48], height: 16 },
+  'smith-one-off': frame(smithHot, 60, 60, 0, 16),
+  'smith-far-off': frame(smithCool, 60, 60, 1, 16),
 };
 
 /** The game's puzzle icons (24x24), for the station heading. */

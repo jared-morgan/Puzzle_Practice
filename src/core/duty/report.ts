@@ -3,17 +3,26 @@
 import { currentPirate, sanitizeProfile, type PirateProfile } from './profile';
 import { PERFORMANCE } from './ratings';
 
-/** One kind of thing cleared, e.g. small chests. `icon` names a picture in icons.ts. */
+/** One kind of thing cleared, e.g. small chests. `icon` names a picture in icons.ts; SPACE is a gap in a row. */
 export interface ClearedItem {
   icon: string;
   label: string;
   count: number;
 }
 
+export const SPACE = 'space';
+
 /** A row of cleared things under one heading, e.g. 'Crates collected': small, medium, large. */
 export interface ClearedGroup {
   label: string;
   items: ClearedItem[];
+  /**
+   * 'stack' (default): the game's overlapping stacks, one per kind, with the counts beside them.
+   * 'row': every one drawn side by side in order, e.g. Distilling's columns as they went up.
+   */
+  style?: 'stack' | 'row';
+  /** The counts go on the score line, as "8 [4, 2, 0]", instead of beside the stack. */
+  inScore?: boolean;
 }
 
 export interface DutyReport {
@@ -45,7 +54,7 @@ export function makeReport(input: ReportInput): DutyReport {
   return {
     v: 1, puzzle: input.puzzle, station: input.station, ...(input.mode ? { mode: input.mode } : {}),
     pirate: currentPirate(), performance: input.performance, score: { ...input.score },
-    cleared: (input.cleared ?? []).map((group) => ({ label: group.label, items: group.items.map((item) => ({ ...item })) })),
+    cleared: (input.cleared ?? []).map((group) => ({ ...group, items: group.items.map((item) => ({ ...item })) })),
   };
 }
 
@@ -61,13 +70,15 @@ export function readReport(value: unknown): DutyReport | null {
       !r.score || !text(r.score.label) || !text(r.score.value) || !Array.isArray(r.cleared) || r.cleared.length > 8) return null;
   const cleared: ClearedGroup[] = [];
   for (const group of r.cleared) {
-    if (!group || !text(group.label) || !Array.isArray(group.items) || group.items.length > 12) return null;
+    if (!group || !text(group.label) || !Array.isArray(group.items) || group.items.length > 400 ||
+        (group.style !== undefined && group.style !== 'stack' && group.style !== 'row') ||
+        (group.inScore !== undefined && typeof group.inScore !== 'boolean')) return null;
     const items: ClearedItem[] = [];
     for (const item of group.items) {
       if (!item || !text(item.icon) || !text(item.label) || !count(item.count)) return null;
       items.push({ icon: item.icon, label: item.label, count: item.count });
     }
-    cleared.push({ label: group.label, items });
+    cleared.push({ label: group.label, items, ...(group.style ? { style: group.style } : {}), ...(group.inScore ? { inScore: true } : {}) });
   }
   return {
     v: 1, puzzle: r.puzzle!, station: r.station!, ...(r.mode !== undefined ? { mode: r.mode } : {}),
