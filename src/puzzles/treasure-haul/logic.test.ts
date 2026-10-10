@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { chestPart, chestPiece, EMERALD, EMPTY, H, HaulBoard, isChestOrigin, RUBY, type Run, Scorer, stepMessage, W } from './logic';
+import { ChestMeter, chestPart, chestPiece, EMERALD, EMPTY, H, HaulBoard, isChestOrigin, RUBY, type Run, Scorer, stepMessage, W } from './logic';
 
 /** A board from rows written top to bottom: 0-3 coins, R ruby, E emerald, . empty, C/c a chest's top/bottom. */
 function boardFrom(rows: string[], random: () => number = () => 0): HaulBoard {
@@ -70,6 +70,17 @@ describe('nextPiece', () => {
     expect([at(0), at(1)]).toEqual([RUBY, RUBY]);
     expect([at(2), at(3)]).toEqual([EMERALD, EMERALD]);
     expect([at(4), at(5), at(6), at(7), at(8), at(307)]).toEqual([0, 1, 2, 3, 0, 3]);
+  });
+});
+
+describe('ChestMeter', () => {
+  it('earns a chest per 200 coins hauled, carrying the rest over', () => {
+    const m = new ChestMeter(200);
+    expect(m.add(150)).toBe(0);
+    expect(m.add(60)).toBe(1);
+    expect(m.coins).toBe(10);
+    expect(m.add(400)).toBe(2);
+    expect(m.coins).toBe(10);
   });
 });
 

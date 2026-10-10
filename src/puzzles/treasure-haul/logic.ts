@@ -162,6 +162,26 @@ export function stepMessage(runs: readonly Run[], chain: number): Message | null
   return null;
 }
 
+/**
+ * The server's chest rule (SeaMonsterConfigObject.treasureChestInfrequency): a chest can be
+ * awarded once enough coins have been hauled since the last one. add() takes a move's points
+ * and returns how many chests they earn, keeping the remainder toward the next.
+ */
+export class ChestMeter {
+  coins = 0;
+  constructor(public perChest: number) {}
+
+  add(points: number): number {
+    this.coins += points;
+    let chests = 0;
+    while (this.coins >= this.perChest) {
+      this.coins -= this.perChest;
+      chests++;
+    }
+    return chests;
+  }
+}
+
 export interface Chest {
   value: number;
   size: number;
