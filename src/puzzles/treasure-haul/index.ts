@@ -76,12 +76,13 @@ const SKIN = [236, 188, 140];
  * 0-2: that many chests are kept coming; as one is hauled, the next is sent. spawn: a chest is
  * always waiting to come in, and the board is dealt again each time one does. clear: a chest comes in after a simulated move; each haul starts another drill.
  */
-type Mode = '0' | 'chests' | 'spawn' | 'clear' | LegacyMode;
+type Mode = '0' | 'chests1' | 'chests2' | 'spawn' | 'clear' | LegacyMode;
 /** The old fixed 1- and 2-chest modes: no longer offered, but their replays still play. */
 type LegacyMode = '1' | '2';
 const MODES: Option<Mode>[] = [
   { value: '0', label: 'No chests' },
-  { value: 'chests', label: 'Chests' },
+  { value: 'chests1', label: '1 chest' },
+  { value: 'chests2', label: '2 chests' },
   { value: 'spawn', label: 'Spawn Chests' },
   { value: 'clear', label: 'Clear Chests' },
 ];
@@ -206,12 +207,18 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
   let replays!: ReplayRecorder;
   const hands = tint(img('hands'));
 
-  let mode = store.get<Mode>('mode', '0');
-  if (mode === '1' || mode === '2') mode = 'chests';
-  if (!MODES.some((m) => m.value === mode)) mode = '0';
+  let mode = store.get<Mode>('mode', 'chests2');
+  if (mode === '1') mode = 'chests1';
+  if (mode === '2') mode = 'chests2';
+  if (!MODES.some((m) => m.value === mode)) mode = 'chests2';
   let coinsPerChest = store.get<number>('coinsPerChest', COINS_PER_CHEST);
   /** Chests mode: coins hauled since the last chest was awarded. */
   let chestMeter = new ChestMeter(coinsPerChest);
+  /** Chests modes: a chest earned while the board already has its limit, waiting for room. */
+  let chestEarned = false;
+  /** 1 chest / 2 chests: the most chests on their way or on the board at once. */
+  const chestLimit = () => (mode === 'chests1' ? 1 : mode === 'chests2' ? 2 : 0);
+  const chestMode = () => chestLimit() > 0;
   let roundSecs = store.get<number>('round', 0);
   if (!ROUNDS.some((r) => r.value === roundSecs)) roundSecs = 0;
   const bests = store.get<Record<string, number>>('bestPoints', {});
@@ -273,7 +280,7 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
   const bestKey = () => `${mode}:${mode === 'clear' ? clearPack + ':' : ''}${roundSecs}` +
     (gemRates.every((rate) => rate === 200 / 308) ? '' : `:gems:${gemRates.join('-')}`) +
     (mode === 'spawn' && spawnDelay ? ':delay' : '') +
-    (mode === 'chests' && coinsPerChest !== COINS_PER_CHEST ? `:coins:${coinsPerChest}` : '');
+    (chestMode() && coinsPerChest !== COINS_PER_CHEST ? `:coins:${coinsPerChest}` : '');
   const actionCount = () => movers.length + fades.length;
   const inFlight = () => flyers.length + minis.length;
 
@@ -395,6 +402,7 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
   function start(): void {
     replays.begin({ mode, clearPack, roundSecs, spawnDelay, gemRates: [...gemRates], coinsPerChest }, rng.snapshot());
     chestMeter = new ChestMeter(coinsPerChest);
+    chestEarned = false;
     sparks = [];
     flyers = [];
     minis = [];
@@ -425,7 +433,7 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
   /** The score a mode keeps a best of: higher is better, except clear mode's time. */
   function score(): number {
     if (mode === 'spawn') return tally.spawnScore;
-    if (mode === 'clear' || mode === 'chests') return tally.chests;
+    if (mode === 'clear' || chestMode()) return tally.chests;
     return tally.points;
   }
 
@@ -433,7 +441,7 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
     // A round counts when its time is up, or in clear mode when the board is cleared; not when stopped early.
     const completed = timed() && !!roundEnd && ticks() >= roundEnd;
     const wasRunning = running;
-    const finishedReplay = replays.finish(`${score()} ${mode === 'clear' || mode === 'chests' ? 'chests' : 'points'}`);
+    const finishedReplay = replays.finish(`${score()} ${mode === 'clear' || chestMode() ? 'chests' : 'points'}`);
     if (completed && wasRunning && !replays.isPlaying) store.addHistory(bestKey(), {
       score: score(),
       ...(finishedReplay ? { replayAt: finishedReplay.at, replayId: finishedReplay.runId ?? ''} : {}),
@@ -532,9 +540,15 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
       if (!board.chestList.length) board.chestList.push({ value: rng.randintN(0, 2), size: 0 });
       return;
     }
-    if (mode === 'chests') {
-      // The first chest is sent as the game starts; the rest are earned (awardChests).
-      if (tally.moves === 0 && !board.pending.length && !board.chestList.length && !board.cells.some(isChestOrigin)) board.pending.push({ value: pickChestValue(), size: 0 });
+    if (chestMode()) {
+      // The first chest is sent as the game starts; the rest are earned (awardChests) and wait for room under the limit.
+      let count = board.chestList.length + board.pending.length;
+      for (const p of board.cells) if (isChestOrigin(p)) count++;
+      if (tally.moves === 0 && count === 0) chestEarned = true;
+      if (chestEarned && count < chestLimit()) {
+        board.pending.push({ value: pickChestValue(), size: 0 });
+        chestEarned = false;
+      }
       return;
     }
     const want = mode === 'clear' || mode === '0' ? 0 : Number(mode);
@@ -550,10 +564,14 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
     return 0;
   }
 
-  /** Chests mode: every coinsPerChest coins hauled earns the next chest, which comes in after your next move. */
+  /**
+   * Chests modes: every coinsPerChest coins hauled earns the next chest, which comes in after
+   * your next move. With the limit already in play it waits for room (only one waits).
+   */
   function awardChests(points: number): void {
-    if (mode !== 'chests' || !board) return;
-    for (let n = chestMeter.add(points); n > 0; n--) board.pending.push({ value: pickChestValue(), size: 0 });
+    if (!chestMode() || !board) return;
+    if (chestMeter.add(points) > 0) chestEarned = true;
+    sendChests();
   }
 
   function animate(step: Step): void {
@@ -923,14 +941,14 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
 
   const best = () => bests[bestKey()];
   panel.score('Haul').stats(['', 'Now', 'Best'], () => [[
-    mode === 'spawn' ? 'Spawn score' : mode === 'clear' ? 'Chests cleared' : mode === 'chests' ? 'Chests hauled' : 'Points',
+    mode === 'spawn' ? 'Spawn score' : mode === 'clear' ? 'Chests cleared' : chestMode() ? 'Chests hauled' : 'Points',
     String(score()), timed() && best() !== undefined ? String(best()) : '—',
   ]]);
   panel.results(() => finished ? {
     title: 'Treasure Haul results',
     rows: [
-      [mode === 'spawn' ? 'Spawn score' : mode === 'clear' ? 'Chests cleared' : mode === 'chests' ? 'Chests hauled' : 'Points', String(score())],
-      ...(mode === 'chests' ? [['Points', String(tally.points)], ['Coins toward next chest', `${chestMeter.coins} / ${coinsPerChest}`]] : []),
+      [mode === 'spawn' ? 'Spawn score' : mode === 'clear' ? 'Chests cleared' : chestMode() ? 'Chests hauled' : 'Points', String(score())],
+      ...(chestMode() ? [['Points', String(tally.points)], ['Coins toward next chest', `${chestMeter.coins} / ${coinsPerChest}`]] : []),
       ['Time', `${(clockStart ? Math.max(0, stoppedAt - clockStart) / 1000 : 0).toFixed(2)}s`],
       ['Moves', String(tally.moves)], ['Best move', String(tally.bestMove)],
       ['Coins', String(tally.coins)], ['Gems', String(tally.gems)], ['Chests hauled', String(tally.chests)],
@@ -948,7 +966,7 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
     roundSecs = s;
     store.set('round', s);
   }, { disabled: () => running });
-  panel.settings.group('Chests', { hidden: () => mode !== 'chests' })
+  panel.settings.group('Chests', { hidden: () => !chestMode() })
     .number('Coins per chest', () => coinsPerChest, (v) => {
       coinsPerChest = Math.max(1, Math.round(v));
       store.set('coinsPerChest', coinsPerChest);
@@ -962,7 +980,7 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
   }, { min: 0, max: 100, step: 0.01, disabled: () => running }));
   gems.button('Defaults', () => { gemRates = [200 / 308, 200 / 308]; store.set('gemRates', gemRates); }, { disabled: () => running });
   panel.settings.group('Reset').button('Reset to defaults', () => {
-    mode = '0';
+    mode = 'chests2';
     roundSecs = 0;
     clearPack = 'standard';
     spawnDelay = false;
@@ -982,7 +1000,7 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
     migrate: (version, value) => {
       if (version !== 1 || !value || typeof value !== 'object') return null;
       const s = value as Record<string, unknown>;
-      return ['0', '1', '2', 'chests', 'spawn', 'clear'].includes(String(s.mode)) &&
+      return ['0', '1', '2', 'chests1', 'chests2', 'spawn', 'clear'].includes(String(s.mode)) &&
         (s.coinsPerChest === undefined || (Number.isFinite(s.coinsPerChest) && (s.coinsPerChest as number) >= 1)) &&
         ['standard', 'efficient', 'emeralds', 'edges'].includes(String(s.clearPack)) &&
         Number.isFinite(s.roundSecs) && (s.roundSecs as number) >= 0 && typeof s.spawnDelay === 'boolean' &&
