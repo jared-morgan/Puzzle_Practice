@@ -40,6 +40,7 @@ export function sessionAverages(games: readonly GameRecord[], options: AverageOp
   // Each kind cleared, averaged over the sessions that kept a report, in the latest report's order.
   const latest = reports.at(-1);
   for (const group of latest?.cleared ?? []) {
+    if (latest?.puzzle === 'treasure-haul') continue;
     if (group.style === 'row') continue;
     const kinds = group.items.map((item) => item.label);
     const sums = kinds.map(() => 0);
