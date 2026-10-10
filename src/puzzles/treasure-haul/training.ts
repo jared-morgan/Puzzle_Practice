@@ -5,7 +5,7 @@ export type ClearPack = 'standard' | 'efficient' | 'emeralds' | 'edges';
 export interface Drill {
   board: HaulBoard;
   chest: { x: number; y: number };
-  /** A known opening for the efficient pack, useful for validation. */
+  /** A useful opening move for validation. */
   opening?: [number, number];
   /** A complete route through a constructed edge drill. */
   solution?: [number, number][];
@@ -13,9 +13,10 @@ export interface Drill {
 }
 
 /** Practice boards have no automatic matches, and never overwrite another chest. */
-export function createDrill(random: () => number, pack: ClearPack, rules: 1 | 2 = 2): Drill {
+export function createDrill(random: () => number, pack: ClearPack, rules: 1 | 2 | 3 = 3): Drill {
   if (rules === 1 || pack === 'standard' || pack === 'efficient') return createLegacyDrill(random, pack);
   if (pack === 'edges') return createEdgeDrill(random);
+  if (rules === 3) return createEmeraldDrill(random);
   const x = 2 + Math.floor(random() * 3);
   const y = 3 + Math.floor(random() * 3);
   for (let attempt = 0; attempt < 500; attempt++) {
@@ -27,7 +28,41 @@ export function createDrill(random: () => number, pack: ClearPack, rules: 1 | 2 
     if (!board.findRuns().length) return { board, chest: { x, y } };
   }
   const fallback = new PyRandom(0);
-  return createDrill(() => fallback.random(), pack);
+  return createDrill(() => fallback.random(), pack, rules);
+}
+
+/** High chests over random coins; low emeralds offer diagonal clears rather than prepared matches. */
+function createEmeraldDrill(random: () => number, fallback = false): Drill {
+  const edge = random() < 0.3;
+  const left = random() < 0.5;
+  const x = edge ? left ? 0 : W - 2 : 2 + Math.floor(random() * 3);
+  const y = edge ? H - 2 : H - 3 + Math.floor(random() * 2);
+  for (let attempt = 0; attempt < 500; attempt++) {
+    const board = new HaulBoard(random);
+    board.populate();
+    board.placeChest(x, y, Math.floor(random() * 3));
+    board.gemRates = [0, 0];
+    board.set(0, Math.floor(random() * 2), EMERALD);
+    board.set(W - 1, Math.floor(random() * 2), EMERALD);
+    let opening: [number, number] | undefined;
+    if (edge) {
+      const outer = left ? 0 : W - 1;
+      const inner = left ? 1 : W - 2;
+      const opposite = left ? W - 1 : 0;
+      // One coin sits above the outer chest column. The chest blocks a vertical
+      // match; a different inner coin prevents it from matching across the top.
+      const colour = board.get(outer, H - 1);
+      board.set(inner, H - 1, (colour + 1 + Math.floor(random() * 3)) % 4);
+      // From the opposite bottom corner the upper diagonal hits the locked coin.
+      board.set(opposite, 1, Math.floor(random() * 4));
+      board.set(opposite, 0, EMERALD);
+      opening = [opposite, 1];
+    }
+    if (!board.findRuns().length) return { board, chest: { x, y }, ...(opening && { opening }) };
+  }
+  if (fallback) throw new Error('Unable to construct edge emeralds');
+  const fixed = new PyRandom(0);
+  return createEmeraldDrill(() => fixed.random(), true);
 }
 
 /** Original layouts and random draw order are retained for saved replays. */
