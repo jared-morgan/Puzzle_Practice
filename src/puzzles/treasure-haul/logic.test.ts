@@ -96,9 +96,9 @@ describe('earned chest supply', () => {
     expect(supply.waiting).toBe(0);
   };
 
-  it('waits a full second for the starting chest and for each earned chest', () => {
+  it.each([100, 150])('waits a full second for the starting chest and for each %i-coin award', (perChest) => {
     const b = boardFrom(QUIET, () => 0.3);
-    const supply = new ChestSupply(150, 0);
+    const supply = new ChestSupply(perChest, 0);
     supply.beginMove(b, 2);
     supply.release(b, 999, () => 0);
     expect(b.chestList).toHaveLength(0);
@@ -106,7 +106,7 @@ describe('earned chest supply', () => {
     opening(b);
     b.step();
     expect(b.cells.filter(isChestOrigin)).toHaveLength(1);
-    supply.addCleared(coins(149), 2000);
+    supply.addCleared(coins(perChest - 1), 2000);
     supply.addCleared(coins(1), 2500);
     supply.beginMove(b, 2);
     supply.release(b, 3499, () => 0);

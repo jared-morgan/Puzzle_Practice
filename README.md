@@ -22,6 +22,8 @@ compact HTML results in the board area; secondary statistics stay off the live s
 Treasure Haul offers Spawn Chests and four Clear Chests packs: middle placement, simultaneous
 vertical/horizontal threes, edge emeralds, and difficult edge chests. Clear Chests counts hauls
 over the selected round. Gem rates and the one-second spawn delay are configurable in Settings.
+The defaults are two chests, 100 cleared coins per additional chest, and Vampirate artwork.
+Settings > Display offers Classic, Haunted Seas and Vampirate artwork, with a saved preference.
 
 Forage offers Puzzle, Gauntlet, Chaos and Normal, with optional round timers. Chaos keeps the
 normal move spacing but lifts the chest count, mix and per-board limits. Settings expose chest

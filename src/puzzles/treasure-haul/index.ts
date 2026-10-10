@@ -83,9 +83,15 @@ const MODES: Option<Mode>[] = [
   { value: 'clear', label: 'Clear Chests' },
 ];
 /** Default cleared-coin threshold for earning a chest. */
-const COINS_PER_CHEST = 150;
+const COINS_PER_CHEST = 100;
 /** Keeps historical replay defaults and history keys consistent. */
 const LEGACY_COINS_PER_CHEST = 200;
+type Artwork = 'classic' | 'haunted' | 'vampirate';
+const ARTWORK: Option<Artwork>[] = [
+  { value: 'vampirate', label: 'Vampirate' },
+  { value: 'haunted', label: 'Haunted Seas' },
+  { value: 'classic', label: 'Classic' },
+];
 /** Low, medium and high value chests at the shallow end of the pool (treasureMinAwesomeness). */
 const CHEST_VALUE_WEIGHTS = [90, 9, 1];
 const ROUNDS: Option<number>[] = [
@@ -207,7 +213,15 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
   const pause = new SessionPause(rawTicks, rawReplayTime);
   const { ticks, setReplayTime } = pause;
   const [images] = await Promise.all([Images.load(imageUrls), loadFont(FONT, delarobbUrl)]);
-  const img = (name: string) => images.get(name);
+  let artwork = store.get<Artwork>('artwork', 'vampirate');
+  if (!ARTWORK.some((option) => option.value === artwork)) artwork = 'vampirate';
+  const img = (name: string) => {
+    if (artwork !== 'classic' && (name === 'chest2x2' || name === 'minichest2x2')) {
+      return images.get(`${name.slice(0, -3)}_${artwork}2x2`);
+    }
+    const alternate = `${name}_vampirate`;
+    return images.get(artwork === 'vampirate' && images.has(alternate) ? alternate : name);
+  };
   const sounds = new SoundBank<Sound>(soundUrls, () => replays?.isSeeking ?? false);
   const ctx = screen.ctx;
   const rng = new PyRandom();
@@ -221,6 +235,13 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
   if (mode === '2') mode = 'chests2';
   if (!MODES.some((m) => m.value === mode)) mode = 'chests2';
   let coinsPerChest = store.get<number>('coinsPerChest', COINS_PER_CHEST);
+  if (store.get<number>('coinDefaultVersion', 0) < 1) {
+    if (coinsPerChest === 150) {
+      coinsPerChest = COINS_PER_CHEST;
+      store.set('coinsPerChest', coinsPerChest);
+    }
+    store.set('coinDefaultVersion', 1);
+  }
   /** Chests mode: coins hauled since the last chest was awarded. */
   let chestMeter = new ChestMeter(coinsPerChest);
   /** Chests modes: a chest earned while the board already has its limit, waiting for room. */
@@ -540,7 +561,7 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
         { icon: 'haul-emerald', label: 'emeralds', count: tally.emeralds },
       ] }] : [{ label: 'Chests Hauled', items: [
         ...['small', 'medium', 'large'].map((size, i) => ({
-          icon: `${(mode === '2' || mode === 'chests2') ? 'vampirate-chest' : (mode === '1' || mode === 'chests1') ? 'haunted-chest' : 'chest'}-${size}`,
+          icon: `${artwork === 'classic' ? 'chest' : `${artwork}-chest`}-${size}`,
           label: `${size} chests`, count: tally.chestsByType[i],
         })),
       ] }],
@@ -884,7 +905,9 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
     }
     if (showEmeraldSightLines && board && !intro && stable && actionCount() === 0) drawEmeraldSightLines();
     if (active && board) {
-      ctx.drawImage(img('cursor'), cursor[0] * CELL - 4, (H - 1 - cursor[1]) * CELL - 4);
+      const cursorImage = img('cursor');
+      ctx.drawImage(cursorImage, cursor[0] * CELL - (cursorImage.width - CELL) / 2,
+        (H - 1 - cursor[1]) * CELL - (cursorImage.height - 2 * CELL) / 2);
     }
     // Sparks fly out for 900ms, fading after the first 200ms.
     for (const s of sparks) {
@@ -1036,7 +1059,14 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
 
     if (replays.isSeeking || replays.isAdvancing) return;
     screen.fill('#000');
-    screen.blit(img('background'), 0, 0);
+    if (artwork === 'vampirate') {
+      // Align the frame with the existing grid so artwork changes preserve pointer and replay positions.
+      const sourceTop = TOP - 20;
+      const background = img('background');
+      ctx.drawImage(background, 0, 0, WIDTH, sourceTop, 0, 0, WIDTH, TOP);
+      ctx.drawImage(background, 0, sourceTop, WIDTH, background.height - sourceTop,
+        0, TOP, WIDTH, background.height - sourceTop);
+    } else screen.blit(img('background'), 0, 0);
     drawTop(now);
     drawBoard(now);
     if (!running && !board) banner('Press Start to haul treasure', BOARD_Y + 180);
@@ -1132,8 +1162,12 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
     .number('Coins per chest', () => coinsPerChest, (v) => {
       coinsPerChest = Math.max(1, Math.round(v));
       store.set('coinsPerChest', coinsPerChest);
-    }, { min: 1, max: 2000, step: 10, disabled: () => running, title: 'Coins cleared to earn a chest: 150 by default. Earned chests wait at least one second and stay queued until there is room.' });
+    }, { min: 1, max: 2000, step: 10, disabled: () => running, title: 'Coins cleared to earn a chest: 100 by default. Earned chests wait at least one second and stay queued until there is room.' });
   panel.settings.group('Display')
+    .select('Artwork', ARTWORK, () => artwork, (value) => {
+      artwork = value;
+      store.set('artwork', artwork);
+    }, { title: 'Choose the board and piece artwork. Haunted Seas uses classic pieces with haunted chests.' })
     .toggle('Show coin progress', () => showCoinProgress, (on) => {
       showCoinProgress = on;
       store.set('showCoinProgress', on);
@@ -1163,10 +1197,12 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
     spawnDelay = true;
     gemRates = [200 / 308, 200 / 308];
     coinsPerChest = COINS_PER_CHEST;
+    artwork = 'vampirate';
     showCoinProgress = false;
     showWaitingChests = false;
     showEmeraldSightLines = false;
     store.set('showCoinProgress', showCoinProgress);
+    store.set('artwork', artwork);
     store.set('showWaitingChests', showWaitingChests);
     store.set('showEmeraldSightLines', showEmeraldSightLines);
     store.set('coinsPerChest', coinsPerChest);
