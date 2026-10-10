@@ -355,6 +355,10 @@ export class BrewGame {
   jugHeavies = 0;
   /** The points the client sends to the server for each column (128 + score + bonus, less the 128). */
   points = 0;
+  /** Longest Crystal Clear chain reached during this session. */
+  longestCrystalChain = 0;
+  /** Browns, blacks and burnt whites remaining before the first Crystal Clear's replacement enters. */
+  junkLeft: number | null = null;
   finished = false;
   columns: ColumnResult[] = [];
   /** The furnace's own clock, so a burn on request restarts the 306 ms rhythm. */
@@ -430,6 +434,12 @@ export class BrewGame {
     this.burnDue = false;
     this.furnace = -1;
     const result = this.board.scoreRightColumn();
+    this.longestCrystalChain = Math.max(this.longestCrystalChain, this.board.consecCrystal);
+    if (this.junkLeft === null && result.verdict === 'clear') {
+      this.junkLeft = this.board.columns.slice(0, WIDTH - 1).reduce(
+        (sum, column) => sum + column.filter((piece) => piece !== LIGHT && piece !== SPICE).length, 0,
+      );
+    }
     this.board.addNextColumn();
     this.columns.push(result);
     if (result.distilled) {

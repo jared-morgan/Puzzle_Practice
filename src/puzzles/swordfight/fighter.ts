@@ -6,7 +6,7 @@
 // so the same inputs at the same times always play out the same way.
 import { type Attack, addAttack, attackFor, attackSize, emptyAttack } from './attack';
 import {
-  Board, type Block, EMPTY, fall, findClear, findJoins, H, isStrike, NORTH, SOUTH, W, WEST,
+  Board, type Block, colour, EMPTY, fall, findClear, findJoins, H, isBreaker, isStrike, NORTH, SOUTH, W, WEST,
 } from './board';
 import { isHorizontal, type Shaft, type Strike, StrikePlacer, sprinkleColumns, sprinklePieces, type Sword } from './strikes';
 
@@ -101,8 +101,13 @@ export interface FighterStats {
   bestChain: number;
   sent: number;
   received: number;
+  largestReceived: number;
+  /** Longest run of dealt pieces without each colour breaker, including the current run. */
+  breakerDroughts: number[];
   swordsSent: number;
   biggestSword: number;
+  /** Pieces shattered by colour: red, green, blue, yellow. */
+  shatteredBy: number[];
 }
 
 export interface FighterHooks {
@@ -143,8 +148,9 @@ export class Fighter {
   joins: Join[] = [];
   /** Where an incoming sword hit something on landing, for the sparks. */
   impacts: Array<{ x: number; y: number; start: number; size: number }> = [];
-  stats: FighterStats = { pairs: 0, shattered: 0, bestChain: 0, sent: 0, received: 0, swordsSent: 0, biggestSword: 0 };
+  stats: FighterStats = { pairs: 0, shattered: 0, bestChain: 0, sent: 0, received: 0, largestReceived: 0, breakerDroughts: [0, 0, 0, 0], swordsSent: 0, biggestSword: 0, shatteredBy: [0, 0, 0, 0] };
   /** The attack built up by the current cascade, sent when the board settles. */
+  private currentDroughts = [0, 0, 0, 0];
   private cascade: Attack = emptyAttack();
   private stable = false;
   private busyUntil = 0;
@@ -404,6 +410,7 @@ export class Fighter {
     }
     this.busyUntil = Math.max(this.busyUntil, last + EXPLODE_MS, now + 150);
     this.stats.shattered += clear.cells.length;
+    for (const cell of clear.cells) if (colour(cell.piece) < 4) this.stats.shatteredBy[colour(cell.piece)]++;
     this.chain++;
     this.stats.bestChain = Math.max(this.stats.bestChain, this.chain);
     addAttack(this.cascade, attackFor(clear, this.chain));
@@ -418,6 +425,8 @@ export class Fighter {
 
   receive(shaft: Shaft): void {
     if (this.out) return;
+    const size = shaft.sprinkles + shaft.strikes.reduce((sum, strike) => sum + strike.width * strike.height, 0);
+    this.stats.largestReceived = Math.max(this.stats.largestReceived, size);
     this.incoming.push(shaft);
   }
 
@@ -581,6 +590,10 @@ export class Fighter {
     this.announceShaft();
     this.chain = 0;
     const pieces = this.hooks.nextPair();
+    for (const piece of pieces) for (let c = 0; c < 4; c++) {
+      this.currentDroughts[c] = isBreaker(piece) && colour(piece) === c ? 0 : this.currentDroughts[c] + 1;
+      this.stats.breakerDroughts[c] = Math.max(this.stats.breakerDroughts[c], this.currentDroughts[c]);
+    }
     this.next = this.hooks.peekPair();
     this.blocksSeen++;
     // Each pair starts at the normal speed, even with the drop key still held (s.v).

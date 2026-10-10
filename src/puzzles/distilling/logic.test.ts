@@ -214,6 +214,66 @@ describe('BrewGame', () => {
 });
 
 describe('practice extras', () => {
+  it('captures junk remaining at the first Crystal Clear, excluding whites, spices and the replacement', () => {
+    const game = new BrewGame(3, 0, { endless: true });
+    game.board.pickPiece = () => HEAVY;
+    // A burnt column must not capture the stat.
+    game.board.columns = game.board.columns.map((column) => column.map(() => LIGHT));
+    game.board.columns[9] = game.board.columns[9].map(() => HEAVY);
+    game.burnNow(0);
+    expect(game.junkLeft).toBeNull();
+    // Include each type of junk and spices among the nine columns that will remain.
+    game.board.columns = game.board.columns.map((column) => column.map(() => LIGHT));
+    game.board.columns[0] = [MEDIUM, HEAVY, BURNT, SPICE, LIGHT, LIGHT, LIGHT, LIGHT];
+    game.board.columns[1][0] = SPICE;
+    game.board.columns[9][0] = SPICE; // A spicy Crystal Clear still captures the stat.
+    game.burnNow(1);
+    expect(game.junkLeft).toBe(3);
+    expect(game.board.columns[0].every((piece) => piece === HEAVY)).toBe(true);
+    // Later Crystal Clears, including a new chain, must retain the original count.
+    game.burnNow(2);
+    expect(game.junkLeft).toBe(3);
+    game.board.columns[9] = game.board.columns[9].map(() => MEDIUM);
+    game.burnNow(3);
+    game.board.columns[9] = game.board.columns[9].map(() => LIGHT);
+    game.burnNow(4);
+    expect(game.junkLeft).toBe(3);
+    expect(new BrewGame(3, 0).junkLeft).toBeNull();
+  });
+
+  it('retains a zero junk count after the first Crystal Clear', () => {
+    const game = new BrewGame(3, 0, { endless: true });
+    game.board.columns = game.board.columns.map((column) => column.map(() => LIGHT));
+    game.board.pickPiece = () => HEAVY;
+    game.burnNow(0);
+    expect(game.junkLeft).toBe(0);
+    game.burnNow(1);
+    expect(game.junkLeft).toBe(0);
+  });
+
+  it('keeps the longest crystal chain after a break and a shorter chain', () => {
+    const game = new BrewGame(3, 0, { endless: true });
+    expect(game.longestCrystalChain).toBe(0);
+    const burn = (piece: number) => {
+      game.board.columns[9] = game.board.columns[9].map(() => piece);
+      game.burnNow(0);
+    };
+    burn(LIGHT);
+    expect(game.longestCrystalChain).toBe(1);
+    burn(LIGHT);
+    burn(LIGHT);
+    expect(game.longestCrystalChain).toBe(3);
+    burn(MEDIUM);
+    expect(game.board.consecCrystal).toBe(0);
+    burn(LIGHT);
+    burn(LIGHT);
+    expect(game.longestCrystalChain).toBe(3);
+    burn(LIGHT);
+    burn(LIGHT);
+    expect(game.longestCrystalChain).toBe(4);
+    expect(new BrewGame(3, 0).longestCrystalChain).toBe(0);
+  });
+
   it('pauses the furnace clock', () => {
     const game = new BrewGame(3, 0);
     game.update(TICK_MS * 10);

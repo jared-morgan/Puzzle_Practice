@@ -14,6 +14,8 @@ import { SoundBank } from '../../core/audio';
 import { copyText } from '../../core/clipboard';
 import { keyMatches } from '../../core/controls';
 import { loadFont } from '../../core/fonts';
+import { dutyDesk } from '../../core/duty/desk';
+import type { RatingScale } from '../../core/duty/ratings';
 import { historyGroup } from '../../core/history';
 import { ReplayRecorder, type PuzzleReplay, type ReplaySettingsCodec } from '../../core/replay';
 import type { InputEvent } from '../../core/input';
@@ -37,6 +39,7 @@ import {
   VIEW_Y,
 } from './game';
 import { PIECES_NO_PUTTY } from './shapes';
+import { piecesDrawn } from './report';
 import delarobbUrl from './delarobb.ttf?url';
 
 const imageUrls = import.meta.glob<string>('./media/*.png', { eager: true, query: '?url', import: 'default' });
@@ -73,6 +76,11 @@ const STAR_MS_PER_PCT = (STARS * 500) / 100;
 const LEVEL_TEXT = 'Nice work!';
 
 const SESSION_SHORT = 120000;
+/**
+ * Duty report ratings, as vampirate board-ups are rated (YPPedia, Vampirate expedition): Asleep up
+ * to Frenetic by the score (Vampire proof 2, Creaky 1, Slipshod -1), then our own four words above Frenetic.
+ */
+const RATING_SCALES: RatingScale[] = [{ id: 'boardUps', label: 'Score', cutoffs: [3, 6, 9, 12, 15, 20, 25, 30, 35, 40], gauntlet: true }];
 const SESSION_LONG = 999999999999999999;
 /** Board seeds are 48-bit, like java.util.Random's. */
 const MAX_SEED = 2 ** 48 - 1;
@@ -282,6 +290,7 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
 
   function startSession(): void {
     stats = newStats();
+    duty.clear();
     cheatsUsed = seeded || config.unlimited;
     sightUsed = false;
     if (!seeded) seed = Math.floor(Math.random() * MAX_SEED);
@@ -310,13 +319,27 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
     return (config.ghost ? 'a' : 'b') + (config.speed ? 'a' : 'b') + (config.speed ? `${config.speedHoles}${config.speedSize}${config.speedLetter}` : '000');
   }
 
+  /** The session's duty report: coffins boarded up by grade, rated by the score. */
+  function endReport() {
+    return duty.end({
+      performance: duty.rate('boardUps', score()),
+      score: { label: 'Score', value: String(score()) },
+      cleared: [{ label: 'Coffins Boarded Up', inScore: true, items: [
+        { icon: 'coffin-slipshod', label: 'slipshod', count: stats.grades[0] },
+        { icon: 'coffin-creaky', label: 'creaky', count: stats.grades[1] },
+        { icon: 'coffin-vampire-proof', label: 'vampire proof', count: stats.grades[2] },
+      ] }],
+    });
+  }
+
   function endSession(): void {
     boardActive = false;
-    const finishedReplay = replays.finish(`Score ${score()}`);
+    const report = endReport();
+    const finishedReplay = replays.finish(`Score ${score()}`, report);
     if (!endProcedureComplete) {
       // As the simulator's scores.yaml: every counted session's score, and the PB, per settings.
       if (!replays.isPlaying && !cheatsUsed && scoreCounting && !(config.ghost && sightUsed)) {
-        store.addHistory(bestScoresKey, { score: score(), ...(finishedReplay ? { replayAt: finishedReplay.at, replayId: finishedReplay.runId ?? ''} : {}) });
+        store.addHistory(bestScoresKey, { score: score(), ...duty.fields(report), ...(finishedReplay ? { replayAt: finishedReplay.at, replayId: finishedReplay.runId ?? ''} : {}) });
         if (score() > bestScore) {
           bestScore = score();
           if (!config.ghost) play('audio_pb_sound');
@@ -373,6 +396,10 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
   const inView = (x: number, y: number) => x >= VIEW_X && y >= VIEW_Y && x < VIEW_X + VIEW_W && y < VIEW_Y + VIEW_H;
 
   function handleEvents(events: InputEvent[]): void {
+    events = events.filter((event) => {
+      if (event.type === 'keydown' && keyMatches(event.key, 'vampire-carp', 'pause', 'escape')) { toggleSessionPause(); return false; }
+      return true;
+    });
     if (!game || !boardActive) return;
     const [mx, my] = input.mouse;
     if ((mx !== lastMouse[0] || my !== lastMouse[1]) && inView(mx, my)) game.pointerMove(mx, my);
@@ -597,33 +624,38 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
   /** str(round(x, n)) in Python. */
 
   /** The simulator's end-of-session table. */
+  const duty = dutyDesk(panel, store, 'vampire-carp', 'Carpentry', RATING_SCALES);
   panel.results(() => endProcedureComplete && !boardActive && endProcedureKey === bestScoresKey ? {
     title: 'Carpentry results',
+    report: duty.last,
     rows: [
       ['Score', String(score())],
       ['Time', `${(timePassed / 1000).toFixed(1)}s`],
-      ['Vampire proof / Creaky / Slipshod', stats.grades.slice().reverse().join(' / ')],
+      ['SS, CC, VP', stats.grades.join(', ')],
       ['Holes filled', String(stats.holesFilled)],
-      ['Score / hole', stats.holesFilled ? (score() / stats.holesFilled).toFixed(2) : '0'],
-      ['Pieces placed / replaced', `${stats.placed} / ${stats.replaced}`],
-      ['Flips / spins', `${stats.flips} / ${stats.spins}`],
-      ['Keyboard / mouse picks', `${stats.keyPicks} / ${stats.mousePicks}`],
-      ['Hole / deck scrolls', stats.scrolls.join(' / ')],
+      ['Score per hole', stats.holesFilled ? (score() / stats.holesFilled).toFixed(2) : '0'],
+      ['Placed, replaced', `${stats.placed}, ${stats.replaced}`],
+      ['Flips, spins', `${stats.flips}, ${stats.spins}`],
+      ['Keyboard, mouse picks', `${stats.keyPicks}, ${stats.mousePicks}`],
+      ['Hole, deck scrolls', stats.scrolls.join(', ')],
       ['Animation time', `${(stats.animating / 1000).toFixed(2)}s`],
       ['Average focus', stats.focus.length ? (stats.focus.reduce((a, b) => a + b, 0) / stats.focus.length).toFixed(1) : '0'],
       ['Longest P drought', String(Math.max(...stats.pDrought))],
-      ['Slowest / quickest hole', `${(stats.holeTimes[0] / 1000).toFixed(1)}s / ${Number.isFinite(stats.holeTimes[1]) ? (stats.holeTimes[1] / 1000).toFixed(1) : '—'}s`],
-      ['Pieces drawn', Object.entries(stats.found).map(([piece, count]) => `${piece.toUpperCase()}: ${count}`).join(' · ')],
+      ['Slowest, quickest hole', `${(stats.holeTimes[0] / 1000).toFixed(1)}s, ${Number.isFinite(stats.holeTimes[1]) ? (stats.holeTimes[1] / 1000).toFixed(1) : '—'}s`],
+      ['Pieces drawn', piecesDrawn(stats.found)],
       ['Seed', String(seedAtStart)],
+    ],
+    // Every counted session with these settings, apart from this one's details.
+    averages: [
       ...(sessionScores[bestScoresKey] ? (() => {
         const totals = sessionScores[bestScoresKey];
         return [
-          ['Sessions with these settings', String(totals.sessions)],
-          ['Average score / holes', `${totals.average_score.toFixed(2)} / ${totals.average_holes.toFixed(2)}`],
-          ['Overall score / hole', totals.score_per_hole.toFixed(2)],
+          ['Sessions', String(totals.sessions)],
+          ['Average score, holes', `${totals.average_score.toFixed(2)}, ${totals.average_holes.toFixed(2)}`],
+          ['Overall score per hole', totals.score_per_hole.toFixed(2)],
           ['Average pieces', totals.average_pieces.toFixed(1)],
-          ['Best score / most vampire proof', `${totals.max_score} / ${totals.most_vp}`],
-          ['Most holes / pieces', `${totals.most_holes} / ${totals.most_pieces}`],
+          ['Best score, most VP', `${totals.max_score}, ${totals.most_vp}`],
+          ['Most holes, pieces', `${totals.most_holes}, ${totals.most_pieces}`],
         ];
       })() : []),
     ],
@@ -664,6 +696,7 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
 
   const session = panel.session();
   panel.controls('vampire-carp', [
+    { id: 'pause', label: 'Pause / resume', defaultKey: 'Escape' },
     { id: 'flip', label: 'Flip piece', defaultKey: 'Space' },
     { id: 'rotateLeft', label: 'Rotate anticlockwise', defaultKey: 'X' },
     { id: 'rotateRight', label: 'Rotate clockwise', defaultKey: 'C' },
@@ -709,7 +742,7 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
       () => {
         if (replays.isPlaying) { replays.stop(); if (replays.isPlaying) return; }
         if (!boardActive) { replayBoardSeeds = null; replaySpeedState = null; startSession(); }
-        else replays.finish(`Score ${score()}`);
+        else replays.finish(`Score ${score()}`, endReport());
         boardActive = !boardActive;
       },
       { variant: 'primary', label: () => (replays?.isPlaying ? 'Start' : boardActive ? 'Stop' : 'Start') },

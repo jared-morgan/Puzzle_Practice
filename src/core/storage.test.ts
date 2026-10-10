@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { exportAll, importAll, mergeBackupFiles, scoreRecords, Store } from './storage';
+import { exportAll, importAll, makeRoom, mergeBackupFiles, scoreRecords, storageKind, Store } from './storage';
 import { replayId } from './replay-storage';
 
 function fakeStorage() {
@@ -125,3 +125,83 @@ describe('full data backups', () => {
     expect(store.history('test')).toEqual([{ at: 1, score: 3 }]);
   });
 });
+
+/** Storage that refuses writes past a size, the way a full browser store does. */
+function smallStorage(limit: number) {
+  const values = new Map<string, string>();
+  const size = () => [...values].reduce((n, [k, v]) => n + k.length + v.length, 0);
+  return {
+    get length() { return values.size; },
+    clear: () => values.clear(),
+    getItem: (key: string) => values.get(key) ?? null,
+    key: (index: number) => [...values.keys()][index] ?? null,
+    removeItem: (key: string) => { values.delete(key); },
+    setItem: (key: string, value: string) => {
+      const old = values.get(key);
+      values.set(key, String(value));
+      if (size() > limit) {
+        if (old === undefined) values.delete(key); else values.set(key, old);
+        throw Object.assign(new Error('full'), { name: 'QuotaExceededError' });
+      }
+    },
+  };
+}
+
+describe('when storage is full', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('sorts saved keys into settings, histories and old replay lists', () => {
+    expect(storageKind('puzzle-practice:global:profile')).toBe('setting');
+    expect(storageKind('puzzle-practice:forage:settings')).toBe('setting');
+    expect(storageKind('puzzle-practice:forage:history:normal')).toBe('history');
+    expect(storageKind('puzzle-practice:forage:replays')).toBe('replays');
+  });
+
+  it('gives up old replay lists, then the oldest games, but never settings or the profile', () => {
+    vi.stubGlobal('localStorage', smallStorage(1700));
+    const global = new Store('global');
+    const forage = new Store('forage');
+    expect(global.set('profile', { name: 'Anne' })).toBe(true);
+    expect(forage.set('replays', [{ at: 1, result: 'x'.repeat(600) }])).toBe(true);
+    for (let i = 0; i < 40; i++) forage.addHistory('normal', { score: i });
+    expect(localStorage.getItem('puzzle-practice:forage:replays')).toBeNull();
+    // The settings write that doesn't fit makes room from the history.
+    expect(forage.set('settings', { mode: 'normal', notes: 'y'.repeat(1200) })).toBe(true);
+    expect(global.get('profile', null)).toEqual({ name: 'Anne' });
+    const games = forage.history('normal');
+    expect(games.length).toBeGreaterThan(0);
+    expect(games.length).toBeLessThan(40);
+    // What's left is the newest games.
+    expect(games.at(-1)!.score).toBe(39);
+  });
+
+  it('keeps a history that alone is too big by dropping its oldest games', () => {
+    vi.stubGlobal('localStorage', smallStorage(1500));
+    const store = new Store('distilling');
+    for (let i = 0; i < 60; i++) store.addHistory('Standard', { score: i, notes: 'z'.repeat(20) });
+    const games = store.history('Standard');
+    expect(games.length).toBeLessThan(60);
+    expect(games.at(-1)!.score).toBe(59);
+    expect(new Store('distilling').history('Standard').at(-1)!.score).toBe(59);
+  });
+
+  it('has nothing to trim when only settings are left', () => {
+    vi.stubGlobal('localStorage', smallStorage(200));
+    new Store('global').set('profile', { name: 'Anne' });
+    expect(makeRoom()).toBe(false);
+    expect(new Store('global').get('profile', null)).toEqual({ name: 'Anne' });
+  });
+
+  it('restores settings and the profile from a backup before its games', () => {
+    vi.stubGlobal('localStorage', smallStorage(1200));
+    const backup = JSON.stringify({ puzzlePractice: 1, data: {
+      'puzzle-practice:forage:history:normal': Array.from({ length: 40 }, (_, i) => ({ at: i, score: i })),
+      'puzzle-practice:global:profile': { name: 'Mary', face: {} },
+      'puzzle-practice:forage:settings': { mode: 'chaos', notes: 'q'.repeat(300) },
+    } });
+    importAll(backup);
+    expect(new Store('global').get('profile', null)).toEqual({ name: 'Mary', face: {} });
+    expect(new Store('forage').get('settings', null)).toMatchObject({ mode: 'chaos' });
+  });
+});
+

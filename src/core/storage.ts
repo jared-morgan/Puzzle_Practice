@@ -1,6 +1,10 @@
 // Saved settings and scores, kept in localStorage under one key per puzzle.
 // The desktop games wrote YAML files next to the executable; this is the browser's equivalent.
 // Every access is guarded: private windows and blocked storage just mean nothing persists.
+//
+// When storage is full, room is made by trimming in priority order: replays kept in settings
+// storage by older versions go first, then the oldest games of the longest histories. Settings,
+// key bindings and the pirate profile are never removed to make room.
 
 const PREFIX = 'puzzle-practice:';
 
@@ -35,7 +39,7 @@ export function scoreRecords(data: Record<string, unknown>, puzzle?: string): Sc
     const settingsKey = key.slice(marker + ':history:'.length);
     for (const game of value) {
       if (!game || typeof game !== 'object' || !Number.isFinite(game.at) || !Number.isFinite(game.score)) continue;
-      const { at, score, replayAt, replayId, ...stats } = game as GameRecord;
+      const { at, score, replayAt, replayId, duty: _duty, ...stats } = game as GameRecord;
       const replayFileId = typeof replayAt === 'number' && Number.isFinite(replayAt)
         ? `${namespace}:${replayAt}${typeof replayId === 'string' && replayId ? `:${replayId}` : ''}` : undefined;
       scores.push({ puzzle: namespace, settingsKey, at, score, stats,
@@ -57,6 +61,73 @@ function backupItemKey(item: unknown): string {
     }
   }
   return JSON.stringify(item) ?? 'null';
+}
+
+/** What a saved key holds, which decides what goes first when storage is full. */
+export type StorageKind = 'setting' | 'history' | 'replays';
+
+export function storageKind(key: string): StorageKind {
+  if (key.endsWith(':replays')) return 'replays';
+  if (key.includes(':history:')) return 'history';
+  return 'setting';
+}
+
+function isQuotaError(error: unknown): boolean {
+  const e = error as { name?: string; code?: number } | null;
+  return !!e && (e.name === 'QuotaExceededError' || e.name === 'NS_ERROR_DOM_QUOTA_REACHED' || e.code === 22);
+}
+
+function savedKeys(): string[] {
+  const keys: string[] = [];
+  for (let i = 0; i < localStorage.length; i++) {
+    const key = localStorage.key(i);
+    if (key?.startsWith(PREFIX)) keys.push(key);
+  }
+  return keys;
+}
+
+function readArray(key: string): unknown[] {
+  try {
+    const value = JSON.parse(localStorage.getItem(key) ?? 'null');
+    return Array.isArray(value) ? value : [];
+  } catch { return []; }
+}
+
+/**
+ * Frees some room: an old replay list first, then the older half of the longest history (all of
+ * it if just one game is left). Never touches settings or `keep`. False when nothing is left to trim.
+ */
+export function makeRoom(keep?: string): boolean {
+  const keys = savedKeys().filter((key) => key !== keep);
+  const replays = keys.filter((key) => storageKind(key) === 'replays');
+  if (replays.length) {
+    replays.sort((a, b) => (localStorage.getItem(b)?.length ?? 0) - (localStorage.getItem(a)?.length ?? 0));
+    localStorage.removeItem(replays[0]);
+    return true;
+  }
+  let longest: { key: string; games: unknown[] } | null = null;
+  for (const key of keys) {
+    if (storageKind(key) !== 'history') continue;
+    const games = readArray(key);
+    if (!longest || games.length > longest.games.length) longest = { key, games };
+  }
+  if (!longest) return false;
+  historyRevision++;
+  if (longest.games.length <= 1) localStorage.removeItem(longest.key);
+  else localStorage.setItem(longest.key, JSON.stringify(longest.games.slice(Math.ceil(longest.games.length / 2))));
+  return true;
+}
+
+/** Writes a value, making room as needed; false if it still doesn't fit or storage is unavailable. */
+function writeItem(key: string, json: string): boolean {
+  for (;;) {
+    try {
+      localStorage.setItem(key, json);
+      return true;
+    } catch (error) {
+      if (!isQuotaError(error) || !makeRoom(key)) return false;
+    }
+  }
 }
 
 export class Store {
@@ -82,15 +153,25 @@ export class Store {
     }
   }
 
-  /** Saves a value; false if storage is unavailable or full. */
+  /**
+   * Saves a value; false if storage is unavailable or full. A full store first makes room (see
+   * makeRoom); a history that still doesn't fit keeps its newest games.
+   */
   set(name: string, value: unknown): boolean {
     if (this.readOnly) return false;
     try {
-      localStorage.setItem(this.key(name), JSON.stringify(value));
-      if (typeof window !== 'undefined') window.dispatchEvent(new Event('puzzle-practice-data-changed'));
-      return true;
+      const key = this.key(name);
+      let saved = writeItem(key, JSON.stringify(value));
+      if (!saved && storageKind(key) === 'history' && Array.isArray(value)) {
+        while (!saved && value.length > 1) {
+          value.splice(0, Math.ceil(value.length / 2));
+          saved = writeItem(key, JSON.stringify(value));
+        }
+      }
+      if (saved && typeof window !== 'undefined') window.dispatchEvent(new Event('puzzle-practice-data-changed'));
+      return saved;
     } catch {
-      // Storage unavailable or full: keep playing without saving.
+      // Storage unavailable: keep playing without saving.
       return false;
     }
   }
@@ -169,7 +250,10 @@ export function importAll(json: string, replayLimit = 10): number {
   }
   let count = 0;
   historyRevision++;
-  for (const [key, value] of Object.entries(parsed.data)) {
+  // Settings and the profile first, so a backup too big for storage gives up games, not settings.
+  const order: Record<StorageKind, number> = { setting: 0, history: 1, replays: 2 };
+  const entries = Object.entries(parsed.data).sort(([a], [b]) => order[storageKind(a)] - order[storageKind(b)]);
+  for (const [key, value] of entries) {
     if (!key.startsWith(PREFIX)) continue;
     let next = value;
     if (Array.isArray(value) && (key.includes(':history:') || key.endsWith(':replays'))) {
@@ -190,9 +274,9 @@ export function importAll(json: string, replayLimit = 10): number {
       }
       next = merged;
     }
-    localStorage.setItem(key, JSON.stringify(next));
-    count++;
+    if (writeItem(key, JSON.stringify(next))) count++;
   }
+  historyRevision++;
   if (typeof window !== 'undefined') window.dispatchEvent(new Event('puzzle-practice-data-changed'));
   return count;
 }
