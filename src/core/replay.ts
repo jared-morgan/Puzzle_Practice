@@ -1,3 +1,5 @@
+import { setReplayPirate } from './duty/profile';
+import { readReport, showsDutyReport, type DutyReport } from './duty/report';
 import type { InputEvent, Point } from './input';
 import type { Panel } from './panel';
 import { Store } from './storage';
@@ -27,6 +29,8 @@ export interface PuzzleReplay {
   frames: ReplayFrame[];
   /** Original simulation frame times, independent of pointer compression and playback speed. */
   steps?: number[];
+  /** The duty report the run ended with: who played it, their rating and what they cleared. Older files have none. */
+  report?: DutyReport;
 }
 
 /** Compact on-disk representation; playback expands this back into PuzzleReplay. */
@@ -46,6 +50,7 @@ export interface CompactPuzzleReplay {
   frames: Array<Array<unknown>>;
   /** Delta-encoded simulation frame times. */
   steps?: number[];
+  report?: DutyReport;
 }
 
 async function transformBytes(bytes: Uint8Array, format: 'gzip', direction: 'compress' | 'decompress'): Promise<Uint8Array> {
@@ -129,12 +134,13 @@ export function packReplay(tape: PuzzleReplay): CompactPuzzleReplay {
     result: tape.result, settings: tape.settings, ...(tape.settingsVersion ? { settingsVersion: tape.settingsVersion } : {}),
     ...(tape.simulatorVersion ? { simulatorVersion: tape.simulatorVersion } : {}), seed: tape.seed, frames,
     ...(tape.steps ? { steps: tape.steps.map((time, index) => time - (tape.steps![index - 1] ?? 0)) } : {}),
+    ...(tape.report ? { report: tape.report } : {}),
   };
 }
 
 /** Expands a current compact file or passes through a legacy v1 replay. */
 export function unpackReplay(value: unknown): PuzzleReplay | null {
-  if (isPuzzleReplay(value)) return value;
+  if (isPuzzleReplay(value)) return withReport(value, value.report);
   if (!isCompactPuzzleReplay(value)) return null;
   try {
     const frames = value.frames.map((raw): ReplayFrame => {
@@ -189,8 +195,15 @@ export function unpackReplay(value: unknown): PuzzleReplay | null {
       ...(value.simulatorVersion ? { simulatorVersion: value.simulatorVersion } : {}),
       ...(steps ? { steps } : {}),
     };
-    return isPuzzleReplay(replay) ? replay : null;
+    return isPuzzleReplay(replay) ? withReport(replay, value.report) : null;
   } catch { return null; }
+}
+
+/** A replay keeps its report only if the report reads back cleanly; a damaged one is dropped, not the replay. */
+function withReport(tape: PuzzleReplay, report: unknown): PuzzleReplay {
+  const { report: _, ...rest } = tape;
+  const clean = report === undefined ? null : readReport(report);
+  return clean ? { ...rest, report: clean } : rest;
 }
 
 /** Each puzzle owns its settings schema and migrations; the replay envelope stays shared. */
@@ -315,7 +328,7 @@ export class ReplayRecorder {
   private readonly file = document.createElement('input');
 
   constructor(
-    private readonly puzzle: string, private readonly store: Store, panel: Panel,
+    private readonly puzzle: string, private readonly store: Store, private readonly panel: Panel,
     private readonly ticks: () => number,
     private readonly restore: (tape: PuzzleReplay) => void,
     private readonly stopRestored?: () => void,
@@ -341,7 +354,10 @@ export class ReplayRecorder {
       formatValue: (seconds) => String(Math.round(seconds)), outputWidth: 4,
       disabled: () => !this.tapes.length || !!this.recording || this.loading,
       onCommit: () => { void this.jumpSelected(); this.scrubSeconds = null; } })
-    .button('Save replay file', () => void this.download(), { disabled: () => !this.tapes.length || this.loading });
+    .button('Save replay file', () => void this.download(), { disabled: () => !this.tapes.length || this.loading })
+    .button('Report', () => void this.showSelectedReport(), {
+      title: 'Show the duty report this replay ended with', disabled: () => !this.tapes.length || this.loading,
+    });
     group.select('Playback speed', [
       { value: 0.25, label: '0.25×' }, { value: 0.5, label: '0.5×' }, { value: 1, label: '1×' },
       { value: 2, label: '2×' }, { value: 4, label: '4×' },
@@ -367,6 +383,7 @@ export class ReplayRecorder {
   }
 
   begin(settings: unknown, seed: unknown, start = this.ticks()): void {
+    if (!this.isPlaying) this.closeReplayReport();
     if (this.isPlaying || this.disposed || !this.preferences.get<boolean>('saveReplays', true)) return;
     ++this.request;
     this.loading = false;
@@ -382,10 +399,12 @@ export class ReplayRecorder {
       result: 'In progress', settings: structuredClone(settings), seed: structuredClone(seed), frames: [], steps: [] };
   }
 
-  finish(result: string): PuzzleReplay | null {
+  /** Ends the recording; the report, if given, is saved with it. */
+  finish(result: string, report?: DutyReport | null): PuzzleReplay | null {
     if (!this.recording || this.isPlaying) return null;
     this.recording.duration = Math.max(this.recording.duration, this.ticks() - this.recordStart);
     this.recording.result = result;
+    if (report) this.recording.report = structuredClone(report);
     const finished = this.compressRecording ? compressReplay(this.recording) : this.recording;
     this.recording = null; this.pendingMouse = null;
     this.addTape(finished);
@@ -414,7 +433,12 @@ export class ReplayRecorder {
     if (this.injected) return this.injected;
     if (this.playback) {
       const p = this.playback;
-      if (p.finishPending) { this.stopPlayback(); return this.routed([], p.mouse, p.elapsed); }
+      if (p.finishPending) {
+        this.stopPlayback();
+        // The run is over: show the report it was saved with, as it was then.
+        if (p.tape.report && showsDutyReport(p.tape.report)) this.panel.showReport?.(p.tape.report);
+        return this.routed([], p.mouse, p.elapsed);
+      }
       const realNow = performance.now();
       const target = p.paused ? p.elapsed : Math.min(p.tape.duration, p.elapsed + Math.max(0, realNow - p.lastReal) * p.speed);
       p.lastReal = realNow;
@@ -673,6 +697,8 @@ export class ReplayRecorder {
     try {
       const settings = this.migratedSettings(tape);
       if (settings === null || !this.validateTape(tape)) return false;
+      this.closeReplayReport();
+      setReplayPirate(tape.report?.pirate ?? null);
       this.restore({ ...tape, settings: structuredClone(settings), settingsVersion: this.settingsCodec.currentVersion });
       restored = true;
       return true;
@@ -681,6 +707,20 @@ export class ReplayRecorder {
       if (!restored) { this.stopRestored?.(); this.store.setReadOnly(false); }
       this.restoring = false;
     }
+  }
+  /** A live game is starting: reports go back to today's pirate, and a replay's report closes. */
+  private closeReplayReport(): void {
+    setReplayPirate(null);
+    if (this.panel.shownReport) this.panel.showReport?.(null);
+  }
+  private async showSelectedReport(): Promise<void> {
+    const entry = this.tapes[this.selected];
+    if (!entry) return;
+    try {
+      const tape = await this.loadTape(entry);
+      if (tape?.report && showsDutyReport(tape.report)) this.panel.showReport?.(tape.report);
+      else this.replayStorageError = 'This replay was saved without a duty report.';
+    } catch { this.replayStorageError = 'This replay could not be loaded.'; }
   }
   private togglePause(): void {
     const p = this.playback;

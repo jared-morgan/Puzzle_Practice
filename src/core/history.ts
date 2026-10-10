@@ -1,11 +1,25 @@
 // A puzzle's past games on the panel's History tab: how many were played with the current
 // settings, and the most recent ones, newest first. The games come from Store.history / Store.addHistory.
-import type { Panel } from './panel';
+// A game saved with a duty report (its `duty` field) has a button that shows the report again.
+import { decodeReport, showsDutyReport, type DutyReport } from './duty/report';
+import { sessionAverages } from './duty/desk';
+import type { Panel, RowAction } from './panel';
 import type { GameRecord } from './storage';
 
 export interface HistoryColumn {
   label: string;
   value: (game: GameRecord) => string;
+}
+
+const reports = new WeakMap<GameRecord, DutyReport | null>();
+/** A game's saved duty report, decoded once. */
+function reportOf(game: GameRecord | undefined): DutyReport | null {
+  if (!game) return null;
+  if (!reports.has(game)) {
+    const report = decodeReport(game.duty);
+    reports.set(game, report && showsDutyReport(report) ? report : null);
+  }
+  return reports.get(game)!;
 }
 
 /** How many recent games the table lists. */
@@ -29,6 +43,7 @@ export function historyGroup(
   columns: readonly HistoryColumn[],
   title = 'Past games',
   replayAction?: { available: (game: GameRecord) => boolean; play: (game: GameRecord) => void },
+  showReports = true,
 ): void {
   const hidden = () => games() === null;
   const shownGames = () => (games() ?? []).slice(-SHOWN).reverse();
@@ -43,11 +58,25 @@ export function historyGroup(
       ['', ...columns.map((c) => c.label)],
       () => shownGames().map((game) => [when(game.at), ...columns.map((c) => c.value(game))]),
       {},
-      replayAction ? {
-        label: '▶',
-        title: 'Play this game replay',
-        onClick: (index) => { const game = shownGames()[index]; if (game) replayAction.play(game); },
-        disabled: (index) => { const game = shownGames()[index]; return !game || !replayAction.available(game); },
-      } : undefined,
+      [
+        ...(showReports ? [{
+          label: '📜',
+          title: 'Show this game’s duty report',
+          onClick: (index: number) => {
+            const report = reportOf(shownGames()[index]);
+            if (report) panel.showReport(report, () => sessionAverages(games() ?? [], {
+              scoreLabel: report.score.label,
+              lowerIsBetter: report.puzzle === 'forage' && report.score.label === 'Moves',
+            }));
+          },
+          disabled: (index: number) => !reportOf(shownGames()[index]),
+        }] : []),
+        ...(replayAction ? [{
+          label: '▶',
+          title: 'Play this game replay',
+          onClick: (index: number) => { const game = shownGames()[index]; if (game) replayAction.play(game); },
+          disabled: (index: number) => { const game = shownGames()[index]; return !game || !replayAction.available(game); },
+        }] : []),
+      ] satisfies RowAction[],
     );
 }

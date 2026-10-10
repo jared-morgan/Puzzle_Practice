@@ -8,9 +8,13 @@
 // On top of the client's game are the Forage Simulator's modes: Puzzle (its hand-made boards, from
 // logic.ts and puzzles.ts), CI and Infinite (cursed isle foraging, with the simulator's chests and
 // flat 1/2/3 scoring, crates.ts) and Normal (normal foraging on the client's crate rules and points).
+import { SessionPause } from '../../core/pause';
 import { Images } from '../../core/assets';
 import { SoundBank } from '../../core/audio';
 import { loadFont } from '../../core/fonts';
+import { dutyDesk } from '../../core/duty/desk';
+import type { DutyReport } from '../../core/duty/report';
+import type { RatingScale } from '../../core/duty/ratings';
 import { historyGroup } from '../../core/history';
 import { ReplayRecorder, type PuzzleReplay, type ReplayAction, type ReplaySettingsCodec } from '../../core/replay';
 import type { GameRecord } from '../../core/storage';
@@ -91,6 +95,16 @@ const MODES: Option<Mode>[] = [
   { value: 'chaos', label: 'Chaos' },
   { value: 'normal', label: 'Normal' },
 ];
+/**
+ * Duty report ratings. Normal foraging goes by points a move. Gauntlet and Chaos are rated like
+ * cursed isle foraging (YPPedia, Cursed Isles): Asleep up to Frenetic by points (bone box 1, fetish
+ * jar 2, cursed chest 3), then four extra words and 👀 at 40. Puzzles are Learning.
+ */
+const RATING_SCALES: RatingScale[] = [
+  { id: 'normal', label: 'Normal, points a move', cutoffs: [0.25, 0.5, 0.8, 1.2, 1.6], step: 0.05 },
+  { id: 'gauntletPoints', label: 'Gauntlet and Chaos, points', cutoffs: [3, 6, 9, 12, 15, 20, 25, 30, 35, 40], gauntlet: true },
+];
+
 /** Modes that end and keep a best score. */
 const SCORED = new Set<Mode>(['ci', 'infinite', 'normal', 'chaos']);
 
@@ -158,7 +172,9 @@ interface Timed {
   start: number;
 }
 
-export default (async ({ screen, input, panel, store, ticks, setReplayTime }) => {
+export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplayTime: rawReplayTime }) => {
+  const pause = new SessionPause(rawTicks, rawReplayTime);
+  const { ticks, setReplayTime } = pause;
   const [images] = await Promise.all([Images.load(imageUrls), loadFont(FONT, delarobbUrl)]);
   const img = (name: string) => images.get(name);
   const rng = new PyRandom();
@@ -191,6 +207,8 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
   let ended = false;
   let pendingNextBoard = false;
   let movesUsed = 0;
+  let clockwise = 0;
+  let anticlockwise = 0;
   let score = 0;
   /** The banana meter: crates collected on this board, and how full it's drawn (0-100%). */
   let crates = 0;
@@ -198,6 +216,8 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
   let meterAt = 0;
   let startTime = 0;
   let timePassed = 0;
+  /** Crates collected this session, small (1x1), medium (2x2) and large (3x2), for the duty report. */
+  let sessionCrates = [0, 0, 0];
   let bestScore: number | null = null;
   let record: PuzzleRecord | null = null;
   /** The move being animated, and when its current step started. */
@@ -298,7 +318,11 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
   }
 
   function start(): void {
+    pause.resume();
     movesUsed = 0;
+    clockwise = anticlockwise = 0;
+    sessionCrates = [0, 0, 0];
+    duty.clear();
     settledAt = 0;
     pendingNextBoard = false;
     ended = false;
@@ -358,9 +382,10 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
   function finishPuzzle(): void {
     ended = true;
     boardActive = false;
-    const finishedReplay = endRecording(`Puzzle ${puzzleId}, ${movesUsed} moves`);
+    const report = endReport();
+    const finishedReplay = endRecording(`Puzzle ${puzzleId}, ${movesUsed} moves`, report);
     if (settings.scramble || replay) return;
-    store.addHistory(historyKey()!, { score: movesUsed, moves: movesUsed, time: timePassed, ...(finishedReplay ? { replayAt: finishedReplay.at, replayId: finishedReplay.runId ?? '' } : {}) });
+    store.addHistory(historyKey()!, { score: movesUsed, moves: movesUsed, clockwise, anticlockwise, time: timePassed, ...duty.fields(report), ...(finishedReplay ? { replayAt: finishedReplay.at, replayId: finishedReplay.runId ?? '' } : {}) });
     const best = record ?? { moves: movesUsed, time: timePassed };
     record = { moves: Math.min(best.moves, movesUsed), time: Math.min(best.time, timePassed) };
     puzzleRecords[puzzleId] = record;
@@ -379,15 +404,16 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
     const key = ciKey();
     const best = bests();
     const final = shownScore();
-    const finishedReplay = endRecording(settings.mode === 'normal' ? `${scoreText(final)} a move` : `Score ${final}`);
+    const report = endReport();
+    const finishedReplay = endRecording(settings.mode === 'normal' ? `${scoreText(final)} a move` : `Score ${final}`, report);
     if (!replay) {
       if (final > (best[key] ?? 0)) {
         best[key] = final;
         store.set(settings.mode === 'normal' ? 'normalBestPerMove' : 'ciBest', best);
       }
       store.addHistory(historyKey()!, settings.mode === 'normal'
-        ? { score: Number(final.toFixed(2)), points: score, moves: movesUsed, ...(finishedReplay ? { replayAt: finishedReplay.at, replayId: finishedReplay.runId ?? '' } : {}) }
-        : { score: final, ...(finishedReplay ? { replayAt: finishedReplay.at, replayId: finishedReplay.runId ?? '' } : {}) });
+        ? { score: Number(final.toFixed(2)), points: score, moves: movesUsed, clockwise, anticlockwise, ...duty.fields(report), ...(finishedReplay ? { replayAt: finishedReplay.at, replayId: finishedReplay.runId ?? '' } : {}) }
+        : { score: final, clockwise, anticlockwise, ...duty.fields(report), ...(finishedReplay ? { replayAt: finishedReplay.at, replayId: finishedReplay.runId ?? '' } : {}) });
     }
     bestScore = Math.max(bestScore ?? 0, final);
     // A full meter is "Great work!" in the client, and the pieces fly off a second later.
@@ -397,6 +423,24 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
     } else outro();
   }
 
+  /** The session's duty report: what it's rated on depends on the mode. */
+  function endReport(): DutyReport {
+    const gauntlet = settings.mode === 'ci' || settings.mode === 'chaos';
+    const performance = settings.mode === 'normal' ? duty.rate('normal', shownScore())
+      : gauntlet ? duty.rate('gauntletPoints', score) : duty.rate(null, null);
+    return duty.end({
+      mode: MODES.find((m) => m.value === settings.mode)?.label,
+      performance,
+      score: isPuzzle() ? { label: 'Moves', value: String(movesUsed) }
+        : { label: settings.mode === 'normal' ? 'Points a move' : 'Score', value: scoreText(shownScore()) },
+      cleared: [{ label: 'Crates Collected', inScore: true, items: [
+        { icon: 'ci-bone-box', label: 'bone boxes', count: sessionCrates[0] },
+        { icon: 'ci-fetish-jar', label: 'fetish jars', count: sessionCrates[1] },
+        { icon: 'ci-cursed-chest', label: 'cursed chests', count: sessionCrates[2] },
+      ] }],
+    });
+  }
+
   /** The board can take a click: playing, not mid-cascade, not flying in or out. */
   const inPlay = () => boardActive && !playing.length && clock() >= settledAt && !flight && (isPuzzle() || !roundSeconds() || clock() - startTime < roundDuration());
 
@@ -404,8 +448,13 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
   function act(cell: Cell, ccw: boolean, replayed = false): void {
     if (!replayed && !inPlay()) return;
     game.steps = [];
+    const rotation = !isTool(game.board.getPiece(cell[0], cell[1]));
     const outcome = game.act(cell[0], cell[1], ccw);
     if (outcome === 'illegal') return;
+    if (rotation) {
+      if (ccw) anticlockwise++;
+      else clockwise++;
+    }
     if (!replayed && !replay) {
       replays.action({ type: 'forage-act', data: { x: cell[0], y: cell[1], ccw } });
       recordedAction = true;
@@ -416,6 +465,7 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
       if (settings.mode === 'normal') score += result.points;
       else if (settings.mode !== 'puzzle') score += result.gauntletPoints;
       crates += result.collected[0] + result.collected[1] + result.collected[2];
+      sessionCrates = sessionCrates.map((n, i) => n + result.collected[i]);
       // The score sound, by the move's client points (client/o.p()).
       if (result.points > 0 && !(settings.mode === 'normal' && crates >= BANANAS)) {
         const last = game.steps[game.steps.length - 1];
@@ -453,12 +503,12 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
       } else {
         boardActive = false;
         ended = true;
-        endRecording(`Dismissed, ${movesUsed} moves`);
+        endRecording(`Dismissed, ${movesUsed} moves`, endReport());
       }
     } else if (boardActive) {
       boardActive = false;
       ended = true;
-      endRecording(settings.mode === 'puzzle' ? `Puzzle ${puzzleId}, stopped` : `Stopped, ${movesUsed} moves`);
+      endRecording(settings.mode === 'puzzle' ? `Puzzle ${puzzleId}, stopped` : `Stopped, ${movesUsed} moves`, endReport());
     } else {
       const seed = () => Math.floor(Math.random() * 2 ** 32);
       sessionSeed = { format: 'forage-replay-state', seeds: [seed(), seed()], boards: [] };
@@ -471,9 +521,9 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
   }
 
   /** Keeps the session just played with the recent replays, if a move was made in it. */
-  function endRecording(result: string): PuzzleReplay | null {
+  function endRecording(result: string, report?: DutyReport): PuzzleReplay | null {
     if (replay || !sessionSeed) return null;
-    const finished = recordedAction ? replays.finish(result) : (replays.cancel(), null);
+    const finished = recordedAction ? replays.finish(result, report) : (replays.cancel(), null);
     sessionSeed = null;
     recordedAction = false;
     return finished;
@@ -498,6 +548,7 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
     crates = 0;
     meterShown = 0;
     movesUsed = 0;
+    clockwise = anticlockwise = 0;
     score = 0;
     timePassed = 0;
     meterAt = ticks();
@@ -594,6 +645,8 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
     }
   }
 
+  pause.install(panel, () => boardActive && !ended);
+
   // ---- Panel ----
 
   const isPuzzle = () => settings.mode === 'puzzle';
@@ -622,6 +675,7 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
   });
 
   panel.controls('forage', [
+    { id: 'pause', label: 'Pause / resume', defaultKey: 'Escape' },
     { id: 'left', label: 'Move left', defaultKey: 'ArrowLeft' },
     { id: 'right', label: 'Move right', defaultKey: 'ArrowRight' },
     { id: 'up', label: 'Move up', defaultKey: 'ArrowUp' },
@@ -662,13 +716,23 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
     isPuzzle() ? String(movesUsed) : scoreText(shownScore()),
     isPuzzle() ? !settings.scramble && record ? String(record.moves) : '' : bestScore !== null ? scoreText(bestScore) : '',
   ]]);
+  const duty = dutyDesk(panel, store, 'forage', 'Foraging', RATING_SCALES, {
+    shown: (id) => (id === 'normal' ? settings.mode === 'normal' : settings.mode === 'ci' || settings.mode === 'chaos'),
+  });
   panel.results(() => ended && !flight ? {
     title: 'Forage results',
+    report: duty.last,
     rows: [
       [isPuzzle() ? 'Moves' : 'Score', isPuzzle() ? String(movesUsed) : scoreText(shownScore())],
-      ['Time', `${(timePassed / 1000).toFixed(2)}s`], ['Moves', String(movesUsed)],
-      ['Points', String(score)], ['Crates collected on last board', String(crates)],
+      ['Time', `${(timePassed / 1000).toFixed(2)}s`],
+      ...(isPuzzle() ? [] : [['Moves', String(movesUsed)]]),
+      ['Clockwise, anticlockwise', `${clockwise}, ${anticlockwise}`],
+      // Points are the score except in Normal, where the score is points a move.
+      ...(settings.mode === 'normal' ? [['Points', String(score)]] : []),
     ],
+    averages: duty.averages(historyKey() ? store.history(historyKey()!) : null, isPuzzle()
+      ? { scoreLabel: 'Moves', lowerIsBetter: true, digits: 1 }
+      : { scoreLabel: settings.mode === 'normal' ? 'Points a move' : 'Score' }),
   } : null);
 
   // Every scored game, kept per settings key as the desktop version's score lists were.
@@ -1097,6 +1161,9 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
   }
 
   function frame(events: InputEvent[]): void {
+    const liveEvents = pause.input(events, 'forage', boardActive && !ended);
+    if (liveEvents === null) return;
+    events = liveEvents;
     const routed = replays.frame([], [Math.round(input.mouse[0]), Math.round(input.mouse[1])], ticks());
     if (replay) {
       replay.now = routed.elapsed;
