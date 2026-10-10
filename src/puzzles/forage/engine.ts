@@ -47,8 +47,8 @@ export const TIMING = {
   turn: 250,
   /** Gravity: 45px x rows at 0.35 x 1.5 px/ms, truncated per piece (client/w). */
   fall: (rows: number) => Math.trunc((CELL * rows) / Math.fround(Math.fround(0.35) * 1.5)),
-  /** New practice chests enter at the base piece speed, before accelerated settling. */
-  chestEntry: (rows: number) => Math.trunc((CELL * rows) / Math.fround(0.35)),
+  /** New chests drop in at the same speed as the pieces that refill the board, 85ms a row. */
+  chestEntry: (rows: number) => Math.trunc((CELL * rows) / Math.fround(Math.fround(0.35) * 1.5)),
   /** Earthquake: 45px x columns at 0.1 px/ms, plus up to 20% more at random (client/s). */
   slide: (columns: number) => {
     const t = Math.trunc((CELL * columns) / Math.fround(0.1));
@@ -126,6 +126,8 @@ export interface Step {
   sounds: { name: SoundName; delay: number }[];
   effects: Effect[];
   duration: number;
+  /** The ants' step, which comes once the board has settled after a move. */
+  ants?: boolean;
 }
 
 export interface MoveResult {
@@ -484,6 +486,7 @@ export class Forage {
   private tickAnts(): void {
     if (!this.board.antsOnBoard()) return;
     const step = this.begin();
+    step.ants = true;
     let ants = EMPTY;
     for (let x = 0; x < WIDTH && ants === EMPTY; x++) for (let y = 0; y < HEIGHT && ants === EMPTY; y++) if (isAnts(this.board.getPiece(x, y))) ants = this.board.getPiece(x, y);
     this.board.tickAnts(
