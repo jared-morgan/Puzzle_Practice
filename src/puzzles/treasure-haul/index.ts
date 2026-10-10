@@ -3,6 +3,7 @@
 import { SessionPause } from '../../core/pause';
 import { Images } from '../../core/assets';
 import { SoundBank } from '../../core/audio';
+import { TimerWarning } from '../../core/timer-warning';
 import { loadFont } from '../../core/fonts';
 import { dutyDesk } from '../../core/duty/desk';
 import type { RatingScale } from '../../core/duty/ratings';
@@ -223,6 +224,7 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
     return images.get(artwork === 'vampirate' && images.has(alternate) ? alternate : name);
   };
   const sounds = new SoundBank<Sound>(soundUrls, () => replays?.isSeeking ?? false);
+  const warning = new TimerWarning('vampirate', () => replays?.isSeeking ?? false);
   const ctx = screen.ctx;
   const rng = new PyRandom();
   rng.seedFromCrypto();
@@ -454,6 +456,7 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
 
   function start(): void {
     pause.resume();
+    warning.reset();
     replays.begin({ mode, clearPack, roundSecs, spawnDelay, gemRates: [...gemRates], coinsPerChest, chestRules, trainingRules, dismissRules }, rng.snapshot());
     dismissRequested = false;
     chestSupply = new ChestSupply(coinsPerChest, ticks(), mode !== 'chests2' ? 'initial' : chestRules === 4 ? 'wait' : chestRules === 3 ? 'clear' : 'initial');
@@ -1043,6 +1046,7 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
       updateMovers(now);
       updateFlyers(now);
       if (running) {
+        warning.update(roundEnd ? roundEnd - now : null);
         evolve();
         finishDismiss();
         // Time's up: no more swaps, and the round ends once the board settles.
@@ -1253,5 +1257,5 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
     }
   }, (seed) => new PyRandom(0).restore(seed), setReplayTime, () => frame([]), replaySettingsCodec, () => !running || replays.isPlaying);
 
-  return { frame, dispose: () => { replays.dispose(); sounds.dispose(); } };
+  return { frame, dispose: () => { replays.dispose(); sounds.dispose(); warning.dispose(); } };
 }) satisfies PuzzleFactory;

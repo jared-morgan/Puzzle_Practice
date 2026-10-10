@@ -9,14 +9,14 @@ Practice versions of Puzzle Pirates puzzles that run in the browser:
 - **Vampire Carp**: patch coffin holes with pentomino planks (the Vampire Lair's carpentry, rebuilt from the game).
 - **Blacksmithing**: strike squares to forge a sword, each piece deciding where you strike next.
 - **Swordfight**: drop pairs, shatter them with breakers and fuse blocks into swords, against training
-  opponents or on your own (rebuilt from the game; see [what we know and what's still open](docs/swordfight-findings.md)).
+  opponents or on your own.
 
 Play at [puzzle-practice.github.io/Puzzle_Practice](https://puzzle-practice.github.io/Puzzle_Practice/).
 
 Source: [puzzle-practice/Puzzle_Practice](https://github.com/puzzle-practice/Puzzle_Practice).
 
 The main score and relevant timer remain visible above Play, Settings and History. Settings
-include a shared 0–100 volume slider and an option to hide the timer. Finished sessions show
+include a shared 0–100 volume slider, a Warning timer toggle and an option to hide the timer. Finished sessions show
 compact HTML results in the board area; secondary statistics stay off the live score display.
 
 Treasure Haul offers Spawn Chests and four Clear Chests packs: middle placement, simultaneous
@@ -85,8 +85,6 @@ scripts/
   new-puzzle.mjs     npm run new-puzzle -- <id> "<Title>"
   parity/            run the original Python code to make test fixtures
 ```
-
-To add a puzzle, see [docs/adding-a-puzzle.md](docs/adding-a-puzzle.md).
 
 ## Deploying
 

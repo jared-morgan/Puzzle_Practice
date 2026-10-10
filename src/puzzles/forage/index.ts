@@ -11,6 +11,7 @@
 import { SessionPause } from '../../core/pause';
 import { Images } from '../../core/assets';
 import { SoundBank } from '../../core/audio';
+import { TimerWarning } from '../../core/timer-warning';
 import { loadFont } from '../../core/fonts';
 import { dutyDesk } from '../../core/duty/desk';
 import type { DutyReport } from '../../core/duty/report';
@@ -182,6 +183,7 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
   const flights = new PyRandom();
   looks.random = () => flights.random();
   const sounds = new SoundBank<SoundName>(soundUrls);
+  const warning = new TimerWarning('gauntlet', () => replays?.isSeeking ?? false);
 
   const settings: Settings = { ...DEFAULT_SETTINGS, ...store.get<Partial<Settings>>('settings', {}) };
   if (settings.mode === 'infinite') {
@@ -319,6 +321,7 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
 
   function start(): void {
     pause.resume();
+    warning.reset();
     movesUsed = 0;
     clockwise = anticlockwise = 0;
     sessionCrates = [0, 0, 0];
@@ -1148,6 +1151,7 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
     stepMeter(now);
     if (!boardActive) return;
     timePassed = Math.max(0, now - startTime);
+    if (now >= startTime) warning.update(!isPuzzle() && roundSeconds() > 0 ? roundDuration() - timePassed : null);
     if (playing.length || flight || now < settledAt) return;
     if (!isPuzzle() && roundSeconds() > 0 && timePassed >= roundDuration()) finishScored();
     else if (pendingNextBoard) newBoard();
@@ -1207,7 +1211,7 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
     if (replay) drawReplayOverlay(now);
   }
 
-  return { frame, dispose: () => { if (!recordedAction) replays.cancel(); replays.dispose(); sounds.dispose(); } };
+  return { frame, dispose: () => { if (!recordedAction) replays.cancel(); replays.dispose(); sounds.dispose(); warning.dispose(); } };
 }) satisfies PuzzleFactory;
 
 /** board_pool_reserve.py's first reserve, which the desktop version used when filling puzzles. */

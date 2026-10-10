@@ -21,7 +21,7 @@
 //   panel.score().stats(['', 'Now', 'Best'], () => [['Moves', String(moves), String(best)]]);
 //   panel.settings.group('Game').toggle('Ants', () => settings.ants, (on) => (settings.ants = on), { disabled: () => running });
 
-import { getVolume, setVolume } from './audio';
+import { getVolume, setVolume, getWarningTimer, setWarningTimer } from './audio';
 import { keyFor, keyLabel, resetKeys, setKey, type KeyBinding } from './controls';
 import { showsDutyReport, type DutyReport } from './duty/report';
 import { foldTable, pirateSettings, renderReport } from './duty/view';
@@ -243,7 +243,10 @@ export class Panel {
       this.hideTimer = on;
       this.preferences.set('hideTimer', on);
     });
-    this.globalSettings.group('Sound').range('Volume', getVolume, setVolume, { min: 0, max: 100 });
+    this.globalSettings.group('Sound').range('Volume', getVolume, setVolume, { min: 0, max: 100 })
+      .toggle('Warning timer', getWarningTimer, setWarningTimer, {
+        title: 'Play a warning near the end of timed puzzles: 30 seconds for Foraging and Blacksmithing, 15 seconds for Treasure Haul and Vampire Carpentry.',
+      });
     const replayPreferences = this.globalSettings.group('Replays');
     replayPreferences.toggle('Save replays',
       () => this.preferences.get<boolean>('saveReplays', true),

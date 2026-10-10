@@ -3,6 +3,7 @@
 import { SessionPause } from '../../core/pause';
 import { Images } from '../../core/assets';
 import { SoundBank } from '../../core/audio';
+import { TimerWarning } from '../../core/timer-warning';
 import { loadFont } from '../../core/fonts';
 import { dutyDesk } from '../../core/duty/desk';
 import type { RatingScale } from '../../core/duty/ratings';
@@ -189,6 +190,7 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
   const [images] = await Promise.all([Images.load(imageUrls), loadFont(FONT, delarobbUrl)]);
   const img = (name: string) => images.get(name);
   const sounds = new SoundBank<Sound>(soundUrls, () => replays?.isSeeking ?? false);
+  const warning = new TimerWarning('gauntlet', () => replays?.isSeeking ?? false);
   const ctx = screen.ctx;
   const rng = new PyRandom();
   rng.seedFromCrypto();
@@ -622,6 +624,7 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
 
   function startRun(): void {
     pause.resume();
+    warning.reset();
     duty.clear();
     replays.begin({ mode, difficulty, perfectSize, timerMs, scoringRules }, rng.snapshot());
     Object.assign(run, { active: true, start: ticks(), end: ticks(), points: 0, boards: 0, perfect: 0, oneOff: 0, farOff: 0, timeUp: false });
@@ -802,7 +805,10 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
       if (hammerable && (input.mouse[0] !== lastMouse[0] || input.mouse[1] !== lastMouse[1])) cursor = squareAt(input.mouse);
       lastMouse = input.mouse;
 
-      if (run.active && timeLeft() === 0) endRun(true);
+      if (run.active) {
+        warning.update(timeLeft());
+        if (timeLeft() === 0) endRun(true);
+      }
 
       for (const timer of timers.filter((t) => now >= t.at)) {
         timers.splice(timers.indexOf(timer), 1);
@@ -1073,5 +1079,5 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
     }
   }, (seed) => new PyRandom(0).restore(seed), setReplayTime, () => frame([]), replaySettingsCodec, () => !busy() || replays.isPlaying);
 
-  return { frame, dispose: () => { replays.dispose(); sounds.dispose(); } };
+  return { frame, dispose: () => { replays.dispose(); sounds.dispose(); warning.dispose(); } };
 }) satisfies PuzzleFactory;

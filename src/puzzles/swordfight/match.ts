@@ -1,7 +1,6 @@
 // A fight: you, fighter 0, and the chosen teammates against the chosen opponents,
 // or you on your own. Deals the pairs, passes each attack to its target, and decides when
-// the fight is over. How pairs are dealt and when attacks are sent are choices made here (see
-// docs/swordfight-findings.md).
+// the fight is over. How pairs are dealt and when attacks are sent are choices made here.
 import { PyRandom } from '../../core/pyrandom';
 import type { Attack } from './attack';
 import { BREAKER } from './board';

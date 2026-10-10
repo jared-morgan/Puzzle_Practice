@@ -11,8 +11,9 @@ import { FOUR, IronBoard } from './blacksmithing/logic';
 import { Match } from './swordfight/match';
 import { W as SWORD_COLUMNS } from './swordfight/board';
 import { COL_PX as SWORD_COLUMN_PX } from './swordfight/fighter';
+import { setWarningTimer } from '../core/audio';
 
-const captured = vi.hoisted(() => ({ recorders: [] as ReplayRecorder[] }));
+const captured = vi.hoisted(() => ({ recorders: [] as ReplayRecorder[], sounds: [] as string[] }));
 vi.mock('../core/replay', async (original) => {
   const module = await original<typeof import('../core/replay')>();
   return { ...module, ReplayRecorder: class extends module.ReplayRecorder {
@@ -24,7 +25,14 @@ vi.mock('../core/assets', async (original) => ({
   Images: class { static async load() { return { get: () => ({ width: 450, height: 600 }), has: () => true }; } },
 }));
 vi.mock('../core/fonts', () => ({ loadFont: async () => {} }));
-vi.mock('../core/audio', () => ({ SoundBank: class { play() {} dispose() {} } }));
+vi.mock('../core/audio', async (original) => ({
+  ...await original<typeof import('../core/audio')>(),
+  SoundBank: class {
+    constructor(_urls: unknown, private readonly muted = () => false) {}
+    play(name: string) { if (!this.muted()) captured.sounds.push(name); }
+    dispose() {}
+  },
+}));
 
 function canvasContext() {
   return new Proxy({
@@ -69,6 +77,7 @@ function panelHarness() {
 beforeEach(async () => {
   await replayWrites.idle();
   captured.recorders = [];
+  captured.sounds = [];
   vi.stubGlobal('indexedDB', new IDBFactory());
   vi.stubGlobal('window', Object.assign(new EventTarget(), { setTimeout, clearTimeout }));
   vi.stubGlobal('navigator', { storage: {} });
@@ -212,6 +221,70 @@ describe('Distilling session dismissal', () => {
 afterEach(async () => {
   await replayWrites.idle();
   vi.restoreAllMocks(); vi.unstubAllGlobals();
+});
+
+describe('timed puzzle warnings', () => {
+  it.each([
+    ['forage', { settings: { mode: 'ci', roundSeconds: 0 } }],
+    ['blacksmithing', { perfectTimer: 0 }],
+    ['treasure-haul', { mode: 'clear', clearPack: 'emeralds', round: 0 }],
+    ['vampire-carp', { config: { unlimited: true } }],
+  ] as const)('%s has no session warning without a time limit', async (puzzle, settings) => {
+    const store = new Store(puzzle);
+    for (const [key, value] of Object.entries(settings)) store.set(key, value);
+    const { panel, buttons } = panelHarness();
+    let now = 0;
+    const screen = new Proxy({ ctx: canvasContext() }, { get: (target, key) => key === 'ctx' ? target.ctx : () => ({ width: 0, height: 0 }) });
+    const factory = (await import('./' + puzzle + '/index')).default as PuzzleFactory;
+    const instance = await factory({ screen, input: { mouse: [-1, -1] }, panel, store, ticks: () => now } as unknown as PuzzleContext);
+    buttons.get('Play::Start')!();
+    for (now = 0; now <= 125000; now += 1000) instance.frame([]);
+    expect(captured.sounds.filter((name) => name === 'cultist_attack' || name === 'vampire_warning')).toHaveLength(0);
+    instance.dispose?.();
+  });
+
+  it.each([
+    ['forage', 89000, 92000, 'cultist_attack', { settings: { mode: 'ci', roundSeconds: 120 } }],
+    ['blacksmithing', 89999, 90000, 'cultist_attack', {}],
+    ['treasure-haul', 104999, 105000, 'vampire_warning', { mode: 'clear', clearPack: 'emeralds' }],
+    ['vampire-carp', 104999, 105000, 'vampire_warning', {}],
+  ] as const)('%s uses remaining session time, excludes pauses and resets on restart', async (puzzle, before, at, sound, settings) => {
+    const store = new Store(puzzle);
+    for (const [key, value] of Object.entries(settings)) store.set(key, value);
+    const { panel, buttons } = panelHarness();
+    let now = 0;
+    const screen = new Proxy({ ctx: canvasContext() }, { get: (target, key) => key === 'ctx' ? target.ctx : () => ({ width: 0, height: 0 }) });
+    const factory = (await import('./' + puzzle + '/index')).default as PuzzleFactory;
+    const instance = await factory({ screen, input: { mouse: [-1, -1] }, panel, store, ticks: () => now } as unknown as PuzzleContext);
+    const warnings = () => captured.sounds.filter((name) => name === sound);
+    const advance = (end: number) => {
+      for (; now < end; now = Math.min(end, now + 1000)) instance.frame([]);
+      instance.frame([]);
+    };
+    buttons.get('Play::Start')!();
+    advance(before);
+    expect(warnings()).toHaveLength(0);
+    buttons.get('Play::Pause')!();
+    now += 60000;
+    instance.frame([]);
+    expect(warnings()).toHaveLength(0);
+    buttons.get('Play::Pause')!();
+    advance(at + 60000);
+    expect(warnings()).toHaveLength(1);
+    advance(now + 1000);
+    expect(warnings()).toHaveLength(1);
+    buttons.get('Play::Start')!();
+    buttons.get('Play::Start')!();
+    setWarningTimer(false);
+    advance(now + at);
+    expect(warnings()).toHaveLength(1);
+    buttons.get('Play::Start')!();
+    buttons.get('Play::Start')!();
+    setWarningTimer(true);
+    advance(now + at);
+    expect(warnings()).toHaveLength(2);
+    instance.dispose?.();
+  });
 });
 
 describe('preset Treasure Haul drills', () => {
@@ -452,9 +525,11 @@ describe('Treasure Haul dismissal during a cascade', () => {
     perf.mockReturnValue(replay.duration); instance.frame([]);
     expect(stats()).toEqual(finalStats);
     expect(JSON.parse(exportAll()).data).toEqual(data);
+    const warningsBeforeSeeking = captured.sounds.filter((name) => name === 'cultist_attack' || name === 'vampire_warning');
     setters.get('History:Replays:Jump to (s)')!(replay.duration / 1000);
     buttons.get('History:Replays:Jump')!();
     await vi.waitFor(() => expect(captured.recorders[0].isSeeking).toBe(false));
+    expect(captured.sounds.filter((name) => name === 'cultist_attack' || name === 'vampire_warning')).toEqual(warningsBeforeSeeking);
     expect(stats()).toEqual(finalStats);
     buttons.get('History:Replays:Stop')!();
     instance.dispose?.();
@@ -541,9 +616,11 @@ describe('Blacksmithing perfect board scoring', () => {
     expect(await recorder.playAt(replay.at, replay.runId)).toBe(true);
     perf.mockReturnValue(replay.duration); instance.frame([]);
     expect(stats().flat()).toContainEqual(['Points', String(points), String(points)]);
+    const warningsBeforeSeeking = captured.sounds.filter((name) => name === 'cultist_attack' || name === 'vampire_warning');
     setters.get('History:Replays:Jump to (s)')!(120);
     buttons.get('History:Replays:Jump')!();
     await vi.waitFor(() => expect(recorder.isSeeking).toBe(false));
+    expect(captured.sounds.filter((name) => name === 'cultist_attack' || name === 'vampire_warning')).toEqual(warningsBeforeSeeking);
     expect(stats().flat()).toContainEqual(['Points', String(points), String(points)]);
     expect(JSON.parse(exportAll()).data).toEqual(data);
     buttons.get('History:Replays:Stop')!();

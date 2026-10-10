@@ -11,6 +11,7 @@
 // Unlimited, seeds, cheat pieces, pause, Dismiss, best scores, and the end-of-session stats.
 import { Images } from '../../core/assets';
 import { SoundBank } from '../../core/audio';
+import { TimerWarning } from '../../core/timer-warning';
 import { copyText } from '../../core/clipboard';
 import { keyMatches } from '../../core/controls';
 import { loadFont } from '../../core/fonts';
@@ -85,8 +86,8 @@ const SESSION_LONG = 999999999999999999;
 /** Board seeds are 48-bit, like java.util.Random's. */
 const MAX_SEED = 2 ** 48 - 1;
 
-/** Jared's sounds besides the game's: the 15-second warning, a new best, and option changes. */
-type ExtraSound = 'warning' | 'audio_pb_sound' | 'audio_options_change';
+/** Additional sounds for a new best and option changes. */
+type ExtraSound = 'audio_pb_sound' | 'audio_options_change';
 
 /** Cheat pieces in the layout of the simulator's cheats_ui.png, the putty ('b') on a row of its own. */
 const CHEAT_ROWS = [['p', 'f', 'y', 't'], ['w', 'u', 'n', 'v'], ['l', 'z', 'x', 'i'], ['b']];
@@ -205,6 +206,7 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
   const [images] = await Promise.all([Images.load(imageUrls), loadFont(FONT, delarobbUrl)]);
   const img = (name: string) => images.get(name);
   const sounds = new SoundBank(soundUrls, () => replays?.isSeeking ?? false);
+  const warning = new TimerWarning('vampirate', () => replays?.isSeeking ?? false);
   const ctx = screen.ctx;
 
   // The putty bucket by state, for each look: upright for 0-1, pouring for 2-3, traced in the state's colour.
@@ -230,7 +232,6 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
   let startTime = 0;
   let pauseTime = 0;
   let timePassed = 0;
-  let warningPlayed = false;
   let boardIndex = 0;
   let seeded = store.get<boolean>('seeded', false);
   let seed = Math.floor(Math.random() * MAX_SEED);
@@ -260,7 +261,7 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
 
   function play(name: SoundName | ExtraSound): void {
     if (replays?.isSeeking) return;
-    sounds.play(name.startsWith('audio_') || name === 'warning' ? name : `audio_${name}`);
+    sounds.play(name.startsWith('audio_') ? name : `audio_${name}`);
   }
 
   /** The board for this point in the session: seeded sessions deal seed, seed + 1,... */
@@ -307,7 +308,7 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
     startTime = ticks();
     timePassed = 0;
     pauseTime = 0;
-    warningPlayed = false;
+    warning.reset();
     endProcedureComplete = false;
     sessionScoresComputed = false;
     pendingSounds = [];
@@ -1000,11 +1001,8 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
         pendingSounds = pendingSounds.filter((s) => s.at > timePassed);
         for (const s of due) play(s.name);
       }
+      if (boardActive) warning.update(config.unlimited ? null : sessionTime() - timePassed);
       if (boardActive && timePassed > sessionTime()) endSession();
-      if (boardActive && timePassed > sessionTime() - 15000 && !warningPlayed) {
-        play('warning');
-        warningPlayed = true;
-      }
 
     }
 
@@ -1028,5 +1026,5 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
     replays.drawOverlay(ctx);
   }
 
-  return { frame, dispose: () => { replays.dispose(); sounds.dispose(); } };
+  return { frame, dispose: () => { replays.dispose(); sounds.dispose(); warning.dispose(); } };
 }) satisfies PuzzleFactory;
