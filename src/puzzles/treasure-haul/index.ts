@@ -227,6 +227,8 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
   let chestEarned = false;
   let chestRules: 1 | 2 | 3 = 3;
   let trainingRules: 1 | 2 = 2;
+  let dismissRules: 1 | 2 = 2;
+  let dismissRequested = false;
   let chestSupply = new ChestSupply(coinsPerChest, ticks());
   /** 1 chest / 2 chests: the most chests on their way or on the board at once. */
   const chestLimit = () => (mode === 'chests1' ? 1 : mode === 'chests2' ? 2 : 0);
@@ -430,7 +432,8 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
 
   function start(): void {
     pause.resume();
-    replays.begin({ mode, clearPack, roundSecs, spawnDelay, gemRates: [...gemRates], coinsPerChest, chestRules, trainingRules }, rng.snapshot());
+    replays.begin({ mode, clearPack, roundSecs, spawnDelay, gemRates: [...gemRates], coinsPerChest, chestRules, trainingRules, dismissRules }, rng.snapshot());
+    dismissRequested = false;
     chestSupply = new ChestSupply(coinsPerChest, ticks(), chestRules === 3 && mode === 'chests2');
     chestMeter = chestRules >= 2 ? chestSupply.meter : new ChestMeter(coinsPerChest);
     chestEarned = false;
@@ -463,7 +466,25 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
   }
 
   function dismissBoard(): void {
-    if (!running || !active || intro || !stable || actionCount() || landing || redeal) return;
+    if (!running || !board) return;
+    if (dismissRules === 1) {
+      if (!active || intro || !stable || actionCount() || landing || redeal) return;
+      replaceDismissedBoard();
+      return;
+    }
+    dismissRequested = true;
+    finishDismiss();
+  }
+
+  /** Keep the in-progress move and its timing until every cascade haul has been credited. */
+  function finishDismiss(): void {
+    if (!dismissRequested || !running || intro || !stable || actionCount()) return;
+    dismissRequested = false;
+    if (roundEnd && ticks() >= roundEnd) { stop(); return; }
+    replaceDismissedBoard();
+  }
+
+  function replaceDismissedBoard(): void {
     active = false;
     sparks = []; flyers = []; minis = []; texts = []; timers = [];
     netStart = 0; hauling = false; pull = null; handsUp = true; redealAt = 0; clearMs = 0;
@@ -490,6 +511,7 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
     });
     stoppedAt = ticks();
     running = false;
+    dismissRequested = false;
     active = false;
     finished = true;
     intro = null;
@@ -680,6 +702,7 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
   function evolve(): void {
     if (!board || intro || actionCount() > 0) return;
     if (redeal) {
+      if (dismissRequested) return;
       // The chest has landed and been scored: it shows for half a second, then a new board floats in.
       if (!redealAt) redealAt = ticks() + 500;
       if (ticks() < redealAt) return;
@@ -993,8 +1016,9 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
       updateFlyers(now);
       if (running) {
         evolve();
+        finishDismiss();
         // Time's up: no more swaps, and the round ends once the board settles.
-        if (roundEnd && now >= roundEnd) {
+        if (running && roundEnd && now >= roundEnd) {
           active = false;
           if (stable && actionCount() === 0) stop();
         }
@@ -1050,9 +1074,14 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
   // Starting while a replay is open closes it and starts a game of your own.
   actions.button('Start', () => { if (replays.isPlaying) { replays.stop(); if (replays.isPlaying) return; } if (running) stop(); else start(); }, { variant: 'primary', label: () => (replays?.isPlaying ? 'Start' : running ? 'Stop' : finished ? 'Play again' : 'Start') });
 
-  actions.button('Dismiss', () => { replays.command('dismiss'); dismissBoard(); }, {
-    disabled: () => !running || !active || !!intro || !stable || !!actionCount() || !!landing || redeal || pause.paused || !!replays?.isPlaying,
-    title: 'Deal a fresh board; keep the session score and timer running.',
+  actions.button('Dismiss', () => {
+    if (dismissRequested) return;
+    replays.command('dismiss');
+    dismissBoard();
+  }, {
+    label: () => dismissRequested ? 'Dismissing…' : 'Dismiss',
+    disabled: () => !running || !!replays?.isPlaying || (dismissRules === 1 && (!active || !!intro || !stable || !!actionCount() || !!landing || redeal || pause.paused)),
+    title: 'Finish the current cascade, count its hauls, and deal a fresh board; keep the session score and timer running.',
   });
 
   const best = () => bests[bestKey()];
@@ -1142,27 +1171,29 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
   }, { disabled: () => running });
 
   const replaySettingsCodec: ReplaySettingsCodec = {
-    currentVersion: 3,
-    simulatorVersion: 3,
+    currentVersion: 4,
+    simulatorVersion: 4,
     migrate: (version, value) => {
-      if ((version !== 1 && version !== 2 && version !== 3) || !value || typeof value !== 'object') return null;
+      if ((version !== 1 && version !== 2 && version !== 3 && version !== 4) || !value || typeof value !== 'object') return null;
       const s = value as Record<string, unknown>;
       return ['0', '1', '2', 'chests1', 'chests2', 'spawn', 'clear'].includes(String(s.mode)) &&
         (version === 1 || (version === 2 ? s.chestRules === 2 : s.chestRules === 2 || s.chestRules === 3)) &&
         (version < 3 || s.trainingRules === 2) &&
+        (version < 4 || s.dismissRules === 2) &&
         (s.coinsPerChest === undefined || (Number.isFinite(s.coinsPerChest) && (s.coinsPerChest as number) >= 1)) &&
         ['standard', 'efficient', 'emeralds', 'edges'].includes(String(s.clearPack)) &&
         Number.isFinite(s.roundSecs) && (s.roundSecs as number) >= 0 && typeof s.spawnDelay === 'boolean' &&
-        Array.isArray(s.gemRates) && s.gemRates.length === 2 && s.gemRates.every((n) => Number.isFinite(n) && (n as number) >= 0) ? { ...s, chestRules: version === 1 ? 1 : version === 2 ? 2 : s.chestRules, trainingRules: version < 3 ? 1 : 2 } : null;
+        Array.isArray(s.gemRates) && s.gemRates.length === 2 && s.gemRates.every((n) => Number.isFinite(n) && (n as number) >= 0) ? { ...s, chestRules: version === 1 ? 1 : version === 2 ? 2 : s.chestRules, trainingRules: version < 3 ? 1 : 2, dismissRules: version < 4 ? 1 : 2 } : null;
     },
   };
-  type HaulSettings = { mode: Mode; clearPack: ClearPack; roundSecs: number; spawnDelay: boolean; gemRates: [number, number]; coinsPerChest?: number; chestRules?: 1 | 2 | 3; trainingRules?: 1 | 2 };
+  type HaulSettings = { mode: Mode; clearPack: ClearPack; roundSecs: number; spawnDelay: boolean; gemRates: [number, number]; coinsPerChest?: number; chestRules?: 1 | 2 | 3; trainingRules?: 1 | 2; dismissRules?: 1 | 2 };
   let savedReplaySettings: HaulSettings | null = null;
   replays = new ReplayRecorder('treasure-haul', store, panel, ticks, (tape: PuzzleReplay) => {
-    savedReplaySettings ??= { mode, clearPack, roundSecs, spawnDelay, gemRates: [...gemRates], coinsPerChest, chestRules, trainingRules };
+    savedReplaySettings ??= { mode, clearPack, roundSecs, spawnDelay, gemRates: [...gemRates], coinsPerChest, chestRules, trainingRules, dismissRules };
     const settings = tape.settings as HaulSettings;
     chestRules = settings.chestRules ?? 1;
     trainingRules = settings.trainingRules ?? 1;
+    dismissRules = settings.dismissRules ?? 1;
     mode = settings.mode;
     clearPack = settings.clearPack;
     roundSecs = settings.roundSecs;
@@ -1177,6 +1208,7 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
       ({ mode, clearPack, roundSecs, spawnDelay, gemRates } = savedReplaySettings);
       chestRules = savedReplaySettings.chestRules ?? 3;
       trainingRules = savedReplaySettings.trainingRules ?? 2;
+      dismissRules = savedReplaySettings.dismissRules ?? 2;
       coinsPerChest = savedReplaySettings.coinsPerChest ?? COINS_PER_CHEST;
       savedReplaySettings = null;
     }

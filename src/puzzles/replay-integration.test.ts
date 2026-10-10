@@ -6,7 +6,7 @@ import { replayWrites, listReplayFiles } from '../core/replay-storage';
 import type { ReplayRecorder } from '../core/replay';
 import type { PuzzleContext, PuzzleFactory } from '../core/puzzle';
 import { createDrill } from './treasure-haul/training';
-import { HaulBoard } from './treasure-haul/logic';
+import { HaulBoard, isChestOrigin, RUBY } from './treasure-haul/logic';
 
 const captured = vi.hoisted(() => ({ recorders: [] as ReplayRecorder[] }));
 vi.mock('../core/replay', async (original) => {
@@ -245,7 +245,7 @@ describe('preset Treasure Haul drills', () => {
     const finalStats = stats();
     if (pack === 'edges') expect(finalStats[0]).toContainEqual(['Chests cleared', '1', expect.any(String)]);
     const [replay] = await listReplayFiles('treasure-haul');
-    expect(replay.settingsVersion).toBe(3);
+    expect(replay.settingsVersion).toBe(4);
     const data = JSON.parse(exportAll()).data;
     const perf = vi.spyOn(performance, 'now').mockReturnValue(0);
     expect(await captured.recorders[0].playAt(replay.at, replay.runId)).toBe(true);
@@ -288,6 +288,118 @@ describe('Treasure Haul score display', () => {
       else for (const label of ['Points', 'Coins', 'Best move']) expect(resultLabels).not.toContain(label);
       instance.dispose?.();
     }
+  });
+});
+
+describe('Treasure Haul dismissal during a cascade', () => {
+  it.each(['swap', 'rise', 'haul', 'paused'] as const)('credits the pending haul when dismissed during %s and reproduces it in playback', async (stage) => {
+    vi.spyOn(PyRandom.prototype, 'seedFromCrypto').mockImplementation(function (this: PyRandom) { this.seed(1234); });
+    const rng = new PyRandom(1234);
+    const solution = createDrill(() => rng.random(), 'edges').solution!;
+    const store = new Store('treasure-haul');
+    store.set('mode', 'clear'); store.set('clearPack', 'edges'); store.set('round', 30);
+    const { panel, buttons, buttonStates, stats, results, setters } = panelHarness();
+    let now = 100;
+    const input = { mouse: [-1, -1] };
+    const screen = new Proxy({ ctx: canvasContext() }, { get: (target, key) => key === 'ctx' ? target.ctx : () => ({ width: 0, height: 0 }) });
+    const factory = (await import('./treasure-haul/index')).default;
+    const placements = vi.spyOn(HaulBoard.prototype, 'placeChest');
+    const instance = await factory({ screen, input, panel, store, ticks: () => now,
+      setReplayTime: (time: number | null) => { if (time !== null) now = time; } } as unknown as PuzzleContext);
+    buttons.get('Play::Start')!();
+    const originalBoard = placements.mock.contexts.at(-1)!;
+    for (let move = 0; move < solution.length; move++) {
+      const [x, y] = solution[move];
+      input.mouse = [44 + x * 45 + 10, 205 + (8 - y) * 45 + 10];
+      instance.frame([{ type: 'mousedown', button: 1, pos: input.mouse as [number, number] }]);
+      if (move < solution.length - 1) for (let frame = 0; frame < 150; frame++) { now += 50; instance.frame([]); }
+    }
+    const steps = vi.spyOn(HaulBoard.prototype, 'step');
+    if (stage === 'rise' || stage === 'haul') {
+      let reached = false;
+      for (let frame = 0; frame < 150 && !reached; frame++) {
+        now += 50; instance.frame([]);
+        reached = steps.mock.results.some((result, i) => steps.mock.contexts[i] === originalBoard && result.value &&
+          (stage === 'haul' ? result.value.kind === 'haul' : result.value.kind === 'rise' &&
+            result.value.moves.some((m: { piece: number; ty: number }) => isChestOrigin(m.piece) && m.ty === 7)));
+      }
+      expect(reached).toBe(true);
+    }
+    if (stage === 'paused') buttons.get('Play::Pause')!();
+    expect(buttonStates.get('Play::Dismiss')!.disabled!()).toBe(false);
+    const before = placements.mock.calls.length;
+    buttons.get('Play::Dismiss')!();
+    buttons.get('Play::Dismiss')!();
+    expect(buttonStates.get('Play::Dismiss')!.label!()).toBe('Dismissing…');
+    if (stage === 'paused') {
+      now += 5000; instance.frame([]);
+      expect(placements.mock.calls).toHaveLength(before);
+      buttons.get('Play::Pause')!();
+    }
+    for (let frame = 0; frame < 150; frame++) { now += 50; instance.frame([]); }
+    expect(placements.mock.calls.length).toBeGreaterThan(before);
+    expect(buttonStates.get('Play::Dismiss')!.label!()).toBe('Dismiss');
+    expect(stats()[0]).toContainEqual(['Chests cleared', '1', expect.any(String)]);
+    for (let frame = 0; frame < 1000 && buttonStates.get('Play::Start')!.label!() === 'Stop'; frame++) { now += 50; instance.frame([]); }
+    const finalStats = stats();
+    expect((results()[0] as { rows: string[][] }).rows).toContainEqual(['Chests cleared', '1']);
+    await replayWrites.idle();
+    const [replay] = await listReplayFiles('treasure-haul');
+    const data = JSON.parse(exportAll()).data;
+    const perf = vi.spyOn(performance, 'now').mockReturnValue(0);
+    expect(await captured.recorders[0].playAt(replay.at, replay.runId)).toBe(true);
+    perf.mockReturnValue(replay.duration); instance.frame([]);
+    expect(stats()).toEqual(finalStats);
+    expect(JSON.parse(exportAll()).data).toEqual(data);
+    setters.get('History:Replays:Jump to (s)')!(replay.duration / 1000);
+    buttons.get('History:Replays:Jump')!();
+    await vi.waitFor(() => expect(captured.recorders[0].isSeeking).toBe(false));
+    expect(stats()).toEqual(finalStats);
+    buttons.get('History:Replays:Stop')!();
+    instance.dispose?.();
+  });
+
+  it('accepts dismissal during the opening animation without restarting the session timer', async () => {
+    const store = new Store('treasure-haul'); store.set('round', 30);
+    const { panel, buttons, buttonStates, stats, results } = panelHarness();
+    let now = 100;
+    const screen = new Proxy({ ctx: canvasContext() }, { get: (target, key) => key === 'ctx' ? target.ctx : () => ({ width: 0, height: 0 }) });
+    const factory = (await import('./treasure-haul/index')).default;
+    const instance = await factory({ screen, input: { mouse: [-1, -1] }, panel, store, ticks: () => now } as unknown as PuzzleContext);
+    buttons.get('Play::Start')!();
+    expect(buttonStates.get('Play::Dismiss')!.disabled!()).toBe(false);
+    buttons.get('Play::Dismiss')!();
+    now = 2100; instance.frame([]);
+    now = 3100; instance.frame([]);
+    expect(stats()[0]).toContainEqual(['Chests hauled', '0', expect.any(String)]);
+    now = 32100; instance.frame([]);
+    expect(buttonStates.get('Play::Start')!.label!()).toBe('Play again');
+    expect((results()[0] as { rows: string[][] }).rows).toContainEqual(['Time', '30.00s']);
+    instance.dispose?.();
+  });
+
+  it('counts both chests in a two-chest blast cascade before replacing the board', async () => {
+    const populate = HaulBoard.prototype.populate;
+    vi.spyOn(HaulBoard.prototype, 'populate').mockImplementation(function (this: HaulBoard) {
+      populate.call(this);
+      for (let y = 0; y < 8; y++) for (let x = 0; x < 8; x++) this.set(x, y, (x + 2 * y) % 4);
+      this.placeChest(0, 6, 0); this.placeChest(4, 6, 2); this.set(2, 7, RUBY);
+    });
+    const store = new Store('treasure-haul'); store.set('gemRates', [0, 0]);
+    const { panel, buttons, buttonStates, stats } = panelHarness();
+    let now = 100;
+    const input = { mouse: [-1, -1] };
+    const screen = new Proxy({ ctx: canvasContext() }, { get: (target, key) => key === 'ctx' ? target.ctx : () => ({ width: 0, height: 0 }) });
+    const factory = (await import('./treasure-haul/index')).default;
+    const instance = await factory({ screen, input, panel, store, ticks: () => now } as unknown as PuzzleContext);
+    buttons.get('Play::Start')!(); now = 2100; instance.frame([]);
+    input.mouse = [44 + 2 * 45 + 10, 215];
+    instance.frame([{ type: 'mousedown', button: 1, pos: input.mouse as [number, number] }]);
+    expect(buttonStates.get('Play::Dismiss')!.disabled!()).toBe(false);
+    buttons.get('Play::Dismiss')!();
+    for (let frame = 0; frame < 150; frame++) { now += 50; instance.frame([]); }
+    expect(stats()[0]).toContainEqual(['Chests hauled', '2', expect.any(String)]);
+    instance.dispose?.();
   });
 });
 
