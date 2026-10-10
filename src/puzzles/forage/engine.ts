@@ -126,6 +126,8 @@ export interface Step {
   sounds: { name: SoundName; delay: number }[];
   effects: Effect[];
   duration: number;
+  /** The ants' step, which comes once the board has settled after a move. */
+  ants?: boolean;
 }
 
 export interface MoveResult {
@@ -484,6 +486,7 @@ export class Forage {
   private tickAnts(): void {
     if (!this.board.antsOnBoard()) return;
     const step = this.begin();
+    step.ants = true;
     let ants = EMPTY;
     for (let x = 0; x < WIDTH && ants === EMPTY; x++) for (let y = 0; y < HEIGHT && ants === EMPTY; y++) if (isAnts(this.board.getPiece(x, y))) ants = this.board.getPiece(x, y);
     this.board.tickAnts(

@@ -58,6 +58,8 @@ const BANANA = 21;
 const BANANA_STEP = 19;
 /** A banana fills in 500ms (puzzle/client/d: bananas x 500 / 100 ms a percent). */
 const BANANA_MS = 500;
+/** The game updates the board every 14ms (about 71 times a second). */
+const FRAME_MS = 14;
 const FONT = 'Delarobb';
 /** Floating messages drift up 30px over 1.5s, fading out in the second half. */
 const FLOAT_MS = 1500;
@@ -201,6 +203,8 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
   /** The move being animated, and when its current step started. */
   let playing: Step[] = [];
   let stepStart = 0;
+  /** When the board last called a move over and can take the next click. */
+  let settledAt = 0;
   let timed: Timed[] = [];
   /** The intro or outro: pieces flying on or off the board. */
   let flight: { pieces: { piece: number; at: Cell; from: Point; duration: number }[]; start: number; out: boolean } | null = null;
@@ -295,6 +299,7 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
 
   function start(): void {
     movesUsed = 0;
+    settledAt = 0;
     pendingNextBoard = false;
     ended = false;
     const [gameSeed, flightSeed] = sessionSeed!.seeds;
@@ -393,7 +398,7 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
   }
 
   /** The board can take a click: playing, not mid-cascade, not flying in or out. */
-  const inPlay = () => boardActive && !playing.length && !flight && (isPuzzle() || !roundSeconds() || clock() - startTime < roundDuration());
+  const inPlay = () => boardActive && !playing.length && clock() >= settledAt && !flight && (isPuzzle() || !roundSeconds() || clock() - startTime < roundDuration());
 
   /** A turn or tool with the cursor's top-left at `cell`; clicks during a cascade are dropped, as in the client. */
   function act(cell: Cell, ccw: boolean, replayed = false): void {
@@ -439,11 +444,17 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
   }
 
   function toggleRunning(): void {
-    // Dismissing a Normal session ends it early, with no best recorded.
+    // Dismissing a Normal session ends it there and scores it, counting any crates from the last
+    // move that were still on their way off the board.
     if (boardActive && settings.mode === 'normal') {
-      boardActive = false;
-      ended = true;
-      endRecording(`Dismissed, ${movesUsed} moves`);
+      if (movesUsed) {
+        playing = [];
+        finishScored();
+      } else {
+        boardActive = false;
+        ended = true;
+        endRecording(`Dismissed, ${movesUsed} moves`);
+      }
     } else if (boardActive) {
       boardActive = false;
       ended = true;
@@ -850,14 +861,27 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
   }
 
   /** The step playing now, moving past finished ones; null once the move has played out. */
+  /**
+   * The game moves the board on once a frame, every 14ms: each step of a cascade starts on the
+   * first frame after the last one's animation ends (and no sooner than the frame after it began),
+   * and the board takes one more frame to call the move over before it takes a click (two if the
+   * ants didn't step).
+   */
+  const nextFrame = (t: number) => Math.ceil(t / FRAME_MS) * FRAME_MS;
+
   function currentStep(now: number): [Step, number] | null {
     while (playing.length) {
       const elapsed = now - stepStart;
       if (elapsed < playing[0].duration) return [playing[0], elapsed];
-      stepStart += playing[0].duration;
-      playing.shift();
-      if (playing.length) startStep();
-      else refitCursor();
+      const done = playing.shift()!;
+      const next = Math.max(nextFrame(stepStart + done.duration), stepStart + FRAME_MS);
+      if (playing.length) {
+        stepStart = next;
+        startStep();
+      } else {
+        settledAt = next + (done.ants ? 0 : FRAME_MS);
+        refitCursor();
+      }
     }
     return null;
   }
@@ -866,9 +890,9 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
     const [fx, fy] = pieceTopLeft(s.piece, s.from);
     const [tx, ty] = pieceTopLeft(s.piece, s.to);
     if (s.path === 'arc') {
-      // A quarter ellipse: across first, then down (or up).
+      // A quarter ellipse at a steady turn: up or down first, then across.
       const a = (t * Math.PI) / 2;
-      return [fx + (tx - fx) * Math.sin(a), fy + (ty - fy) * (1 - Math.cos(a))];
+      return [fx + (tx - fx) * (1 - Math.cos(a)), fy + (ty - fy) * Math.sin(a)];
     }
     let y = fy + (ty - fy) * t;
     if (s.path === 'wobble' && t < 1) y += TIMING.wobblePx * Math.sin(TIMING.wobbleRate * local + (s.phase ?? 0));
@@ -962,8 +986,8 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
       if (t < 1) done = false;
       const [sx, sy, ex, ey] = f.out ? [cx, cy, p.from[0], p.from[1]] : [p.from[0], p.from[1], cx, cy];
       const a = (t * Math.PI) / 2;
-      const x = sx + (ex - sx) * Math.sin(a);
-      const y = sy + (ey - sy) * (1 - Math.cos(a));
+      const x = sx + (ex - sx) * (1 - Math.cos(a));
+      const y = sy + (ey - sy) * Math.sin(a);
       if (f.out && t >= 1) continue;
       drawPiece(p.piece, x, y, 1, 0, now);
     }
