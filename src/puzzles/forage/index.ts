@@ -278,7 +278,7 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
         ? new ServerRequests(rng, crateWeights(), BANANAS)
         : settings.mode === 'puzzle'
           ? {}
-          : new GauntletChests(rng, crateWeights(), BANANAS, settings.mode === 'chaos', settings.mode === 'ci' && !!settings.pacedChests);
+          : new GauntletChests(rng, crateWeights(), BANANAS, settings.mode === 'chaos', settings.mode === 'ci' && !!settings.pacedChests, () => clock());
     const g = new Forage(seed, source);
     // Shovel, machete, monkey, earthquake, ants.
     g.board.allowed = [settings.shovel, settings.machete, settings.monkey, settings.eq, settings.ants];

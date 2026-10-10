@@ -12,6 +12,11 @@ import type { PyRandom } from '../../core/pyrandom';
 import { COLOURS, CRATE_SIZES, isAnts, isCrate, isCrateAnchor, isTool, MAX_CRATE_AREA, MAX_CRATES, crateSize, WIDTH } from './board';
 import type { CrateSource, Forage } from './engine';
 
+/** Moves go to the game's server in a batch every 2 seconds. */
+export const MOVE_BATCH_MS = 2000;
+/** Time for the server to hear a batch and its answer to come back. */
+export const ROUND_TRIP_MS = 120;
+
 /** Crate art (crate1x1.png etc.): fruit 0-4 for small and medium crates; 3x2 gems 0 or gold 1. */
 const FRUIT_TILES = COLOURS;
 /** The cursed isle's bone box, fetish jar and cursed chest. */
@@ -77,16 +82,19 @@ export class GauntletChests implements CrateSource {
      * chance that falls as the board fills, in any column whose top cells are clear.
      */
     private readonly paced = false,
+    /** Paced: the game clock in milliseconds, for when the server hears about a move. */
+    private readonly now: () => number = () => 0,
   ) {
     this.budget = budget;
     this.pick();
   }
 
-  /** Paced: the size of a chest that's due but not asked for yet. */
+  /** Paced: the size of a chest that's due but not asked for yet, and when the ask reaches the board. */
   private waiting = -1;
+  private readyAt = 0;
 
   beforeMove(game: Forage): void {
-    if (!this.paced || this.waiting < 0 || game.board.bonusMode !== 0) return;
+    if (!this.paced || this.waiting < 0 || game.board.bonusMode !== 0 || this.now() < this.readyAt) return;
     game.crateArt[this.waiting] = CURSED_TILES[this.waiting];
     game.board.bonusMode = 64 | this.waiting | (this.waiting << 2);
     this.waiting = -1;
@@ -146,7 +154,10 @@ export class GauntletChests implements CrateSource {
 
   private trySpawn(game: Forage): boolean {
     if (this.paced) {
+      // The game sends moves to its server in a batch every 2 seconds, so the server only sees
+      // this move at the next send, and its answer takes a round trip to come back.
       this.waiting = this.next - 1;
+      this.readyAt = (Math.floor(this.now() / MOVE_BATCH_MS) + 1) * MOVE_BATCH_MS + ROUND_TRIP_MS;
       this.budget--;
       this.pick();
       this.movesSinceLast = 0;

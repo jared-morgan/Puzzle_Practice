@@ -93,12 +93,14 @@ describe('crate sources', () => {
 
 describe('paced Gauntlet chests', () => {
   it('arrive a move after they are due, through the spawn step, and still 9 a board', () => {
-    const source = new GauntletChests(new PyRandom(8), [0.5, 0.35, 0.15], 9, false, true);
+    let now = 0;
+    const source = new GauntletChests(new PyRandom(8), [0.5, 0.35, 0.15], 9, false, true, () => now);
     const game = new Forage(21n, source);
     let firstDue = -1;
     let firstLanded = -1;
     let most = 0;
     for (let i = 0; i < 2000; i++) {
+      now = i * 1000;
       game.act(i % (WIDTH - 1), (i * 7) % (HEIGHT - 1), i % 3 === 0);
       if (firstDue < 0 && (source as unknown as { waiting: number }).waiting >= 0) firstDue = i;
       if (firstLanded < 0 && game.crateCount() > 0) firstLanded = i;
@@ -108,5 +110,22 @@ describe('paced Gauntlet chests', () => {
     expect(firstLanded).toBeGreaterThan(firstDue);
     expect(most).toBeLessThanOrEqual(3);
     expect(source.budget).toBeGreaterThanOrEqual(0);
+  });
+});
+
+describe('paced chests and the server', () => {
+  it('only reach the board once the server has had the move, a 2 second batch and a round trip later', () => {
+    let now = 0;
+    const source = new GauntletChests(new PyRandom(8), [0.5, 0.35, 0.15], 9, false, true, () => now);
+    const game = new Forage(21n, source);
+    let dueAt = -1;
+    for (let i = 0; i < 400 && game.board.bonusMode === 0; i++) {
+      now = i * 300;
+      game.act(i % (WIDTH - 1), (i * 7) % (HEIGHT - 1), i % 3 === 0);
+      if (dueAt < 0 && (source as unknown as { waiting: number }).waiting >= 0) dueAt = now;
+    }
+    expect(dueAt).toBeGreaterThanOrEqual(0);
+    // Asked for on the first move at or after the next batch plus the round trip.
+    expect(now).toBeGreaterThanOrEqual((Math.floor(dueAt / 2000) + 1) * 2000 + 120);
   });
 });
