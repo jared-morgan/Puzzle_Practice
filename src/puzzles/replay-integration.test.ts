@@ -273,12 +273,14 @@ describe('puzzle completion during replay', () => {
     }
     if (puzzle === 'treasure-haul') {
       const result = results()[0] as { report: { score: {label: string; value: string}; cleared: {items: {icon: string; count: number}[]}[] }; rows: string[][] };
-      expect(result.report.score.label).toBe('Chests cleared');
+      expect(result.report.score.label).toBe('Chests hauled');
       expect(Number(result.report.score.value)).toBe(result.report.cleared[0].items.reduce((sum, i) => sum + i.count, 0));
       expect(result.report.cleared[0].items.map((i) => i.icon)).toEqual(['vampirate-chest-small', 'vampirate-chest-medium', 'vampirate-chest-large']);
       expect(result.rows.some(([label]) => label === 'Best move')).toBe(false);
       expect(Number(result.rows.find(([label]) => label === 'Rubies spawned')![1])).toBeGreaterThan(0);
       expect(Number(result.rows.find(([label]) => label === 'Emeralds spawned')![1])).toBeGreaterThan(0);
+      const coins = Number(result.rows.find(([label]) => label === 'Coins')![1]);
+      expect(result.rows).toContainEqual(['Coins toward next chest', `${coins % 200} / 200`]);
     }
     if (puzzle === 'swordfight') {
       buttons.get('Play::View stats')!();

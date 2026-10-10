@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { ChestMeter, chestPart, chestPiece, EMERALD, EMPTY, H, HaulBoard, isChestOrigin, RUBY, type Run, Scorer, stepMessage, W } from './logic';
+import { ChestMeter, ChestSupply, chestPart, chestPiece, EMERALD, EMPTY, H, HaulBoard, isChestOrigin, RUBY, type Run, Scorer, stepMessage, W } from './logic';
 
-/** A board from rows written top to bottom: 0-3 coins, R ruby, E emerald, . empty, C/c a chest's top/bottom. */
+/** A board from rows written top to bottom: 0-3 coins, R ruby, E emerald,. empty, C/c a chest's top/bottom. */
 function boardFrom(rows: string[], random: () => number = () => 0): HaulBoard {
   const b = new HaulBoard(random);
   rows.forEach((row, i) => {
@@ -81,6 +81,122 @@ describe('ChestMeter', () => {
     expect(m.coins).toBe(10);
     expect(m.add(400)).toBe(2);
     expect(m.coins).toBe(10);
+  });
+});
+
+describe('earned chest supply', () => {
+  const coins = (count: number, delay = 0) => Array.from({ length: count }, () => ({ x: 0, y: 0, piece: 0, delay }));
+  const opening = (b: HaulBoard) => {
+    for (let y = 0; y < 2; y++) for (let x = 0; x < 2; x++) b.set(x, y, EMPTY);
+  };
+  const spendStartingChest = (supply: ChestSupply) => {
+    const initial = boardFrom(QUIET, () => 0.3);
+    supply.beginMove(initial, 2);
+    supply.release(initial, 1000, () => 0);
+    expect(supply.waiting).toBe(0);
+  };
+
+  it('waits a full second for the starting chest and for each earned chest', () => {
+    const b = boardFrom(QUIET, () => 0.3);
+    const supply = new ChestSupply(150, 0);
+    supply.beginMove(b, 2);
+    supply.release(b, 999, () => 0);
+    expect(b.chestList).toHaveLength(0);
+    supply.release(b, 1000, () => 0);
+    opening(b);
+    b.step();
+    expect(b.cells.filter(isChestOrigin)).toHaveLength(1);
+    supply.addCleared(coins(149), 2000);
+    supply.addCleared(coins(1), 2500);
+    supply.beginMove(b, 2);
+    supply.release(b, 3499, () => 0);
+    expect(b.chestList).toHaveLength(0);
+    supply.release(b, 3500, () => 0);
+    expect(b.chestList).toHaveLength(1);
+  });
+
+  it('keeps the chest earned with two on the board out of their haul cascade, then uses the next opening', () => {
+    const b = boardFrom(QUIET, () => 0.3);
+    const supply = new ChestSupply(150, 0);
+    spendStartingChest(supply);
+    b.placeChest(0, 7, 0);
+    b.placeChest(4, 7, 0);
+    supply.addCleared(coins(150), 1000);
+    supply.beginMove(b, 2);
+    supply.release(b, 3000, () => 0);
+    expect(b.step()).toMatchObject({ kind: 'haul', chests: [{ x: 0 }, { x: 4 }] });
+    supply.release(b, 4000, () => 0);
+    b.step();
+    expect(b.cells.filter(isChestOrigin)).toHaveLength(0);
+    expect(supply.waiting).toBe(1);
+    supply.beginMove(b, 2);
+    supply.release(b, 5000, () => 0);
+    opening(b);
+    b.step();
+    expect(b.cells.filter(isChestOrigin)).toHaveLength(1);
+    expect(supply.waiting).toBe(0);
+  });
+
+  it('uses the opening left by hauling the sole chest in two-chest mode', () => {
+    const b = boardFrom(QUIET, () => 0.3);
+    const supply = new ChestSupply(150, 0);
+    spendStartingChest(supply);
+    b.placeChest(0, 7, 0);
+    supply.addCleared(coins(150), 1000);
+    supply.beginMove(b, 2);
+    supply.release(b, 3000, () => 2);
+    expect(b.step()).toMatchObject({ kind: 'haul', chests: [{ x: 0 }] });
+    const refill = b.step();
+    expect(refill).toMatchObject({ kind: 'rise' });
+    expect(b.cells.filter(isChestOrigin)).toHaveLength(1);
+    expect(supply.waiting).toBe(0);
+  });
+
+  it('preserves every award and the coin remainder while full, releasing one per move', () => {
+    const b = boardFrom(QUIET, () => 0.3);
+    const supply = new ChestSupply(150, 0);
+    spendStartingChest(supply);
+    b.placeChest(0, 5, 0);
+    b.placeChest(4, 5, 0);
+    supply.addCleared(coins(317), 1000);
+    expect(supply.meter.coins).toBe(17);
+    expect(supply.waiting).toBe(2);
+    supply.beginMove(b, 2);
+    supply.release(b, 3000, () => 0);
+    expect(b.chestList).toHaveLength(0);
+    b.cells.fill(0);
+    supply.beginMove(b, 2);
+    supply.release(b, 3000, () => 0);
+    supply.release(b, 3000, () => 0);
+    expect(b.chestList).toHaveLength(1);
+    expect(supply.waiting).toBe(1);
+    expect(supply.meter.coins).toBe(17);
+  });
+
+  it('ignores gems and chest squares, and starts the delay when the qualifying blast reaches its coin', () => {
+    const b = boardFrom(QUIET, () => 0.3);
+    const supply = new ChestSupply(1, 0);
+    spendStartingChest(supply);
+    supply.addCleared([RUBY, EMERALD, chestPiece(0, 0, 0), EMPTY].map((piece) => ({ piece, x: 0, y: 0, delay: 0 })), 1000);
+    expect(supply.waiting).toBe(0);
+    supply.addCleared(coins(1, 350), 1000);
+    supply.beginMove(b, 1);
+    supply.release(b, 2349, () => 0);
+    expect(b.chestList).toHaveLength(0);
+    supply.release(b, 2350, () => 0);
+    expect(b.chestList).toHaveLength(1);
+  });
+
+  it('counts a chest still waiting for a suitable gap against the board limit', () => {
+    const b = boardFrom(QUIET, () => 0.3);
+    const supply = new ChestSupply(150, 0);
+    supply.beginMove(b, 1);
+    supply.release(b, 1000, () => 0);
+    supply.addCleared(coins(150), 1000);
+    supply.beginMove(b, 1);
+    supply.release(b, 3000, () => 0);
+    expect(b.chestList).toHaveLength(1);
+    expect(supply.waiting).toBe(1);
   });
 });
 
