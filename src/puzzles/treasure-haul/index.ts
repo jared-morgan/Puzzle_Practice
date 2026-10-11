@@ -612,7 +612,7 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
     const minutes = clockStart ? Math.max(0, ticks() - clockStart) / 60000 : 0;
     const rated = mode === '0' || (mode === '2' || mode === 'chests2');
     return duty.end({
-      mode: MODES.find((m) => m.value === mode)?.label,
+      mode: inChallenges() ? CHALLENGES.find((c) => c.value === challenge())?.label : MODES.find((m) => m.value === mode)?.label,
       performance: duty.rate(rated ? (mode === '2' || mode === 'chests2') ? 'vampirateChests' : 'points' : null,
         rated ? (mode === '2' || mode === 'chests2') ? tally.chests : (minutes > 0 ? tally.points / minutes : 0) : null),
       score: { label: scoreLabel(), value: String(score()) },

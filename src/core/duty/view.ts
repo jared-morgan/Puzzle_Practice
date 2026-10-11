@@ -211,7 +211,8 @@ export function renderReport(report: DutyReport, details: StatRows = [],
   entry.append(faceCanvas(report.pirate.face, moodFor(report.performance)));
   const who = el('div', 'duty-who');
   who.append(el('div', 'duty-name', report.pirate.name));
-  const rating = el('div', 'duty-rating', performanceWord(report.performance));
+  // A practice session with no rating scale gets no rating word.
+  const rating = el('div', 'duty-rating', report.performance === LEARNING ? '' : performanceWord(report.performance));
   rating.classList.toggle('is-learning', report.performance === LEARNING);
   const showCounts = report.puzzle !== 'treasure-haul';
   const inScore = showCounts ? report.cleared.filter((group) => group.inScore).map(counts) : [];
