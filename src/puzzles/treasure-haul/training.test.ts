@@ -86,7 +86,7 @@ describe('Clear Chests packs', () => {
   it('efficient drills make same-colour threes below the chest and across its other column', () => {
     for (let seed = 0; seed < 100; seed++) {
       const rng = new PyRandom(seed);
-      const { board, chest, opening } = createDrill(() => rng.random(), 'efficient');
+      const { board, chest, opening } = createDrill(() => rng.random(), 'efficient', 5);
       board.gemRates = [0, 0];
       expect(opening).toBeDefined();
       expect(board.findRuns()).toHaveLength(0);
@@ -105,11 +105,30 @@ describe('Clear Chests packs', () => {
     }
   });
 
+  it('Colour Cleanup puts three problem coins in one chest column and more in the other, and its solution clears them all', () => {
+    for (let seed = 0; seed < 40; seed++) {
+      const rng = new PyRandom(seed);
+      const { board, chest, colourGoal, solution } = createDrill(() => rng.random(), 'efficient');
+      expect(colourGoal).toBeDefined();
+      expect(board.findRuns()).toHaveLength(0);
+      expect(board.cells.filter(isChestOrigin)).toHaveLength(1);
+      const above = (x: number) => Array.from({ length: H - chest.y - 1 }, (_, i) => board.get(x, chest.y + 1 + i)).filter((p) => p === colourGoal).length;
+      const counts = [above(chest.x), above(chest.x + 1)];
+      expect(counts).toContain(3);
+      expect(Math.min(...counts)).toBeGreaterThanOrEqual(1);
+      for (const move of solution!) {
+        expect(board.swap(...move).kind).toBe('swap');
+        for (let step = 0; step < 300 && board.step(); step++);
+      }
+      expect(board.cells, `seed ${seed}`).not.toContain(colourGoal);
+    }
+  });
+
   it('every pack is stable, with middle placement or a solvable edge opening', () => {
     for (const pack of ['standard', 'efficient', 'emeralds', 'edges'] as ClearPack[]) {
       for (let seed = 0; seed < 30; seed++) {
         const rng = new PyRandom(seed);
-        const drill = createDrill(() => rng.random(), pack);
+        const drill = createDrill(() => rng.random(), pack, pack === 'efficient' ? 5 : undefined);
         const { board, chest, solution } = drill;
         expect(board.findRuns()).toHaveLength(0);
         expect(board.cells.filter(isChestOrigin)).toHaveLength(1);

@@ -1,6 +1,7 @@
 import { HaulBoard, W, H, RUBY, EMERALD, EMPTY, isChestOrigin } from './logic';
 import { PyRandom } from '../../core/pyrandom';
 import { createVariedEdgeDrill } from './edge-training';
+import { createColourDrill } from './colour-training';
 
 export type ClearPack = 'standard' | 'efficient' | 'emeralds' | 'edges';
 export interface Drill {
@@ -13,6 +14,8 @@ export interface Drill {
   edgePattern?: 'horizontal' | 'vertical' | 'single-emerald' | 'double-emerald';
   /** Generation metadata; the exercise does not reveal this to the player. */
   impossible?: boolean;
+  /** This drill ends when no coin of the chosen colour remains. */
+  colourGoal?: number;
 }
 export interface DrillOptions { impossibleChests?: boolean }
 
@@ -57,7 +60,8 @@ export function rubySpawnScore(original: HaulBoard, chestX: number): number {
 }
 
 /** Practice boards have no automatic matches, and never overwrite another chest. */
-export function createDrill(random: () => number, pack: ClearPack, rules: 1 | 2 | 3 | 4 | 5 = 5, options: DrillOptions = {}): Drill {
+export function createDrill(random: () => number, pack: ClearPack, rules: 1 | 2 | 3 | 4 | 5 | 6 = 6, options: DrillOptions = {}): Drill {
+  if (pack === 'efficient' && rules >= 6) return createColourDrill(random);
   if (rules === 1 || pack === 'standard' || pack === 'efficient') return createLegacyDrill(random, pack);
   if (pack === 'edges') {
     if (rules >= 5) {

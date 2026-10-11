@@ -411,7 +411,7 @@ describe('preset Treasure Haul drills', () => {
     const { readReplayFile } = await import('../core/replay-storage');
     const { decodeReplayBlob } = await import('../core/replay');
     const tape = (await decodeReplayBlob((await readReplayFile(replay))!))!;
-    expect(tape).toMatchObject({ settingsVersion: 9, settings: { trainingRules: 5, impossibleChests: true } });
+    expect(tape).toMatchObject({ settingsVersion: 10, settings: { trainingRules: 6, impossibleChests: true } });
     toggles.get(setting)!(false);
     const data = JSON.parse(exportAll()).data;
     const perf = vi.spyOn(performance, 'now').mockReturnValue(0);
@@ -471,7 +471,7 @@ describe('preset Treasure Haul drills', () => {
     const finalStats = stats();
     if (pack === 'edges') expect(finalStats[0]).toContainEqual(['Chests cleared', '1', expect.any(String)]);
     const [replay] = await listReplayFiles('treasure-haul');
-    expect(replay.settingsVersion).toBe(9);
+    expect(replay.settingsVersion).toBe(10);
     const data = JSON.parse(exportAll()).data;
     const perf = vi.spyOn(performance, 'now').mockReturnValue(0);
     expect(await captured.recorders[0].playAt(replay.at, replay.runId)).toBe(true);
@@ -634,7 +634,7 @@ describe('Rubies spawn mode', () => {
     expect((results()[0] as { rows: string[][] }).rows).toContainEqual(['Ruby score', String(points)]);
     await replayWrites.idle();
     const [replay] = await listReplayFiles('treasure-haul');
-    expect(replay.settingsVersion).toBe(9);
+    expect(replay.settingsVersion).toBe(10);
     const data = JSON.parse(exportAll()).data;
     const perf = vi.spyOn(performance, 'now').mockReturnValue(0);
     const recorder = captured.recorders[0];
@@ -709,7 +709,7 @@ describe('Treasure Haul vacant-board chest wait', () => {
     const expectedStats = stats();
     await replayWrites.idle();
     const [replay] = await listReplayFiles('treasure-haul');
-    expect(replay.settingsVersion).toBe(9);
+    expect(replay.settingsVersion).toBe(10);
     const data = JSON.parse(exportAll()).data;
     const perf = vi.spyOn(performance, 'now').mockReturnValue(0);
     const recorder = captured.recorders[0];

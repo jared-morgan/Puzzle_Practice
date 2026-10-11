@@ -97,6 +97,23 @@ const ARTWORK: Option<Artwork>[] = [
 ];
 /** Low, medium and high value chests at the shallow end of the pool (treasureMinAwesomeness). */
 const CHEST_VALUE_WEIGHTS = [90, 9, 1];
+/** The Mode list shows the drills as one entry, Challenges, with a picker for which. */
+type ModeChoice = '0' | 'chests1' | 'chests2' | 'challenges';
+const MODE_CHOICES: Option<ModeChoice>[] = [
+  { value: '0', label: 'No chests' },
+  { value: 'chests1', label: '1 chest' },
+  { value: 'chests2', label: '2 chests' },
+  { value: 'challenges', label: 'Challenges' },
+];
+type Challenge = 'spawn' | 'rubies' | ClearPack;
+const CHALLENGES: Option<Challenge>[] = [
+  { value: 'spawn', label: 'Spawn Chests' },
+  { value: 'rubies', label: 'Rubies' },
+  { value: 'standard', label: 'Middle chests' },
+  { value: 'efficient', label: 'Colour Cleanup' },
+  { value: 'emeralds', label: 'Edge emeralds' },
+  { value: 'edges', label: 'Difficult edge chests' },
+];
 const ROUNDS: Option<number>[] = [
   { value: 0, label: 'No timer' },
   { value: 30, label: '30 seconds' },
@@ -179,6 +196,8 @@ interface Tally {
   spawned: number;
   middle: number;
   spawnScore: number;
+  /** Colour Cleanup: scenarios finished by clearing every coin of the problem colour. */
+  cleanups: number;
 }
 
 /** Vampire ratings use the published chest counts; coin mode uses points a minute. */
@@ -188,7 +207,7 @@ const RATING_SCALES: RatingScale[] = [
   { id: 'vampirateChests', label: '2 chests, chests hauled', cutoffs: [2, 3, 5, 6, 8], gauntlet: true },
 ];
 
-const emptyTally = (): Tally => ({ moves: 0, points: 0, bestMove: 0, coins: 0, gems: 0, rubies: 0, emeralds: 0, chests: 0, chestsByType: [0, 0, 0], rubiesSpawned: 0, emeraldsSpawned: 0, spawned: 0, middle: 0, spawnScore: 0 });
+const emptyTally = (): Tally => ({ moves: 0, points: 0, bestMove: 0, coins: 0, gems: 0, rubies: 0, emeralds: 0, chests: 0, chestsByType: [0, 0, 0], rubiesSpawned: 0, emeraldsSpawned: 0, spawned: 0, middle: 0, spawnScore: 0, cleanups: 0 });
 
 /** A copy of the purple hands tinted to a skin tone, keeping their shading. */
 function tint(img: HTMLImageElement): HTMLCanvasElement {
@@ -251,7 +270,9 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
   /** Chests modes: a chest earned while the board already has its limit, waiting for room. */
   let chestEarned = false;
   let chestRules: 1 | 2 | 3 | 4 = 4;
-  let trainingRules: 1 | 2 | 3 | 4 | 5 = 5;
+  let trainingRules: 1 | 2 | 3 | 4 | 5 | 6 = 6;
+  /** Colour Cleanup: the colour this scenario is about, or null in other drills. */
+  let colourGoal: number | null = null;
   let dismissRules: 1 | 2 = 2;
   let dismissRequested = false;
   let chestSupply = new ChestSupply(coinsPerChest, ticks());
@@ -322,18 +343,19 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
   /** Bests are kept per mode, pack, round length and spawn rules. */
   const timed = () => roundSecs > 0;
   const spawnDrill = () => mode === 'spawn' || mode === 'rubies';
-  const scoreLabel = () => mode === 'rubies' ? 'Ruby score' : mode === 'spawn' ? 'Spawn score' : mode === 'clear' ? 'Chests cleared' : chestMode() || mode === '1' || mode === '2' ? 'Chests hauled' : 'Points';
+  const colourDrill = () => mode === 'clear' && clearPack === 'efficient' && trainingRules >= 6;
+  const scoreLabel = () => mode === 'rubies' ? 'Ruby score' : mode === 'spawn' ? 'Spawn score' : colourDrill() ? 'Colour cleanups' : mode === 'clear' ? 'Chests cleared' : chestMode() || mode === '1' || mode === '2' ? 'Chests hauled' : 'Points';
   const bestKey = () => `${mode}:${mode === 'clear' ? clearPack + ':' : ''}${roundSecs}` +
     (coinOnlyDrill() || gemRates.every((rate) => rate === 200 / 308) ? '' : `:gems:${gemRates.join('-')}`) +
     (spawnDrill() && spawnDelay ? ':delay' : '') +
     (chestRules >= 2 && (chestMode() || spawnDrill() || mode === 'clear') ? chestRules >= 3 && mode === 'chests2' ? `:rules${chestRules}` : ':rules2' : '') +
-    (presetDrill() ? clearPack === 'edges' && trainingRules >= 5 ? ':drills5' : clearPack === 'edges' && trainingRules === 4 ? ':drills4' : trainingRules >= 3 && clearPack === 'emeralds' ? ':drills3' : ':drills2' : '') +
+    (presetDrill() ? colourDrill() ? ':colour' : clearPack === 'edges' && trainingRules >= 5 ? ':drills5' : clearPack === 'edges' && trainingRules === 4 ? ':drills4' : trainingRules >= 3 && clearPack === 'emeralds' ? ':drills3' : ':drills2' : '') +
     (mode === 'clear' && clearPack === 'edges' && trainingRules >= 4 && impossibleChests ? ':impossible' : '') +
     (chestMode() && coinsPerChest !== LEGACY_COINS_PER_CHEST ? `:coins:${coinsPerChest}` : '');
   const actionCount = () => movers.length + fades.length;
   const inFlight = () => flyers.length + minis.length;
-  const presetDrill = () => mode === 'clear' && trainingRules >= 2 && (clearPack === 'emeralds' || clearPack === 'edges');
-  const coinOnlyDrill = () => mode === 'rubies' || (mode === 'clear' && trainingRules >= 2 &&
+  const presetDrill = () => mode === 'clear' && trainingRules >= 2 && (clearPack === 'emeralds' || clearPack === 'edges' || colourDrill());
+  const coinOnlyDrill = () => mode === 'rubies' || colourDrill() || (mode === 'clear' && trainingRules >= 2 &&
     (clearPack === 'edges' || (trainingRules >= 3 && clearPack === 'emeralds')));
 
   function playLater(sound: Sound, ms: number): void {
@@ -397,9 +419,11 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
     } : null;
     firstClearAt = null;
     trainingChest = null;
+    colourGoal = null;
     if (mode === 'clear') {
       const drill = createDrill(random, clearPack, trainingRules, { impossibleChests });
       board = drill.board;
+      colourGoal = drill.colourGoal ?? null;
       if (!presetDrill()) trainingChest = drill.chest;
     } else if (mode === 'rubies') {
       board = createRubyBoard(random);
@@ -542,6 +566,7 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
   /** The score a mode keeps a best of: chests hauled, coin points or spawn-drill points. */
   function score(): number {
     if (spawnDrill()) return tally.spawnScore;
+    if (colourDrill()) return tally.cleanups;
     if (mode === 'clear' || chestMode()) return tally.chests;
     return tally.points;
   }
@@ -727,7 +752,8 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
       tally.chests += step.chests.length;
       for (const chest of step.chests) tally.chestsByType[chestValue(chest.piece)]++;
       if (landing && step.chests.some((c) => c.x === landing!.x)) landing.hauled = true;
-      if (mode === 'clear') {
+      // Colour Cleanup ends on its colour, not the chest.
+      if (mode === 'clear' && colourGoal === null) {
         clearMs = ticks() - clockStart;
         sounds.play('big_combo');
       }
@@ -776,7 +802,18 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
     tally.bestMove = Math.max(tally.bestMove, points);
     awardChests(points);
     if (landing) scoreSpawn(landing);
-    else if (roundEnd && ticks() >= roundEnd) stop();
+    else if (mode === 'clear' && colourGoal !== null && !board.cells.includes(colourGoal)) {
+      // Colour Cleanup: every coin of the problem colour is gone, so the scenario is done.
+      tally.cleanups++;
+      sounds.play('big_combo');
+      colourGoal = null;
+      if (roundEnd && ticks() >= roundEnd) stop();
+      else {
+        active = false;
+        redeal = true;
+        redealAt = 0;
+      }
+    } else if (roundEnd && ticks() >= roundEnd) stop();
     else if (mode === 'clear' && clearMs) {
       clearMs = 0;
       active = false;
@@ -1126,19 +1163,32 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
     { id: 'swap', label: 'Swap pieces', defaultKey: 'Space' },
   ]);
   const session = panel.session();
-  session.select('Mode', MODES, () => mode, (m) => {
-    mode = m;
-    store.set('mode', m);
+  const inChallenges = () => mode === 'spawn' || mode === 'rubies' || mode === 'clear';
+  const challenge = (): Challenge => (mode === 'clear' ? clearPack : mode === 'rubies' ? 'rubies' : 'spawn');
+  const setChallenge = (c: Challenge) => {
+    if (c === 'spawn' || c === 'rubies') mode = c;
+    else {
+      mode = 'clear';
+      clearPack = c;
+      store.set('clearPack', c);
+    }
+    store.set('mode', mode);
+  };
+  session.select('Mode', MODE_CHOICES, () => (inChallenges() ? 'challenges' : (mode as ModeChoice)), (m) => {
+    if (m === 'challenges') setChallenge(store.get<Challenge>('challenge', 'spawn'));
+    else {
+      mode = m;
+      store.set('mode', m);
+    }
   }, { disabled: () => running });
-  session.select('Training pack', [
-    { value: 'standard', label: 'Middle chests' },
-    { value: 'efficient', label: 'Vertical + horizontal 3' },
-    { value: 'emeralds', label: 'Edge emeralds' },
-    { value: 'edges', label: 'Difficult edge chests' },
-  ] as Option<ClearPack>[], () => clearPack, (p) => { clearPack = p; store.set('clearPack', p); }, { hidden: () => mode !== 'clear', disabled: () => running });
+  session.select('Challenge', CHALLENGES, challenge, (c) => {
+    setChallenge(c);
+    store.set('challenge', c);
+  }, { hidden: () => !inChallenges(), disabled: () => running });
   const actions = panel.group();
   actions.note(() => mode === 'rubies' ? 'Spawn a chest below a ruby: 1 point per ruby column. Its blast must leave no blockers above the chest in the outer two columns on either side.' : '');
-  actions.note(() => mode === 'clear' ? presetDrill() ? 'Start with the chest in position. Haul as many as you can.' : 'A practice move brings in each chest. Haul as many as you can.' : '');
+  actions.note(() => colourDrill() ? 'One chest column holds three coins of a problem colour and its neighbour some more. Clear every coin of that colour, however you like.' : '');
+  actions.note(() => mode === 'clear' && !colourDrill() ? presetDrill() ? 'Start with the chest in position. Haul as many as you can.' : 'A practice move brings in each chest. Haul as many as you can.' : '');
   // Starting while a replay is open closes it and starts a game of your own.
   actions.button('Start', () => { if (replays.isPlaying) { replays.stop(); if (replays.isPlaying) return; } if (running) stop(); else start(); }, { variant: 'primary', label: () => (replays?.isPlaying ? 'Start' : running ? 'Stop' : finished ? 'Play again' : 'Start') });
 
@@ -1219,7 +1269,7 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
       showEmeraldSightLines = on;
       store.set('showEmeraldSightLines', on);
     }, { title: 'Hover over an emerald to highlight its diagonals and the pieces along them; chests are passed over.' });
-  actions.note(() => mode === 'clear' && coinOnlyDrill() ? 'Clear the chest with coin matches and the emeralds provided.' : '');
+  actions.note(() => mode === 'clear' && coinOnlyDrill() && !colourDrill() ? 'Clear the chest with coin matches and the emeralds provided.' : '');
   panel.settings.group('Training').toggle('Impossible chests', () => impossibleChests, (on) => {
     impossibleChests = on;
     store.set('impossibleChests', on);
@@ -1257,23 +1307,23 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
   }, { disabled: () => running });
 
   const replaySettingsCodec: ReplaySettingsCodec = {
-    currentVersion: 9,
-    simulatorVersion: 9,
+    currentVersion: 10,
+    simulatorVersion: 10,
     migrate: (version, value) => {
-      if (![1, 2, 3, 4, 5, 6, 7, 8, 9].includes(version) || !value || typeof value !== 'object') return null;
+      if (![1, 2, 3, 4, 5, 6, 7, 8, 9, 10].includes(version) || !value || typeof value !== 'object') return null;
       const s = value as Record<string, unknown>;
       return (['0', '1', '2', 'chests1', 'chests2', 'spawn', 'clear'].includes(String(s.mode)) || (version >= 8 && s.mode === 'rubies')) &&
         (version === 1 || (version === 2 ? s.chestRules === 2 : version >= 5 ? s.chestRules === 4 : s.chestRules === 2 || s.chestRules === 3)) &&
-        (version < 3 || s.trainingRules === (version >= 9 ? 5 : version >= 7 ? 4 : version === 6 ? 3 : 2)) &&
+        (version < 3 || s.trainingRules === (version >= 10 ? 6 : version >= 9 ? 5 : version >= 7 ? 4 : version === 6 ? 3 : 2)) &&
         (version < 7 || typeof s.impossibleChests === 'boolean') &&
         (version < 4 || s.dismissRules === 2) &&
         (s.coinsPerChest === undefined || (Number.isFinite(s.coinsPerChest) && (s.coinsPerChest as number) >= 1)) &&
         ['standard', 'efficient', 'emeralds', 'edges'].includes(String(s.clearPack)) &&
         Number.isFinite(s.roundSecs) && (s.roundSecs as number) >= 0 && typeof s.spawnDelay === 'boolean' &&
-        Array.isArray(s.gemRates) && s.gemRates.length === 2 && s.gemRates.every((n) => Number.isFinite(n) && (n as number) >= 0) ? { ...s, chestRules: version === 1 ? 1 : version === 2 ? 2 : s.chestRules, trainingRules: version < 3 ? 1 : version >= 9 ? 5 : version >= 7 ? 4 : version === 6 ? 3 : 2, dismissRules: version < 4 ? 1 : 2, impossibleChests: version >= 7 ? s.impossibleChests : false } : null;
+        Array.isArray(s.gemRates) && s.gemRates.length === 2 && s.gemRates.every((n) => Number.isFinite(n) && (n as number) >= 0) ? { ...s, chestRules: version === 1 ? 1 : version === 2 ? 2 : s.chestRules, trainingRules: version < 3 ? 1 : version >= 10 ? 6 : version >= 9 ? 5 : version >= 7 ? 4 : version === 6 ? 3 : 2, dismissRules: version < 4 ? 1 : 2, impossibleChests: version >= 7 ? s.impossibleChests : false } : null;
     },
   };
-  type HaulSettings = { mode: Mode; clearPack: ClearPack; roundSecs: number; spawnDelay: boolean; gemRates: [number, number]; coinsPerChest?: number; chestRules?: 1 | 2 | 3 | 4; trainingRules?: 1 | 2 | 3 | 4 | 5; dismissRules?: 1 | 2; impossibleChests?: boolean };
+  type HaulSettings = { mode: Mode; clearPack: ClearPack; roundSecs: number; spawnDelay: boolean; gemRates: [number, number]; coinsPerChest?: number; chestRules?: 1 | 2 | 3 | 4; trainingRules?: 1 | 2 | 3 | 4 | 5 | 6; dismissRules?: 1 | 2; impossibleChests?: boolean };
   let savedReplaySettings: HaulSettings | null = null;
   replays = new ReplayRecorder('treasure-haul', store, panel, ticks, (tape: PuzzleReplay) => {
     savedReplaySettings ??= { mode, clearPack, roundSecs, spawnDelay, gemRates: [...gemRates], coinsPerChest, chestRules, trainingRules, dismissRules, impossibleChests };
@@ -1295,7 +1345,7 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
     if (savedReplaySettings) {
       ({ mode, clearPack, roundSecs, spawnDelay, gemRates } = savedReplaySettings);
       chestRules = savedReplaySettings.chestRules ?? 4;
-      trainingRules = savedReplaySettings.trainingRules ?? 5;
+      trainingRules = savedReplaySettings.trainingRules ?? 6;
       impossibleChests = savedReplaySettings.impossibleChests ?? false;
       dismissRules = savedReplaySettings.dismissRules ?? 2;
       coinsPerChest = savedReplaySettings.coinsPerChest ?? COINS_PER_CHEST;

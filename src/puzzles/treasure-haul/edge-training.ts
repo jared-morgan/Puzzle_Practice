@@ -45,7 +45,11 @@ export function createVariedEdgeDrill(random: () => number): Drill {
 }
 
 /** Search coin matches and emerald blasts rather than choosing a fixed layout. */
-function solve(original: HaulBoard, chestX: number, useGem: boolean, draw: (index: number) => number, width: number): Move[] | null {
+export function solveColourDrill(original: HaulBoard, chestX: number, colour: number, draw: (index: number) => number): Move[] | null {
+  return solve(original, chestX, false, draw, 16, colour);
+}
+
+function solve(original: HaulBoard, chestX: number, useGem: boolean, draw: (index: number) => number, width: number, goal?: number): Move[] | null {
   let frontier: Position[] = [{ cells: [...original.cells], refill: 0, moves: [], gems: 0 }];
   const seen = new Set<string>();
   const clone = (position: Position) => {
@@ -56,6 +60,7 @@ function solve(original: HaulBoard, chestX: number, useGem: boolean, draw: (inde
   };
   const chestRow = (cells: number[]) => Math.floor(cells.findIndex(isChestOrigin) / W);
   const rank = (position: Position) => {
+    if (goal !== undefined) return -position.cells.filter((piece) => piece === goal).length * 30 - position.moves.length / 10;
     const row = chestRow(position.cells);
     let blocked = 0;
     for (let y = row + 1; y < H; y++) for (const x of [chestX, chestX + 1]) {
@@ -81,11 +86,11 @@ function solve(original: HaulBoard, chestX: number, useGem: boolean, draw: (inde
         return count;
       };
       for (let colour = 0; colour < 4; colour++) {
-        for (let x = 0; x < W; x++) if (available(x, H - 1, colour) >= 3) {
-          plans.push({ targets: [[x, 7, colour], [x, 6, colour], [x, 5, colour]] });
+        for (let x = 0; x < W; x++) for (let top = H - 1; top >= (goal === undefined ? H - 1 : 2); top--) if (available(x, top, colour) >= 3) {
+          plans.push({ targets: [[x, top, colour], [x, top - 1, colour], [x, top - 2, colour]] });
         }
-        for (let y = H - 1; y > row; y--) for (let x = 0; x < W - 2; x++) {
-          if (!(x <= chestX + 1 && x + 2 >= chestX) && !gems.some(([gx, gy]) => gx >= x && gx <= x + 2 && gy < y)) continue;
+        for (let y = H - 1; y > (goal === undefined ? row : -1); y--) for (let x = 0; x < W - 2; x++) {
+          if (goal === undefined && !(x <= chestX + 1 && x + 2 >= chestX) && !gems.some(([gx, gy]) => gx >= x && gx <= x + 2 && gy < y)) continue;
           if ([x, x + 1, x + 2].every((column) => available(column, y, colour))) {
             const targets: Target[] = [x, x + 1, x + 2].map((column) => [column, y, colour]);
             plans.push({ targets }, { targets: [...targets].reverse() });
@@ -121,7 +126,9 @@ function solve(original: HaulBoard, chestX: number, useGem: boolean, draw: (inde
           if (cleared || illegal) break;
         }
         if (illegal || !cleared) continue;
-        if (hauled) { if (!useGem || gemsUsed) return moves; continue; }
+        if (goal !== undefined) {
+          if (!trial.board.cells.includes(goal)) return moves;
+        } else if (hauled) { if (!useGem || gemsUsed) return moves; continue; }
         const candidate = { cells: [...trial.board.cells], refill: trial.refill(), moves, gems: gemsUsed };
         const key = candidate.cells.join(',') + ':' + candidate.refill + ':' + !!gemsUsed;
         if (seen.has(key)) continue;
