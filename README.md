@@ -9,19 +9,27 @@ Practice versions of Puzzle Pirates puzzles that run in the browser:
 - **Vampire Carp**: patch coffin holes with pentomino planks (the Vampire Lair's carpentry, rebuilt from the game).
 - **Blacksmithing**: strike squares to forge a sword, each piece deciding where you strike next.
 - **Swordfight**: drop pairs, shatter them with breakers and fuse blocks into swords, against training
-  opponents or on your own (rebuilt from the game; see [what we know and what's still open](docs/swordfight-findings.md)).
+  opponents or on your own.
 
 Play at [puzzle-practice.github.io/Puzzle_Practice](https://puzzle-practice.github.io/Puzzle_Practice/).
 
 Source: [puzzle-practice/Puzzle_Practice](https://github.com/puzzle-practice/Puzzle_Practice).
 
 The main score and relevant timer remain visible above Play, Settings and History. Settings
-include a shared 0–100 volume slider and an option to hide the timer. Finished sessions show
+include a shared 0–100 volume slider, a Warning timer toggle and an option to hide the timer. Finished sessions show
 compact HTML results in the board area; secondary statistics stay off the live score display.
 
 Treasure Haul offers Spawn Chests and four Clear Chests packs: middle placement, simultaneous
 vertical/horizontal threes, edge emeralds, and difficult edge chests. Clear Chests counts hauls
 over the selected round. Gem rates and the one-second spawn delay are configurable in Settings.
+The defaults are two chests, 100 cleared coins per additional chest, and Vampirate artwork.
+Settings > Display offers Classic, Haunted Seas and Vampirate artwork, with a saved preference.
+The optional emerald sight lines appear only while hovering over an emerald. Play, Settings
+and History stay pinned at the top while scrolling the panel.
+
+Swordfight Settings lets you choose the number of opponents and teammates, then each NPC’s
+type, sword and skill. Sword colours randomise for every fight. New players start with a
+blue/blue Falchion; saved equipment choices and older replays keep their original settings.
 
 Forage offers Puzzle, Gauntlet, Chaos and Normal, with optional round timers. Chaos keeps the
 normal move spacing but lifts the chest count, mix and per-board limits. Settings expose chest
@@ -77,8 +85,6 @@ scripts/
   new-puzzle.mjs     npm run new-puzzle -- <id> "<Title>"
   parity/            run the original Python code to make test fixtures
 ```
-
-To add a puzzle, see [docs/adding-a-puzzle.md](docs/adding-a-puzzle.md).
 
 ## Deploying
 

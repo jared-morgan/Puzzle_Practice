@@ -1,5 +1,5 @@
 // The shell: a landing page listing every puzzle, and a page per puzzle.
-// Routing uses the URL hash (#/forage) so it works on GitHub Pages without server rewrites.
+// Routing uses the URL hash (#/forage) so it works on GitHub Pages without game rewrites.
 import './style.css';
 import { runPuzzle, type RunningPuzzle } from './core/host';
 import { puzzles } from './core/registry';
@@ -149,8 +149,7 @@ async function showPuzzle(id: string): Promise<void> {
       'footer',
       { className: 'about' },
       el('p', { className: 'credits' }, 'Based on Puzzle Pirates, created by Three Rings Design and now operated by Grey Havens.'),
-      el('p', { className: 'credits' }, 'Adaptation by Jice.'),
-      el('p', { className: 'credits' }, 'Discord: jeyece.'),
+      el('p', { className: 'credits' }, id === 'blacksmithing' ? 'Adaption by Jice, inspired by Jazz.' : 'Adaptation by Jice.'),
     ),
   );
   try {

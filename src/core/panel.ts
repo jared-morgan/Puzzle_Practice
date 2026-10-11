@@ -21,7 +21,7 @@
 //   panel.score().stats(['', 'Now', 'Best'], () => [['Moves', String(moves), String(best)]]);
 //   panel.settings.group('Game').toggle('Ants', () => settings.ants, (on) => (settings.ants = on), { disabled: () => running });
 
-import { getVolume, setVolume } from './audio';
+import { getVolume, setVolume, getWarningTimer, setWarningTimer } from './audio';
 import { keyFor, keyLabel, resetKeys, setKey, type KeyBinding } from './controls';
 import { showsDutyReport, type DutyReport } from './duty/report';
 import { foldTable, pirateSettings, renderReport } from './duty/view';
@@ -243,7 +243,10 @@ export class Panel {
       this.hideTimer = on;
       this.preferences.set('hideTimer', on);
     });
-    this.globalSettings.group('Sound').range('Volume', getVolume, setVolume, { min: 0, max: 100 });
+    this.globalSettings.group('Sound').range('Volume', getVolume, setVolume, { min: 0, max: 100 })
+      .toggle('Warning timer', getWarningTimer, setWarningTimer, {
+        title: 'Play a warning near the end of timed puzzles: 30 seconds for Foraging and Blacksmithing, 15 seconds for Treasure Haul and Vampire Carpentry.',
+      });
     const replayPreferences = this.globalSettings.group('Replays');
     replayPreferences.toggle('Save replays',
       () => this.preferences.get<boolean>('saveReplays', true),
@@ -447,20 +450,30 @@ export class Group {
   }
 
   /** A dropdown of exclusive choices. */
-  select<T extends string | number>(label: string, options: readonly Option<T>[], get: Get<T>, set: (value: T) => void, opts: ControlOptions = {}): this {
+  select<T extends string | number>(label: string, options: readonly Option<T>[] | Get<readonly Option<T>[]>, get: Get<T>, set: (value: T) => void, opts: ControlOptions = {}): this {
     const select = el('select', 'panel-select');
-    for (const [i, option] of options.entries()) {
-      const node = el('option', '', option.label);
-      node.value = String(i);
-      select.append(node);
-    }
+    const choices = typeof options === 'function' ? options : () => options;
+    let current: readonly Option<T>[] | undefined;
+    const syncOptions = () => {
+      const next = choices();
+      if (current === next) return;
+      current = next;
+      select.replaceChildren(...next.map((option, i) => {
+        const node = el('option', '', option.label);
+        node.value = String(i);
+        return node;
+      }));
+    };
+    syncOptions();
     select.addEventListener('change', () => {
-      set(options[Number(select.value)].value);
+      const option = current?.[Number(select.value)];
+      if (option) set(option.value);
       this.panel.used();
     });
     this.field(label, select, opts, select);
     this.panel.addSync(() => {
-      const index = String(options.findIndex((o) => o.value === get()));
+      syncOptions();
+      const index = String(current!.findIndex((o) => o.value === get()));
       if (select.value !== index) select.value = index;
     });
     return this;

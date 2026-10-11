@@ -219,16 +219,20 @@ a {
 .piece-palette button[aria-pressed="true"] { outline: 2px solid var(--accent); background: var(--surface-2); }
 
 .panel-tabs {
-  position: sticky;
-  top: 0;
-  z-index: 1;
   display: flex;
+  flex-shrink: 0;
   gap: 4px;
   padding: 4px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--surface);
   box-shadow: var(--shadow);
+}
+
+.panel > .panel-tabs {
+  position: sticky;
+  top: 0;
+  z-index: 2;
 }
 
 .panel-tab {

@@ -1,18 +1,9 @@
-// Blacksmithing, rebuilt from the Puzzle Pirates client (crafting/iron, build 20260909165753):
-// the rules are in logic.ts, and this file is IronBoardView and its helper classes (client/a-o):
-// the sword sliding in, the hammer and tongs, sparks, glows on the squares that can be struck
-// next, the combo readout on the anvil and the floating messages, with the client's art, sounds
-// and timings. The canvas is the 450x600 board view; settings and scores are in the panel.
-//
-// The game's points are worked out on the server, which isn't in the client, so there is no
-// score yet: the panel shows what the client shows (the blade's done level and the combos).
-//
-// Perfect board is a practice mode that isn't in the game: a 1x1 to 5x5 board, one strike per
-// square, dealt so that every square can be struck. 3 points for clearing it, 1 for one left.
-// Boards follow one another until Stop, or until a 2-minute timer runs out.
+// Blacksmithing presentation and practice controls: sword, hammer, tongs, sparks,
+// legal-strike glows, combos and floating messages. Board rules live in logic.ts.
 import { SessionPause } from '../../core/pause';
 import { Images } from '../../core/assets';
 import { SoundBank } from '../../core/audio';
+import { TimerWarning } from '../../core/timer-warning';
 import { loadFont } from '../../core/fonts';
 import { dutyDesk } from '../../core/duty/desk';
 import type { RatingScale } from '../../core/duty/ratings';
@@ -49,7 +40,7 @@ const soundUrls = import.meta.glob<string>('./sounds/*.mp3', { eager: true, quer
 type Sound = 'chain' | 'hammer1' | 'hammer2' | 'hammer3' | 'set' | 'sword_enter' | 'tongs' | 'wild';
 
 const WIDTH = 450;
-/** Squares are 60px, the first at (52, 67) (client/o.A, o.B); the frame sits 7px outside them. */
+/** Squares are 60px, the first at (52, 67); the frame sits 7px outside them. */
 const CELL = 60;
 const BOARD_X = 52;
 const BOARD_Y = 67;
@@ -65,10 +56,10 @@ const BLADES = ['blade_hot', 'blade_warm', 'blade_cracked', 'blade_rough', 'blad
 const TILE_SHEETS = ['', 'cool', 'warm', 'hot'];
 /** Multi-frame animations play at 15 frames a second. */
 const FRAME_MS = 1000 / 15;
-/** Glows on the squares that can be struck next (client/m, piracy/client/util/m): pale for hot squares. */
+/** Glows on the squares that can be struck next: pale for hot squares. */
 const GLOW_HOT = 'rgb(255, 255, 130)';
 const GLOW = 'rgb(255, 255, 65)';
-/** Message sizes: the client's game fonts (roister/client/a), indexed as IronBoardView asks for them. */
+/** Message sizes: the game fonts, indexed as IronBoardView asks for them. */
 const FONT_SIZES = [24, 30, 36, 42, 52, 68];
 const FONT = 'Delarobb';
 /** Floating messages rise 30px over 1.5s, fading in the second half (nenya FloatingTextAnimation). */
@@ -80,7 +71,7 @@ const BLADE_NAMES = ['Club', 'Hefty blade', 'Finely balanced', 'Keen edge', 'Mas
 
 /**
  * Duty report ratings: a classic sword by how far its blade got (0 Club up to 4 Masterpiece), a
- * perfect-board run by points a board (3 cleared, 1 one off).
+ * perfect-board run by points a board (3 cleared, 1 one off, -1 too far off).
  */
 const RATING_SCALES: RatingScale[] = [
   { id: 'blade', label: 'Classic, blade (0 Club to 4 Masterpiece)', cutoffs: [0, 1, 2, 3, 4] },
@@ -114,7 +105,7 @@ const DIFFICULTIES: Option<number>[] = [
   { value: 4, label: '4: adds rum jugs' },
 ];
 
-/** Key to cursor direction, as dx, dy (IronController's cursN, cursNE, ...). */
+/** Key to cursor direction, as dx, dy (IronController's cursN, cursNE,...). */
 const KEY_MOVES: Record<string, Point> = {
   arrowup: [0, -1],
   arrowdown: [0, 1],
@@ -199,6 +190,7 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
   const [images] = await Promise.all([Images.load(imageUrls), loadFont(FONT, delarobbUrl)]);
   const img = (name: string) => images.get(name);
   const sounds = new SoundBank<Sound>(soundUrls, () => replays?.isSeeking ?? false);
+  const warning = new TimerWarning('gauntlet', () => replays?.isSeeking ?? false);
   const ctx = screen.ctx;
   const rng = new PyRandom();
   rng.seedFromCrypto();
@@ -208,15 +200,16 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
   const glowSheets = TILE_SHEETS.map((name) => (name ? [silhouette(img(name), GLOW), silhouette(img(name), GLOW_HOT)] : []));
 
   let difficulty = store.get<number>('difficulty', 4);
-  let mode = store.get<Mode>('mode', 'classic');
+  let mode = store.get<Mode>('mode', 'perfect');
+  let scoringRules: 1 | 2 = 2;
   let perfectSize = store.get<number>('perfectSize', 3);
   const bests = store.get<Record<string, number>>('bestStrikes', {});
   const perfectRecords = store.get<Record<string, PerfectRecord>>('perfectRecords', {});
-  const perfectKey = () => `${perfectSize}-${difficulty}`;
+  const perfectKey = () => `${perfectSize}-${difficulty}${scoringRules === 2 ? ':scoring2' : ''}`;
   const runHistoryKey = () => `${timerMs ? 'run' : 'untimed-run'}:${perfectKey()}`;
   /** Points from the perfect board just finished, or null. */
   let lastPoints: number | null = null;
-  let timerMs = store.get<number>('perfectTimer', 0);
+  let timerMs = store.get<number>('perfectTimer', 120000);
   const timedBests = store.get<Record<string, number>>('perfectTimedBests', {});
   /** A perfect-board run: boards dealt one after another, with the points they've scored. */
   const run = { active: false, start: 0, end: 0, points: 0, boards: 0, perfect: 0, oneOff: 0, farOff: 0, timeUp: false };
@@ -355,7 +348,7 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
       const alpha = t < 0.5 ? 1 : Math.max(0, 1 - (t - 0.5) * 2);
       ctx.save();
       ctx.globalAlpha = alpha;
-      // The client stretches its message font 10% wide and draws it outlined in black.
+      // The game stretches its message font 10% wide and draws it outlined in black.
       ctx.translate(WIDTH / 2, m.y - FLOAT_PX * t + m.px);
       ctx.scale(1.1, 1);
       ctx.font = `${m.px}px "${FONT}"`;
@@ -373,7 +366,7 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
   // ---- The game ----
 
   /**
-   * Perfect boards change over faster than the client's sword: the squares fade quicker and the
+   * Perfect boards change over faster than the game's sword: the squares fade quicker and the
    * blade leaves and arrives sooner (about 1.8s between boards instead of 4.5s).
    */
   const quick = () => mode === 'perfect';
@@ -399,7 +392,7 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
     lastMouse = [-1, -1];
     gleamPath = null;
     fade = { start: 0, duration: 1, from: 0, to: 0 };
-    // The red-hot blade slides in from the left, then the squares fade in over it (IronBoardView.a(Board), client/i, j, k).
+    // The red-hot blade slides in from the left, then the squares fade in over it.
     sword = img(BLADES[0]);
     swordPath = {
       from: [-sword.width, SWORD_Y],
@@ -467,7 +460,7 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
     say(BOARD_DONE[level], 1 + level, 2000);
   }
 
-  /** The hammer, tongs and sparks for one strike (IronBoardView.a(o), client/b, c, l). */
+  /** The hammer, tongs and sparks for one strike. */
   function swing(hit: Strike): void {
     const { x, y } = hit.piece;
     const [px, py] = pieceXY(x, y);
@@ -534,7 +527,7 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
     sword = canvas;
   }
 
-  /** No square can be struck: the squares fade, a good blade gleams, and the sword is lifted away (IronBoardView.a(Piece), client/f, g, h). */
+  /** No square can be struck: the squares fade, a good blade gleams, and the sword is lifted away. */
   function endSword(): void {
     hammerable = false;
     glows = [];
@@ -546,7 +539,8 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
     if (mode === 'perfect') {
       const left = board!.remaining();
       lastPoints = perfectPoints(left);
-      say(left === 0 ? 'Perfect! +3' : left === 1 ? 'One off! +1' : `${left} left`, left === 0 ? 5 : 3, 2000);
+      if (scoringRules === 1 && lastPoints === -1) lastPoints = 0;
+      say(left === 0 ? 'Perfect! +3' : left === 1 ? 'One off! +1' : `${left} left${scoringRules === 2 ? ' −1' : ''}`, left === 0 ? 5 : 3, 2000);
     }
     if (mode === 'perfect' ? lastPoints === 3 : board!.doneLevel() >= 2) {
       const gleam = img('gleam');
@@ -630,8 +624,9 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
 
   function startRun(): void {
     pause.resume();
+    warning.reset();
     duty.clear();
-    replays.begin({ mode, difficulty, perfectSize, timerMs }, rng.snapshot());
+    replays.begin({ mode, difficulty, perfectSize, timerMs, scoringRules }, rng.snapshot());
     Object.assign(run, { active: true, start: ticks(), end: ticks(), points: 0, boards: 0, perfect: 0, oneOff: 0, farOff: 0, timeUp: false });
     newSword();
   }
@@ -659,7 +654,7 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
     if (!timerMs || timeUp) store.addHistory(runHistoryKey(), { score: run.points, boards: run.boards, ...duty.fields(report), ...(finishedReplay ? { replayAt: finishedReplay.at, replayId: finishedReplay.runId ?? ''} : {}) });
     if (!timeUp) return;
     say("Time's up!", 4, 2500);
-    if (run.points > (timedBests[key] ?? -1)) {
+    if (timedBests[key] === undefined || run.points > timedBests[key]) {
       timedBests[key] = run.points;
       store.set('perfectTimedBests', timedBests);
     }
@@ -750,7 +745,7 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
       }
     }
     ctx.restore();
-    // Glows pulse between 25% and 75% over a second each way (piracy/client/util/m).
+    // Glows pulse between 25% and 75% over a second each way.
     const phase = ((now - glowStart) % 2000) / 1000;
     const glowAlpha = 0.25 + 0.5 * (phase < 1 ? phase : 2 - phase);
     for (const g of glows) {
@@ -791,7 +786,7 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
       for (const event of events) {
         if (event.type === 'mousedown' && event.button === 1) pressed = squareAt(event.pos);
         else if (event.type === 'mouseup' && event.button === 1) {
-          // A click strikes only if it's pressed and released on the same square (client/d).
+          // A click strikes only if it's pressed and released on the same square.
           const square = squareAt(event.pos);
           if (square && pressed && square[0] === pressed[0] && square[1] === pressed[1]) strike(square[0], square[1]);
           pressed = null;
@@ -806,11 +801,14 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
           else if (keyMatches(event.key, 'blacksmithing', 'strike', 'space', ['enter','5','clear']) && cursor) strike(cursor[0], cursor[1]);
         }
       }
-      // The cursor follows the mouse while the board can be struck (client/e).
+      // The cursor follows the mouse while the board can be struck.
       if (hammerable && (input.mouse[0] !== lastMouse[0] || input.mouse[1] !== lastMouse[1])) cursor = squareAt(input.mouse);
       lastMouse = input.mouse;
 
-      if (run.active && timeLeft() === 0) endRun(true);
+      if (run.active) {
+        warning.update(timeLeft());
+        if (timeLeft() === 0) endRun(true);
+      }
 
       for (const timer of timers.filter((t) => now >= t.at)) {
         timers.splice(timers.indexOf(timer), 1);
@@ -868,7 +866,7 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
         },
       },
     ];
-    // Stable sort: equal layers draw in the order they were added, as in the client.
+    // Stable sort: equal layers draw in the order they were added, as in the game.
     const order = layers.map((a, i) => [a, i] as const).sort((a, b) => a[0].layer - b[0].layer || a[1] - b[1]);
     const ended = new Set<Anim>();
     for (const [a] of order) if (!a.draw(now)) ended.add(a);
@@ -929,7 +927,7 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
       if (run.active) endRun(false);
       else startRun();
     } else if (running) { abortBoard(); replays.finish('Stopped'); }
-    else { duty.clear(); replays.begin({ mode, difficulty, perfectSize, timerMs }, rng.snapshot()); newSword(); }
+    else { duty.clear(); replays.begin({ mode, difficulty, perfectSize, timerMs, scoringRules }, rng.snapshot()); newSword(); }
   }, { variant: 'primary', label: () => (replays?.isPlaying ? 'Start' : busy() ? 'Stop' : !finished || mode === 'perfect' ? 'Start' : 'New sword') });
 
   const best = () => bests[String(difficulty)];
@@ -949,9 +947,10 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
       ['Boards', '', String(record?.boards ?? 0)],
       ['Cleared (3)', '', String(record?.cleared ?? 0)],
       ['One off (1)', '', String(record?.oneOff ?? 0)],
+      [`Too far off (${scoringRules === 2 ? '-1' : '0'})`, '', String(record ? record.boards - record.cleared - record.oneOff : 0)],
       ['Points / board', '', record?.boards ? (record.points / record.boards).toFixed(2) : '-'],
     ];
-  }).note(() => `Totals are for ${perfectSize}x${perfectSize} at difficulty ${difficulty}.`)
+  }).note(() => `Totals are for ${perfectSize}x${perfectSize} at difficulty ${difficulty}. Cleared: +3; one square left: +1; two or more left: ${scoringRules === 2 ? '−1' : '0'}.`)
     .button('Reset totals', () => {
       delete perfectRecords[perfectKey()];
       store.set('perfectRecords', perfectRecords);
@@ -1034,10 +1033,10 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
     store.set('perfectTimer', ms);
   }, { disabled: busy, hidden: () => mode !== 'perfect', title: 'Boards keep coming until Stop, or until the time runs out' });
   settings.button('Reset to defaults', () => {
-    mode = 'classic';
+    mode = 'perfect';
     difficulty = 4;
     perfectSize = 3;
-    timerMs = 0;
+    timerMs = 120000;
     store.set('mode', mode);
     store.set('difficulty', difficulty);
     store.set('perfectSize', perfectSize);
@@ -1045,19 +1044,22 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
   }, { disabled: busy });
 
   const replaySettingsCodec: ReplaySettingsCodec = {
-    currentVersion: 1,
-    simulatorVersion: 1,
+    currentVersion: 2,
+    simulatorVersion: 2,
     migrate: (version, value) => {
-      if (version !== 1 || !value || typeof value !== 'object') return null;
+      if ((version !== 1 && version !== 2) || !value || typeof value !== 'object') return null;
       const s = value as Record<string, unknown>;
       return (s.mode === 'classic' || s.mode === 'perfect') && Number.isFinite(s.difficulty) &&
-        Number.isInteger(s.perfectSize) && Number.isFinite(s.timerMs) && (s.timerMs as number) >= 0 ? value : null;
+        Number.isInteger(s.perfectSize) && Number.isFinite(s.timerMs) && (s.timerMs as number) >= 0 &&
+        (version === 1 || s.scoringRules === 2) ? { ...s, scoringRules: version === 1 ? 1 : 2 } : null;
     },
   };
-  let savedReplaySettings: { mode: Mode; difficulty: number; perfectSize: number; timerMs: number } | null = null;
+  type SmithSettings = { mode: Mode; difficulty: number; perfectSize: number; timerMs: number; scoringRules?: 1 | 2 };
+  let savedReplaySettings: SmithSettings | null = null;
   replays = new ReplayRecorder('blacksmithing', store, panel, ticks, (tape: PuzzleReplay) => {
-    savedReplaySettings ??= { mode, difficulty, perfectSize, timerMs };
-    const settings = tape.settings as { mode: Mode; difficulty: number; perfectSize: number; timerMs: number };
+    savedReplaySettings ??= { mode, difficulty, perfectSize, timerMs, scoringRules };
+    const settings = tape.settings as SmithSettings;
+    scoringRules = settings.scoringRules ?? 1;
     mode = settings.mode;
     difficulty = settings.difficulty;
     perfectSize = settings.perfectSize;
@@ -1072,9 +1074,10 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
     else if (running) abortBoard();
     if (savedReplaySettings) {
       ({ mode, difficulty, perfectSize, timerMs } = savedReplaySettings);
+      scoringRules = savedReplaySettings.scoringRules ?? 2;
       savedReplaySettings = null;
     }
   }, (seed) => new PyRandom(0).restore(seed), setReplayTime, () => frame([]), replaySettingsCodec, () => !busy() || replays.isPlaying);
 
-  return { frame, dispose: () => { replays.dispose(); sounds.dispose(); } };
+  return { frame, dispose: () => { replays.dispose(); sounds.dispose(); warning.dispose(); } };
 }) satisfies PuzzleFactory;

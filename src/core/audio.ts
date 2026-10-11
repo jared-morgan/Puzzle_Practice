@@ -9,6 +9,8 @@ const preferences = new Store('global');
 let globalVolume = Math.max(0, Math.min(100, preferences.get<number>('volume', 50)));
 const banks = new Set<SoundBank>();
 export const getVolume = () => globalVolume;
+export const getWarningTimer = () => preferences.get<boolean>('warningTimer', true);
+export const setWarningTimer = (on: boolean): void => { preferences.set('warningTimer', on); };
 export function setVolume(value: number): void {
   globalVolume = Math.max(0, Math.min(100, value));
   preferences.set('volume', globalVolume);

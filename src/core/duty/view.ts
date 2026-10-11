@@ -211,16 +211,18 @@ export function renderReport(report: DutyReport, details: StatRows = [],
   entry.append(faceCanvas(report.pirate.face, moodFor(report.performance)));
   const who = el('div', 'duty-who');
   who.append(el('div', 'duty-name', report.pirate.name));
-  const rating = el('div', 'duty-rating', performanceWord(report.performance));
+  // A practice session with no rating scale gets no rating word.
+  const rating = el('div', 'duty-rating', report.performance === LEARNING ? '' : performanceWord(report.performance));
   rating.classList.toggle('is-learning', report.performance === LEARNING);
-  const inScore = report.cleared.filter((group) => group.inScore).map(counts);
+  const showCounts = report.puzzle !== 'treasure-haul';
+  const inScore = showCounts ? report.cleared.filter((group) => group.inScore).map(counts) : [];
   who.append(rating, el('div', 'duty-score', `${report.score.label}: ${[report.score.value, ...inScore].join(' ')}`));
   for (const group of report.cleared) {
     const art = group.style === 'row' ? rowCanvas(group) : stackCanvas(group);
     if (!art) continue;
     const line = el('div', 'duty-tally');
     line.append(art);
-    if (!group.inScore && group.style !== 'row') line.append(el('span', 'duty-tally-counts', counts(group)));
+    if (showCounts && !group.inScore && group.style !== 'row') line.append(el('span', 'duty-tally-counts', counts(group)));
     who.append(line);
   }
   entry.append(who);

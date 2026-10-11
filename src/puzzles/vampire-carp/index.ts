@@ -1,16 +1,17 @@
-// Vampire Carp: the Vampire Lair's carpentry, rebuilt from the Puzzle Pirates client (duty/carpentry
+// Vampire Carp: the Vampire Lair's carpentry, rebuilt from the Puzzle Pirates game (duty/carpentry
 // in vampirate mode, build 20260909165753). The rules are in board.ts and game.ts; this file is
-// CarpentryPanel and CarpentryBoardView with their sprites: the client's art, the wood deck that
+// CarpentryPanel and CarpentryBoardView with their sprites: the game's art, the wood deck that
 // scrolls, holes with splintered ends that blink and grow, pieces cut from the wood textures and
 // outlined by state, the putty bucket and its blood, rattling and flying pieces, the floating
 // ratings and the star meter. The canvas is the 450x600 puzzle panel; settings and scores are in
 // the side panel.
 //
-// On top of the client's game are the Vampire Carp simulator's modes and features: two-minute
+// On top of the game are the Vampire Carp simulator's modes and features: two-minute
 // sessions scored +2 / +1 / -1, Ghost (placed pieces hidden), Speed (small holes, see game.ts),
 // Unlimited, seeds, cheat pieces, pause, Dismiss, best scores, and the end-of-session stats.
 import { Images } from '../../core/assets';
 import { SoundBank } from '../../core/audio';
+import { TimerWarning } from '../../core/timer-warning';
 import { copyText } from '../../core/clipboard';
 import { keyMatches } from '../../core/controls';
 import { loadFont } from '../../core/fonts';
@@ -65,7 +66,7 @@ const LOOKS: Record<Look, { suffix: string; outlines: string[]; putty: string }>
   vampire: { suffix: '_vampirate', outlines: ['#7c6200', '#ebd7aa', '#c273ff', '#ff0000', '#8750b2', '#030303'], putty: 'rgb(92, 11, 20)' },
   normal: { suffix: '', outlines: ['#7c6200', '#ffff00', '#00afef', '#ff0000', '#005574', '#030303'], putty: 'rgb(198, 145, 104)' },
 };
-/** The star meter (puzzle/client/d) at (5, 185) in the view: 9 stars of 21px, 19px apart. */
+/** The star meter  at (5, 185) in the view: 9 stars of 21px, 19px apart. */
 const STAR = 21;
 const STAR_STEP = 19;
 const STARS = 9;
@@ -85,8 +86,8 @@ const SESSION_LONG = 999999999999999999;
 /** Board seeds are 48-bit, like java.util.Random's. */
 const MAX_SEED = 2 ** 48 - 1;
 
-/** Jared's sounds besides the client's: the 15-second warning, a new best, and option changes. */
-type ExtraSound = 'warning' | 'audio_pb_sound' | 'audio_options_change';
+/** Additional sounds for a new best and option changes. */
+type ExtraSound = 'audio_pb_sound' | 'audio_options_change';
 
 /** Cheat pieces in the layout of the simulator's cheats_ui.png, the putty ('b') on a row of its own. */
 const CHEAT_ROWS = [['p', 'f', 'y', 't'], ['w', 'u', 'n', 'v'], ['l', 'z', 'x', 'i'], ['b']];
@@ -205,6 +206,7 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
   const [images] = await Promise.all([Images.load(imageUrls), loadFont(FONT, delarobbUrl)]);
   const img = (name: string) => images.get(name);
   const sounds = new SoundBank(soundUrls, () => replays?.isSeeking ?? false);
+  const warning = new TimerWarning('vampirate', () => replays?.isSeeking ?? false);
   const ctx = screen.ctx;
 
   // The putty bucket by state, for each look: upright for 0-1, pouring for 2-3, traced in the state's colour.
@@ -230,7 +232,6 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
   let startTime = 0;
   let pauseTime = 0;
   let timePassed = 0;
-  let warningPlayed = false;
   let boardIndex = 0;
   let seeded = store.get<boolean>('seeded', false);
   let seed = Math.floor(Math.random() * MAX_SEED);
@@ -260,10 +261,10 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
 
   function play(name: SoundName | ExtraSound): void {
     if (replays?.isSeeking) return;
-    sounds.play(name.startsWith('audio_') || name === 'warning' ? name : `audio_${name}`);
+    sounds.play(name.startsWith('audio_') ? name : `audio_${name}`);
   }
 
-  /** The board for this point in the session: seeded sessions deal seed, seed + 1, ... */
+  /** The board for this point in the session: seeded sessions deal seed, seed + 1,... */
   function newBoard(): void {
     const boardSeed = replayBoardSeeds?.[boardIndex] ?? (seeded ? seedAtStart + boardIndex : Math.floor(Math.random() * MAX_SEED));
     recordedBoardSeeds.push(boardSeed);
@@ -307,7 +308,7 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
     startTime = ticks();
     timePassed = 0;
     pauseTime = 0;
-    warningPlayed = false;
+    warning.reset();
     endProcedureComplete = false;
     sessionScoresComputed = false;
     pendingSounds = [];
@@ -601,7 +602,7 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
     ctx.restore();
   }
 
-  /** stars.png: tile 0 the empty star, tile 1 the fill, which rises from the bottom (puzzle/client/d, h). */
+  /** stars.png: tile 0 the empty star, tile 1 the fill, which rises from the bottom. */
   function drawStars(): void {
     const sheet = img('stars');
     const target = game ? game.meter : 0;
@@ -844,7 +845,7 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
   };
   historyGroup(panel, () => store.history(scoresKey()), [{ label: 'Score', value: (g) => String(g.score) }], 'Past games', replayAction);
 
-  // Seeded: the board's own seed (the client's java.util.Random), so it deals what the game would.
+  // Seeded: the board's own seed, so it deals what the game would.
   const seedGroup = panel.group('Seed', { hidden: () => !seeded });
   seedGroup.text(
     'Seed',
@@ -1000,11 +1001,8 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
         pendingSounds = pendingSounds.filter((s) => s.at > timePassed);
         for (const s of due) play(s.name);
       }
+      if (boardActive) warning.update(config.unlimited ? null : sessionTime() - timePassed);
       if (boardActive && timePassed > sessionTime()) endSession();
-      if (boardActive && timePassed > sessionTime() - 15000 && !warningPlayed) {
-        play('warning');
-        warningPlayed = true;
-      }
 
     }
 
@@ -1028,5 +1026,5 @@ export default (async ({ screen, input, panel, store, ticks, setReplayTime }) =>
     replays.drawOverlay(ctx);
   }
 
-  return { frame, dispose: () => { replays.dispose(); sounds.dispose(); } };
+  return { frame, dispose: () => { replays.dispose(); sounds.dispose(); warning.dispose(); } };
 }) satisfies PuzzleFactory;

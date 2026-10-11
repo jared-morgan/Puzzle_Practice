@@ -25,7 +25,7 @@ import {
 import { COL_PX, type Fighter, FAST_SPEED, ROW_PX, secondOf, startSpeed } from './fighter';
 import { type GameStyle, gameSkillStyle, type NpcStyle, skillStyle } from './npc';
 import { drawFace, FACE } from './faces';
-import { Match, type MatchSettings, styleFor } from './match';
+import { Match, type MatchSettings, type NpcSettings } from './match';
 import { PLAIN_SWORDS, SWORD_COLOURS, SWORD_NAMES, isHorizontal } from './strikes';
 import delarobbUrl from './delarobb.ttf?url';
 
@@ -49,6 +49,9 @@ const LEFT_X = 1;
 const RIGHT_X = 313;
 const ROWS_Y = 97;
 const ROW_H = 62;
+const VISIBLE_ROWS = 6;
+const LIST_WIDTH = 136;
+const LIST_ARROWS_Y = ROWS_Y + VISIBLE_ROWS * ROW_H + 8;
 const MINI = 4;
 const FONT = 'Delarobb';
 /** Piece colours' art, by colour number (sword/a/h.p). */
@@ -83,7 +86,7 @@ const SOUND_FILES: Record<string, string[]> = {
 
 interface Settings extends MatchSettings {}
 
-/** Jared's settings from 6 October 2026. */
+/** Initial fight and equipment choices. */
 const DEFAULTS: Settings = {
   cultists: 2,
   homunculi: 0,
@@ -99,13 +102,27 @@ const DEFAULTS: Settings = {
   ai: { pairMs: 3000, breakAverage: 40, variation: 41, heightBoost: 1.5, storeChance: 23, comboMax: 3, strikeShare: 85, pairsPerAttack: 1 },
   difficulty: 1,
   breakers: 18,
-  sword: [16, 0, 0],
+  sword: [11, 4, 4],
+  enemyRoster: [{ kind: 'Cultist', skill: 60, sword: 16 }, { kind: 'Cultist', skill: 60, sword: 16 }],
+  allyRoster: [],
 };
 
 /** At most this many enemies, and allies, in a fight. */
-const MAX_ENEMIES = 6;
-const MAX_ALLIES = 5;
+const MAX_ENEMIES = 200;
+const MAX_ALLIES = 199;
 const SKILLS = ['cultistSkill', 'homunculusSkill', 'thrallSkill', 'swabbieSkill'] as const;
+const NPC_KINDS: Option<NpcSettings['kind']>[] = (['Cultist', 'Homunculus', 'Thrall', 'Skilled swabbie', 'Custom'] as const)
+  .map((kind) => ({ value: kind, label: kind }));
+
+function npcDefaults(kind: NpcSettings['kind'], skill = kind === 'Cultist' || kind === 'Homunculus' ? 60 : 50): NpcSettings {
+  return { kind, skill, sword: kind === 'Cultist' ? 16 : kind === 'Homunculus' ? 17 : null };
+}
+
+function validRoster(value: unknown, max: number): value is NpcSettings[] {
+  return Array.isArray(value) && value.length <= max && value.every((npc) => npc && typeof npc === 'object' &&
+    NPC_KINDS.some((option) => option.value === npc.kind) && int(npc.skill, 0, 100) &&
+    (npc.sword === null || PLAIN_SWORDS.includes(npc.sword)));
+}
 
 const KEYS = [
     { id: 'pause', label: 'Pause / resume', defaultKey: 'Escape' },
@@ -147,7 +164,7 @@ function validGameStyle(value: unknown): value is GameStyle {
 }
 
 /** Saved settings without the current opponent options get them from their AI skill. */
-function upgrade(value: unknown): unknown {
+function upgrade(value: unknown, withRoster = false): unknown {
   if (!value || typeof value !== 'object') return value;
   const s = { ...(value as Record<string, unknown>) };
   // One AI skill for everyone became a skill for each kind of pirate.
@@ -167,7 +184,17 @@ function upgrade(value: unknown): unknown {
     s.cultists = int(s.opponents, 0, MAX_ENEMIES) ? s.opponents : 0;
     s.homunculi = 0;
   }
-  s.opponents = (s.cultists as number) + (s.homunculi as number);
+  if (withRoster && s.enemyRoster === undefined && s.allyRoster === undefined) {
+    s.enemyRoster = [
+      ...Array.from({ length: s.cultists as number }, () => npcDefaults('Cultist', s.cultistSkill as number)),
+      ...Array.from({ length: s.homunculi as number }, () => npcDefaults('Homunculus', s.homunculusSkill as number)),
+    ];
+    s.allyRoster = [
+      ...Array.from({ length: s.thralls as number }, () => npcDefaults('Thrall', s.thrallSkill as number)),
+      ...Array.from({ length: s.swabbies as number }, () => npcDefaults('Skilled swabbie', s.swabbieSkill as number)),
+    ];
+  }
+  s.opponents = Array.isArray(s.enemyRoster) ? s.enemyRoster.length : (s.cultists as number) + (s.homunculi as number);
   delete s.enemySword;
   return s;
 }
@@ -175,7 +202,10 @@ function upgrade(value: unknown): unknown {
 function validSettings(value: unknown): value is Settings {
   if (!value || typeof value !== 'object') return false;
   const s = value as Record<string, unknown>;
-  return int(s.cultists, 0, MAX_ENEMIES) && int(s.homunculi, 0, MAX_ENEMIES) && s.opponents === (s.cultists as number) + (s.homunculi as number) &&
+  const rosterValid = s.enemyRoster === undefined && s.allyRoster === undefined
+    ? s.opponents === (s.cultists as number) + (s.homunculi as number)
+    : validRoster(s.enemyRoster, MAX_ENEMIES) && validRoster(s.allyRoster, MAX_ALLIES) && s.opponents === s.enemyRoster.length;
+  return rosterValid && int(s.cultists, 0, MAX_ENEMIES) && int(s.homunculi, 0, MAX_ENEMIES) &&
     int(s.opponents, 0, MAX_ENEMIES) && int(s.thralls, 0, MAX_ALLIES) && int(s.swabbies, 0, MAX_ALLIES) &&
     (s.thralls as number) + (s.swabbies as number) <= MAX_ALLIES && SKILLS.every((k) => int(s[k], 0, 100)) && validStyle(s.ai) && validGameStyle(s.gameAi) &&
     (s.opponentType === 'tally' || s.opponentType === 'game') && int(s.difficulty, 0, 9) &&
@@ -212,7 +242,7 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
     if (files) sounds.play(files[soundPick.randintN(0, files.length - 1)]);
   };
 
-  const saved = upgrade(store.get<unknown>('settings', DEFAULTS));
+  const saved = upgrade(store.get<unknown>('settings', DEFAULTS), true);
   let settings: Settings = structuredClone(validSettings(saved) ? saved : DEFAULTS);
   const seeds = new PyRandom();
   seeds.seedFromCrypto();
@@ -226,6 +256,8 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
   let messages: Message[] = [];
   let hideOpponents = store.get<boolean>('hideOpponents', true);
   let showQueues = store.get<boolean>('showQueues', false);
+  const listOffsets: [number, number] = [0, 0];
+  let shownTarget = -1;
   /** Left and right held, repeating 7 times a second after 300ms (PuzzlePanel's key bindings). */
   const held = { left: 0, right: 0, leftNext: 0, rightNext: 0 };
 
@@ -234,7 +266,9 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
     const style = settings.opponentType === 'game' ? settings.gameAi : settings.ai;
     return `${settings.opponentType} ${SKILLS.map((k) => settings[k]).join('/')} ${JSON.stringify(style)}`;
   };
-  const settingsKey = () => `${settings.cultists}c${settings.homunculi}h${settings.thralls}t${settings.swabbies}s:${opponentKey()}:${settings.difficulty}:${settings.breakers}`;
+  const settingsKey = () => settings.enemyRoster && settings.allyRoster
+    ? `roster:${JSON.stringify([settings.enemyRoster, settings.allyRoster, settings.sword])}:${opponentKey()}:${settings.difficulty}:${settings.breakers}`
+    : `${settings.cultists}c${settings.homunculi}h${settings.thralls}t${settings.swabbies}s:${opponentKey()}:${settings.difficulty}:${settings.breakers}`;
   const record = store.get<Record<string, { wins: number; losses: number; best: number }>>('record', {});
 
   function start(seed?: number): void {
@@ -243,11 +277,14 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
     if (seed === undefined) replays.begin(structuredClone(settings), { seed: s });
     const now = ticks();
     messages = [];
+    listOffsets[0] = listOffsets[1] = 0;
+    shownTarget = -1;
     held.left = held.right = 0;
     match = new Match(structuredClone(settings), s, now, {
       sound: (name, fighter) => { if (fighter === 0) play(name); },
       message: (text, fighter) => { if (fighter === 0) messages.push({ text, start: ticks(), ms: text.includes('knocked') ? 3000 : text.startsWith('Ye be') && !text.includes('knocked') ? Infinity : MESSAGE_MS }); },
     });
+    shownTarget = match.target;
     running = true;
     finished = false;
     showResults = false;
@@ -298,10 +335,33 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
 
   // ---- Input ----
 
+  function scrollList(event: InputEvent): boolean {
+    if (!match || event.type !== 'mousedown') return false;
+    const [x, y] = event.pos;
+    const side = x >= LEFT_X && x < LEFT_X + LIST_WIDTH ? 0
+      : x >= RIGHT_X && x < RIGHT_X + LIST_WIDTH ? 1 : -1;
+    if (side < 0) return false;
+    const at = side as 0 | 1;
+    if (match.rows[at].length <= VISIBLE_ROWS) return false;
+    let delta = 0;
+    if (y >= ROWS_Y && y < LIST_ARROWS_Y + 24 && (event.button === 4 || event.button === 5)) {
+      delta = event.button === 4 ? -1 : 1;
+    } else if (event.button === 1 && y >= LIST_ARROWS_Y && y < LIST_ARROWS_Y + 24) {
+      const localX = x - (at === 0 ? LEFT_X : RIGHT_X);
+      if (localX >= 4 && localX < 28) delta = -VISIBLE_ROWS;
+      else if (localX >= LIST_WIDTH - 28 && localX < LIST_WIDTH - 4) delta = VISIBLE_ROWS;
+    }
+    if (!delta) return false;
+    listOffsets[at] = Math.max(0, Math.min(match.rows[at].length - VISIBLE_ROWS, listOffsets[at] + delta));
+    if (pause.paused) replays.command(`list-scroll:${at}:${listOffsets[at]}`);
+    return true;
+  }
+
   function handle(events: InputEvent[], now: number): void {
-    if (!match || !running || match.result) return;
+    if (!match) return;
     const f = match.player;
     for (const event of events) {
+      if (scrollList(event) || !running || match.result) continue;
       if (event.type === 'keydown') {
         if (key(event.key, 'left')) { f.move(-1, now); held.left = now; held.leftNext = now + 300; }
         else if (key(event.key, 'right')) { f.move(1, now); held.right = now; held.rightNext = now + 300; }
@@ -321,10 +381,11 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
           // Rows as they're shown; the knocked out can't be targeted.
           const row = Math.floor((my - ROWS_Y) / ROW_H);
           const enemies = match.rows[1];
-          if (row >= 0 && row < enemies.length) match.setTarget(enemies[row]);
+          if (row >= 0 && row < VISIBLE_ROWS && row + listOffsets[1] < enemies.length) match.setTarget(enemies[row + listOffsets[1]]);
         }
       }
     }
+    if (!running || match.result) return;
     for (const side of ['left', 'right'] as const) {
       const next = side === 'left' ? 'leftNext' : 'rightNext';
       while (held[side] && now >= held[next]) {
@@ -505,12 +566,20 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
       ctx.lineJoin = 'round';
       ctx.lineWidth = 4;
       ctx.strokeStyle = '#000';
+      const lines: string[] = [];
+      for (const word of m.text.split(/\s+/)) {
+        const last = lines.length - 1;
+        if (last >= 0 && ctx.measureText(`${lines[last]} ${word}`).width <= BOARD_W - 8) lines[last] += ` ${word}`;
+        else lines.push(word);
+      }
       const ty = y - 30 * Math.min(p, 0.7);
-      ctx.strokeText(m.text, BOARD_W / 2, ty, BOARD_W - 4);
       ctx.fillStyle = '#fff';
-      ctx.fillText(m.text, BOARD_W / 2, ty, BOARD_W - 4);
+      for (let i = 0; i < lines.length; i++) {
+        ctx.strokeText(lines[i], BOARD_W / 2, ty + i * 36);
+        ctx.fillText(lines[i], BOARD_W / 2, ty + i * 36);
+      }
       ctx.restore();
-      y += 36;
+      y += lines.length * 36;
     }
   }
 
@@ -566,6 +635,9 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
     }
     ctx.save();
     // The small board.
+    ctx.beginPath();
+    ctx.rect(x, y, LIST_WIDTH, ROW_H);
+    ctx.clip();
     const bx = at.board;
     const by = y + Math.floor((ROW_H - SUMMARY_H) / 2);
     ctx.fillStyle = f.out ? '#92974a' : '#b1ab92';
@@ -683,22 +755,70 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
 
   // ---- The frame ----
 
+  function revealTarget(): void {
+    if (!match || shownTarget === match.target) return;
+    const targetRow = match.rows[1].indexOf(match.target);
+    if (targetRow >= 0 && (targetRow < listOffsets[1] || targetRow >= listOffsets[1] + VISIBLE_ROWS)) {
+      listOffsets[1] = Math.max(0, targetRow - VISIBLE_ROWS + 1);
+    }
+    shownTarget = match.target;
+  }
+
+  function drawList(side: 0 | 1): void {
+    if (!match) return;
+    const rows = match.rows[side];
+    const x = side === 0 ? LEFT_X : RIGHT_X;
+    listOffsets[side] = Math.max(0, Math.min(Math.max(0, rows.length - VISIBLE_ROWS), listOffsets[side]));
+    rows.slice(listOffsets[side], listOffsets[side] + VISIBLE_ROWS)
+      .forEach((i, row) => drawStatus(match!, i, x, ROWS_Y + row * ROW_H, side === 1));
+    if (rows.length <= VISIBLE_ROWS) return;
+    ctx.save();
+    ctx.font = '11px Arial, sans-serif';
+    ctx.textBaseline = 'middle';
+    ctx.textAlign = 'center';
+    for (const [dx, text, disabled] of [
+      [4, '▲', listOffsets[side] === 0],
+      [LIST_WIDTH - 28, '▼', listOffsets[side] + VISIBLE_ROWS >= rows.length],
+    ] as const) {
+      ctx.fillStyle = '#292a2b';
+      ctx.fillRect(x + dx, LIST_ARROWS_Y, 24, 24);
+      ctx.fillStyle = disabled ? '#777' : '#fff';
+      ctx.fillText(text, x + dx + 12, LIST_ARROWS_Y + 12);
+    }
+    ctx.fillStyle = '#fff';
+    ctx.fillText(`${listOffsets[side] + 1}–${listOffsets[side] + VISIBLE_ROWS}/${rows.length}`, x + LIST_WIDTH / 2, LIST_ARROWS_Y + 12);
+    ctx.restore();
+  }
+
   function frame(events: InputEvent[]): void {
     const liveEvents = pause.input(events, 'swordfight', running);
-    if (liveEvents === null) return;
+    if (liveEvents === null) {
+      events.forEach(scrollList);
+      draw(ticks());
+      return;
+    }
     events = liveEvents;
     const routed = replays.frame(events, input.mouse, ticks());
     events = routed.events;
     input.mouse = routed.mouse;
     const now = ticks();
     if (!routed.renderOnly) {
+      for (const command of routed.commands) {
+        const parts = /^list-scroll:([01]):(\d+)$/.exec(command);
+        if (parts) listOffsets[Number(parts[1]) as 0 | 1] = Number(parts[2]);
+      }
       handle(events, now);
       if (match && running) {
         match.update(now);
         if (match.settledAt) stop();
       }
+      revealTarget();
     }
     if (replays.isSeeking || replays.isAdvancing) return;
+    draw(now);
+  }
+
+  function draw(now: number): void {
     screen.fill('#000');
     if (!match) {
       screen.blit(img('howto'), 0, 0);
@@ -709,8 +829,8 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
     drawNext(match.player);
     // Your side on the left, you first; the enemies on the right; the knocked out at the bottom.
     hoveredSword = -1;
-    match.rows[0].forEach((i, row) => drawStatus(match!, i, LEFT_X, ROWS_Y + row * ROW_H, false));
-    match.rows[1].forEach((i, row) => drawStatus(match!, i, RIGHT_X, ROWS_Y + row * ROW_H, true));
+    drawList(0);
+    drawList(1);
     drawBoard(match.player, running ? now : match.settledAt || match.endedAt || now);
     if (finished && !match.result) banner('Stopped', 330);
     if (hoveredSword >= 0) swordTip(match, hoveredSword);
@@ -726,32 +846,6 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
   panel.controls(PUZZLE, KEYS);
 
   const session = panel.session();
-  // Cultists and homunculi, up to six between them; none is practice on your own.
-  const enemies = (cultists: number, homunculi: number) => {
-    settings.cultists = cultists;
-    settings.homunculi = Math.min(homunculi, MAX_ENEMIES - cultists);
-    settings.opponents = settings.cultists + settings.homunculi;
-    save();
-  };
-  const counts = (): Option<number>[] => Array.from({ length: MAX_ENEMIES + 1 }, (_, n) => ({ value: n, label: String(n) }));
-  session.select('Cultists (spears)', counts(), () => settings.cultists, (n) => enemies(n, Math.min(settings.homunculi, MAX_ENEMIES - n)), { disabled: () => running });
-  session.select('Homunculi (trunks)', counts(), () => settings.homunculi, (n) => enemies(Math.min(settings.cultists, MAX_ENEMIES - n), n), { disabled: () => running });
-  // Allies on your side: thralls and skilled swabbies, up to five between them.
-  const allies = (thralls: number, swabbies: number) => {
-    settings.thralls = thralls;
-    settings.swabbies = Math.min(swabbies, MAX_ALLIES - thralls);
-    save();
-  };
-  const allyCounts = (): Option<number>[] => Array.from({ length: MAX_ALLIES + 1 }, (_, n) => ({ value: n, label: String(n) }));
-  session.select('Thralls (allies)', allyCounts(), () => settings.thralls, (n) => allies(n, Math.min(settings.swabbies, MAX_ALLIES - n)), { disabled: () => running || !settings.opponents });
-  session.select('Skilled swabbies (allies)', allyCounts(), () => settings.swabbies, (n) => allies(Math.min(settings.thralls, MAX_ALLIES - n), n), { disabled: () => running || !settings.opponents });
-  session.note(() => {
-    const sword = SWORD_NAMES[settings.sword[0]];
-    const speed = `${Math.round(ROW_PX / startSpeed(settings.difficulty))}ms a row`;
-    return settings.opponents
-      ? `Skill: cultists ${settings.cultistSkill}, homunculi ${settings.homunculusSkill}, thralls ${settings.thrallSkill}, swabbies ${settings.swabbieSkill} · starting speed ${speed} · your ${sword.toLowerCase()} (Settings tab)`
-      : `Starting speed ${speed} · your ${sword.toLowerCase()} (Settings tab)`;
-  });
   // Starting while a replay is open closes it and starts a fight of your own.
   session.button('Start', () => {
     if (replays.isPlaying) {
@@ -822,35 +916,75 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
   function save(): void {
     store.set('settings', settings);
   }
-  panel.settings.group('Opponent screens').toggle('Hide opponent screens', () => hideOpponents, (on) => { hideOpponents = on; store.set('hideOpponents', on); }, {
+  const screens = panel.settings.group('Opponent screens');
+  screens.toggle('Hide opponent screens', () => hideOpponents, (on) => { hideOpponents = on; store.set('hideOpponents', on); }, {
     title: 'Shows red boxes where an opponent has pieces, instead of the pieces themselves.',
   });
-  panel.settings.group('Opponent screens').toggle('Show attack queues', () => showQueues, (on) => { showQueues = on; store.set('showQueues', on); }, {
+  screens.toggle('Show attack queues', () => showQueues, (on) => { showQueues = on; store.set('showQueues', on); }, {
     title: "Replaces each enemy's name with the attacks waiting to land on it and how many pieces they hold, as attacks:pieces (5:30 is five attacks of 30 pieces).",
   });
-  const off = { disabled: () => running };
-  const foes = panel.settings.group('Opponents');
-  foes.select('Opponent type', [
+  const off = { disabled: () => running || replays?.isPlaying };
+  const npcSwords: Option<number>[] = [{ value: -1, label: 'Random' }, ...PLAIN_SWORDS.map((value) => ({ value, label: SWORD_NAMES[value] }))];
+  const rosterOf = (side: 'enemyRoster' | 'allyRoster'): NpcSettings[] => {
+    // Older replays retain their original roster generation until playback ends.
+    if (settings[side]) return settings[side];
+    const migrated = upgrade(settings, true) as Settings;
+    return migrated[side]!;
+  };
+  const saveRoster = () => {
+    settings.opponents = settings.enemyRoster!.length;
+    settings.cultists = settings.enemyRoster!.filter((npc) => npc.kind === 'Cultist').length;
+    settings.homunculi = settings.enemyRoster!.filter((npc) => npc.kind === 'Homunculus').length;
+    settings.thralls = settings.allyRoster!.filter((npc) => npc.kind === 'Thrall').length;
+    settings.swabbies = settings.allyRoster!.filter((npc) => npc.kind === 'Skilled swabbie').length;
+    save();
+  };
+  for (const [side, title, label, max, defaultKind] of [
+    ['enemyRoster', 'Opponents', 'Opponent', MAX_ENEMIES, 'Cultist'],
+    ['allyRoster', 'Teammates', 'Teammate', MAX_ALLIES, 'Skilled swabbie'],
+  ] as const) {
+    panel.settings.group(title).number('Number', () => rosterOf(side).length, (value) => {
+      const roster = rosterOf(side).slice(0, Math.round(value));
+      while (roster.length < Math.round(value)) roster.push(npcDefaults(defaultKind));
+      settings[side] = roster;
+      saveRoster();
+    }, { ...off, min: 0, max, step: 1, title: side === 'allyRoster' ? 'NPC teammates in addition to you. 199 teammates makes a team of 200.' : 'Choose up to 200 opponents.' });
+    let selected = 0;
+    let choices: Option<number>[] = [];
+    const index = () => (selected = Math.min(selected, Math.max(0, rosterOf(side).length - 1)));
+    const npc = () => rosterOf(side)[index()] ?? npcDefaults(defaultKind);
+    const change = (edit: (value: NpcSettings) => void) => {
+      const value = settings[side]?.[index()];
+      if (value) { edit(value); saveRoster(); }
+    };
+    const g = panel.settings.group(`Customise ${label.toLowerCase()}`, { hidden: () => !rosterOf(side).length });
+    g.select('NPC', () => {
+      const length = rosterOf(side).length;
+      if (choices.length !== length) choices = Array.from({ length }, (_, i) => ({ value: i, label: `${label} ${i + 1}` }));
+      return choices;
+    }, index, (i) => { selected = i; }, off);
+    g.select('Type', NPC_KINDS, () => npc().kind, (kind) => change((value) => {
+      Object.assign(value, kind === 'Custom' ? { kind } : npcDefaults(kind));
+    }), off);
+    g.select('Sword', npcSwords, () => npc().sword ?? -1, (sword) => change((value) => { value.sword = sword === -1 ? null : sword; }), off);
+    g.range('Skill', () => npc().skill, (skill) => change((value) => { value.skill = Math.round(skill); }), { ...off, min: 0, max: 100 });
+    if (side === 'enemyRoster') g.button('Apply first enemy to all', () => {
+      const roster = rosterOf(side);
+      if (roster.length < 2) return;
+      settings.enemyRoster = roster.map(() => ({ ...roster[0] }));
+      saveRoster();
+    }, {
+      disabled: () => off.disabled() || rosterOf(side).length < 2,
+      title: 'Copy the first enemy’s type, sword and skill to every enemy. Sword colours remain random for each enemy.',
+    });
+  }
+  const foes = panel.settings.group('NPC behaviour');
+  foes.select('Play style', [
     { value: 'game', label: 'Ingame' },
     { value: 'tally', label: 'Experimental' },
   ] as Option<'tally' | 'game'>[], () => settings.opponentType, (t) => { settings.opponentType = t; save(); }, off);
-  // Each kind of pirate has its own skill, 0 to 100, which sets how much its breakers destroy.
-  const skillLabels: Record<(typeof SKILLS)[number], string> = { cultistSkill: 'Cultist skill', homunculusSkill: 'Homunculus skill', thrallSkill: 'Thrall skill', swabbieSkill: 'Skilled swabbie skill' };
-  for (const k of SKILLS) {
-    foes.range(skillLabels[k], () => settings[k], (v) => { settings[k] = v; save(); }, { ...off, min: 0, max: 100,
-      title: "0 to 100, as the game's own pirates. It sets how much of its colour a breaker destroys (the game's table has a value at every 10, blended between) and, for Ingame, the chain chance." });
-  }
-  foes.note(() => {
-    const at = (skill: number) => {
-      const st = styleFor(settings, skill);
-      return settings.opponentType === 'game'
-        ? `${st.game.baseDestroy}-${st.game.maxDestroy}% destroyed, ${st.game.chainChance}% chained`
-        : `${st.tally.breakAverage}% cleared, height x${st.tally.heightBoost}, stores ${st.tally.storeChance}%, combo ${st.tally.comboMax}`;
-    };
-    return `Cultists: ${at(settings.cultistSkill)}. Homunculi: ${at(settings.homunculusSkill)}. Thralls: ${at(settings.thrallSkill)}. Skilled swabbies: ${at(settings.swabbieSkill)}.`;
-  });
   const ai = (change: (a: NpcStyle) => void) => { change(settings.ai); save(); };
-  const tallyOff = { disabled: () => running, hidden: () => settings.opponentType !== 'tally' };
+  const tallyOff = { ...off, hidden: () => settings.opponentType !== 'tally' };
   foes.number('Time per pair (ms)', () => settings.ai.pairMs, (v) => ai((a) => { a.pairMs = v; }), { ...tallyOff, min: 50, max: 20000, step: 50,
     title: 'How fast an opponent plays: how often it is dealt a pair.' });
   foes.range('Variation (±%)', () => settings.ai.variation, (v) => ai((a) => { a.variation = v; }), { ...tallyOff, min: 0, max: 50,
@@ -860,7 +994,7 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
     title: 'Its style: how much of each clear it sends as swords, the rest as sprinkles. 50 is an even mix.' });
   foes.number('Your attacks land every (pairs)', () => settings.ai.pairsPerAttack, (v) => ai((a) => { a.pairsPerAttack = v; }), { ...tallyOff, min: 0, max: 100,
     title: 'Your attacks land on an opponent at most once per this many of its pairs.' });
-  const gameOff = { disabled: () => running, hidden: () => settings.opponentType !== 'game' };
+  const gameOff = { ...off, hidden: () => settings.opponentType !== 'game' };
   const gai = (change: (a: GameStyle) => void) => { change(settings.gameAi); save(); };
   foes.number('Time per pair (ms)', () => settings.gameAi.pairMs, (v) => gai((a) => { a.pairMs = v; }), { ...gameOff, min: 50, max: 20000, step: 50,
     title: 'How fast an opponent plays when you are not targeting it: how often it is dealt a pair.' });
@@ -873,27 +1007,27 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
     title: 'Your attacks land on an opponent at most once per this many of its pairs.' });
   const game = panel.settings.group('Fight');
   game.select('Starting speed', Array.from({ length: 10 }, (_, d) => ({ value: d, label: `${d}: ${Math.round(ROW_PX / startSpeed(d))}ms a row` })),
-    () => settings.difficulty, (d) => { settings.difficulty = d; save(); }, { disabled: () => running });
-  game.number('Breaker chance (%)', () => settings.breakers, (v) => { settings.breakers = v; save(); }, { min: 0, max: 100, step: 0.5, disabled: () => running });
+    () => settings.difficulty, (d) => { settings.difficulty = d; save(); }, off);
+  game.number('Breaker chance (%)', () => settings.breakers, (v) => { settings.breakers = v; save(); }, { ...off, min: 0, max: 100, step: 0.5 });
   game.note(() => `The pair speeds up as it's dealt, to ${Math.round(ROW_PX / 0.25)}ms a row at most; holding drop is ${Math.round(ROW_PX / FAST_SPEED)}ms a row.`);
 
   const swordOptions: Option<number>[] = PLAIN_SWORDS.map((t) => ({ value: t, label: SWORD_NAMES[t] }));
   const colourOptions: Option<number>[] = SWORD_COLOURS.map((name, i) => ({ value: i, label: name }));
   for (const [title, which] of [['Your sword', 'sword']] as const) {
     const g = panel.settings.group(title);
-    g.select('Sword', swordOptions, () => settings[which][0], (t) => { settings[which] = [t, settings[which][1], settings[which][2]]; save(); }, { disabled: () => running });
-    g.select('Colour 1', colourOptions, () => settings[which][1], (c) => { settings[which] = [settings[which][0], c, settings[which][2]]; save(); }, { disabled: () => running || settings[which][0] === 127 });
-    g.select('Colour 2', colourOptions, () => settings[which][2], (c) => { settings[which] = [settings[which][0], settings[which][1], c]; save(); }, { disabled: () => running || settings[which][0] === 127 });
+    g.select('Sword', swordOptions, () => settings[which][0], (t) => { settings[which] = [t, settings[which][1], settings[which][2]]; save(); }, off);
+    g.select('Colour 1', colourOptions, () => settings[which][1], (c) => { settings[which] = [settings[which][0], c, settings[which][2]]; save(); }, { disabled: () => off.disabled() || settings[which][0] === 127 });
+    g.select('Colour 2', colourOptions, () => settings[which][2], (c) => { settings[which] = [settings[which][0], settings[which][1], c]; save(); }, { disabled: () => off.disabled() || settings[which][0] === 127 });
   }
-  panel.settings.group('Reset').button('Reset to defaults', () => { settings = structuredClone(DEFAULTS); save(); }, { disabled: () => running });
+  panel.settings.group('Reset').button('Reset to defaults', () => { settings = structuredClone(DEFAULTS); save(); }, off);
 
   const replaySettingsCodec: ReplaySettingsCodec = {
-    currentVersion: 6,
+    currentVersion: 8,
     simulatorVersion: 2,
     // Earlier recordings had an opponent that played the board, so they can't be replayed.
     migrate: (version, value) => {
       const upgraded = version < 6 ? upgrade(value) : value;
-      return version >= 3 && version <= 6 && validSettings(upgraded) ? upgraded : null;
+      return version >= 3 && version <= 8 && validSettings(upgraded) ? upgraded : null;
     },
   };
   let savedSettings: Settings | null = null;
@@ -911,7 +1045,7 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
     }
   }, (seed) => typeof (seed as { seed?: unknown })?.seed === 'number', setReplayTime, () => frame([]), replaySettingsCodec, () => !running || replays.isPlaying);
 
-  // For driving the game from tests in the dev server.
+  // For driving the game from tests during development.
   if (import.meta.env.DEV) (window as unknown as { __sf: unknown }).__sf = { get match() { return match; } };
 
   return { frame, dispose: () => { replays.dispose(); sounds.dispose(); } };

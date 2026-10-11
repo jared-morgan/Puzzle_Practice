@@ -1,7 +1,7 @@
 // The contract between the shell and a puzzle. A puzzle is a folder in src/puzzles/ with:
 //   meta.ts   – `export default { title, description, ... } satisfies PuzzleMeta`
 //   index.ts  – `export default (async (ctx) => { ...; return { frame } }) satisfies PuzzleFactory`
-// The shell finds both automatically; see docs/adding-a-puzzle.md.
+// The shell finds both automatically.
 import type { Input, InputEvent } from './input';
 import type { Panel } from './panel';
 import type { Screen } from './screen';
