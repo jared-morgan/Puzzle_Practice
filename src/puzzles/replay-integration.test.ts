@@ -411,7 +411,7 @@ describe('preset Treasure Haul drills', () => {
     const { readReplayFile } = await import('../core/replay-storage');
     const { decodeReplayBlob } = await import('../core/replay');
     const tape = (await decodeReplayBlob((await readReplayFile(replay))!))!;
-    expect(tape).toMatchObject({ settingsVersion: 11, settings: { trainingRules: 7, impossibleChests: true } });
+    expect(tape).toMatchObject({ settingsVersion: 12, settings: { trainingRules: 8, impossibleChests: true } });
     toggles.get(setting)!(false);
     const data = JSON.parse(exportAll()).data;
     const perf = vi.spyOn(performance, 'now').mockReturnValue(0);
@@ -470,7 +470,7 @@ describe('preset Treasure Haul drills', () => {
     const finalStats = stats();
     if (pack === 'edges') expect(finalStats[0]).toContainEqual(['Chests cleared', '1', expect.any(String)]);
     const [replay] = await listReplayFiles('treasure-haul');
-    expect(replay.settingsVersion).toBe(11);
+    expect(replay.settingsVersion).toBe(12);
     const data = JSON.parse(exportAll()).data;
     const perf = vi.spyOn(performance, 'now').mockReturnValue(0);
     expect(await captured.recorders[0].playAt(replay.at, replay.runId)).toBe(true);
@@ -600,7 +600,8 @@ describe('Rubies spawn mode', () => {
     const firstBoard = boards.mock.results[0].value as HaulBoard;
     expect(firstBoard.gemRates).toEqual([0, 0]);
     for (; now <= 5000; now += 25) instance.frame([]);
-    expect(firstBoard.chestReady()).toBe(false);
+    // Rubies starts as if the first clear and its one-second wait have already happened.
+    expect(firstBoard.chestReady()).toBe(true);
     expect(firstBoard.cells.some(isChestOrigin)).toBe(false);
     const step = HaulBoard.prototype.step;
     let clearAt = 0; let spawnAt = 0;
@@ -612,15 +613,12 @@ describe('Rubies spawn mode', () => {
     });
     swap(7, 1);
     while (!clearAt) { now += 25; instance.frame([]); }
-    now = clearAt + 999;
-    expect(firstBoard.chestReady()).toBe(false);
-    now++;
-    expect(firstBoard.chestReady()).toBe(true);
     for (let frame = 0; frame < 120; frame++) { now += 25; instance.frame([]); }
+    // That clear left no room under the chest columns, so nothing has come in yet.
     expect(spawnAt).toBe(0);
     swap(chestX + 2, 2);
     for (let frame = 0; frame < 250 && boards.mock.calls.length < 2; frame++) { now += 25; instance.frame([]); }
-    expect(spawnAt).toBeGreaterThanOrEqual(clearAt + 1000);
+    expect(spawnAt).toBeGreaterThan(clearAt);
     expect(boards.mock.calls).toHaveLength(2);
     expect(stats()[0]).toContainEqual(['Ruby score', String(points), expect.any(String)]);
     buttons.get('Play::Dismiss')!();
@@ -632,7 +630,7 @@ describe('Rubies spawn mode', () => {
     expect((results()[0] as { rows: string[][] }).rows).toContainEqual(['Ruby score', String(points)]);
     await replayWrites.idle();
     const [replay] = await listReplayFiles('treasure-haul');
-    expect(replay.settingsVersion).toBe(11);
+    expect(replay.settingsVersion).toBe(12);
     const data = JSON.parse(exportAll()).data;
     const perf = vi.spyOn(performance, 'now').mockReturnValue(0);
     const recorder = captured.recorders[0];
@@ -707,7 +705,7 @@ describe('Treasure Haul vacant-board chest wait', () => {
     const expectedStats = stats();
     await replayWrites.idle();
     const [replay] = await listReplayFiles('treasure-haul');
-    expect(replay.settingsVersion).toBe(11);
+    expect(replay.settingsVersion).toBe(12);
     const data = JSON.parse(exportAll()).data;
     const perf = vi.spyOn(performance, 'now').mockReturnValue(0);
     const recorder = captured.recorders[0];

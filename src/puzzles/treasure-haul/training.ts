@@ -60,7 +60,7 @@ export function rubySpawnScore(original: HaulBoard, chestX: number): number {
 }
 
 /** Practice boards have no automatic matches, and never overwrite another chest. */
-export function createDrill(random: () => number, pack: ClearPack, rules: 1 | 2 | 3 | 4 | 5 | 6 | 7 = 7, options: DrillOptions = {}): Drill {
+export function createDrill(random: () => number, pack: ClearPack, rules: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 = 8, options: DrillOptions = {}): Drill {
   if (pack === 'efficient' && rules >= 6) return createColourDrill(random);
   if (pack === 'standard' && rules >= 7) return createMiddleDrill(random);
   if (pack === 'emeralds' && rules >= 7) return createEdgeEmeraldsDrill(random);
