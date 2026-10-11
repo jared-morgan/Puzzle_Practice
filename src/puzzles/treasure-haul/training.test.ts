@@ -117,6 +117,13 @@ describe('Clear Chests packs', () => {
       const counts = [above(chest.x), above(chest.x + 1)];
       expect(counts).toContain(3);
       expect(Math.min(...counts)).toBeGreaterThanOrEqual(1);
+      // No other colour meets the brief.
+      for (let piece = 0; piece < 4; piece++) {
+        if (piece === colourGoal) continue;
+        const of = (x: number) => Array.from({ length: H - chest.y - 1 }, (_, i) => board.get(x, chest.y + 1 + i)).filter((p) => p === piece).length;
+        const n = [of(chest.x), of(chest.x + 1)];
+        expect(Math.max(...n) >= 3 && Math.min(...n) >= 1, `seed ${seed}, colour ${piece}`).toBe(false);
+      }
       for (const move of solution!) {
         expect(board.swap(...move).kind).toBe('swap');
         for (let step = 0; step < 300 && board.step(); step++);

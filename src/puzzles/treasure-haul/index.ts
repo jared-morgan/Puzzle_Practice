@@ -199,6 +199,11 @@ interface Tally {
   spawnScore: number;
   /** Colour Cleanup: scenarios finished by clearing every coin of the problem colour. */
   cleanups: number;
+  /**
+   * Challenges finished without hauling, by chest size, for the duty report: a Colour Cleanup
+   * completed, or a Spawn Chests or Rubies chest placed well. Hauls count in chestsByType.
+   */
+  tasksByType: number[];
 }
 
 /** Vampire ratings use the published chest counts; coin mode uses points a minute. */
@@ -208,7 +213,7 @@ const RATING_SCALES: RatingScale[] = [
   { id: 'vampirateChests', label: '2 chests, chests hauled', cutoffs: [2, 3, 5, 6, 8], gauntlet: true },
 ];
 
-const emptyTally = (): Tally => ({ moves: 0, points: 0, bestMove: 0, coins: 0, gems: 0, rubies: 0, emeralds: 0, chests: 0, chestsByType: [0, 0, 0], rubiesSpawned: 0, emeraldsSpawned: 0, spawned: 0, middle: 0, spawnScore: 0, cleanups: 0 });
+const emptyTally = (): Tally => ({ moves: 0, points: 0, bestMove: 0, coins: 0, gems: 0, rubies: 0, emeralds: 0, chests: 0, chestsByType: [0, 0, 0], rubiesSpawned: 0, emeraldsSpawned: 0, spawned: 0, middle: 0, spawnScore: 0, cleanups: 0, tasksByType: [0, 0, 0] });
 
 /** A copy of the purple hands tinted to a skin tone, keeping their shading. */
 function tint(img: HTMLImageElement): HTMLCanvasElement {
@@ -615,10 +620,11 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
         { icon: 'haul-coin', label: 'coins', count: tally.coins },
         { icon: 'haul-ruby', label: 'rubies', count: tally.rubies },
         { icon: 'haul-emerald', label: 'emeralds', count: tally.emeralds },
-      ] }] : [{ label: 'Chests Hauled', items: [
+      ] }] : [{ label: spawnDrill() || mode === 'clear' ? 'Chests Cleared' : 'Chests Hauled', items: [
         ...['small', 'medium', 'large'].map((size, i) => ({
           icon: `${artwork === 'classic' ? 'chest' : `${artwork}-chest`}-${size}`,
-          label: `${size} chests`, count: tally.chestsByType[i],
+          // A completed challenge counts whether or not its chest was hauled.
+          label: `${size} chests`, count: spawnDrill() || colourDrill() ? tally.tasksByType[i] : tally.chestsByType[i],
         })),
       ] }],
     });
@@ -810,6 +816,8 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
     else if (mode === 'clear' && colourGoal !== null && !colourAboveChest(board.cells, colourChestX, colourGoal)) {
       // Colour Cleanup: no coin of the problem colour is left above the chest, so the scenario is done.
       tally.cleanups++;
+      const origin = board.cells.findIndex(isChestOrigin);
+      tally.tasksByType[origin >= 0 ? chestValue(board.cells[origin]) : 0]++;
       sounds.play('big_combo');
       colourGoal = null;
       if (roundEnd && ticks() >= roundEnd) stop();
@@ -847,6 +855,7 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
     if (chest.middle) tally.middle++;
     tally.spawnScore += gained;
     const success = mode === 'rubies' ? gained > 0 : chest.middle;
+    if (success) tally.tasksByType[board && !chest.hauled ? chestValue(board.get(chest.x, row)) : 0]++;
     sounds.play(success ? 'shiny' : 'piece_destroy');
     const [x, y] = cellXY(chest.x, row);
     texts.push({ text: gained > 0 ? `+${gained}` : String(gained), colour: success ? '#ffff00' : '#ff6060', px: 42, x: x + 10, y: Math.max(0, y - 10), w: 70, h: 50, start: ticks() });

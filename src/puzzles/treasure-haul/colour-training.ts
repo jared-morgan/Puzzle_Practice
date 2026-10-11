@@ -53,6 +53,14 @@ function tryColourDrill(random: () => number): Drill | null {
     put(main + 2 * direction, Math.max(0, 3 - count), false);
     if (count > 3) { put(other - direction, count - 3, false); put(other - 2 * direction, count - 3, false); }
     if (board.findRuns().length) continue;
+    // Only the problem colour may meet the brief: three in one chest column and some in the other.
+    const above = (column: number, piece: number) => {
+      let n = 0;
+      for (let row = y + 1; row < H; row++) if (board.get(column, row) === piece) n++;
+      return n;
+    };
+    const meets = (piece: number) => Math.max(above(x, piece), above(x + 1, piece)) >= 3 && Math.min(above(x, piece), above(x + 1, piece)) >= 1;
+    if ([0, 1, 2, 3].some((piece) => piece !== colour && meets(piece))) continue;
     const refillRng = new PyRandom(Math.floor(random() * 0x100000000));
     const refills: number[] = [];
     const draw = (index: number) => {
