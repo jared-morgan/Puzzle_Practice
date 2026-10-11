@@ -351,7 +351,7 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
   const timed = () => roundSecs > 0;
   const spawnDrill = () => mode === 'spawn' || mode === 'rubies';
   const colourDrill = () => mode === 'clear' && clearPack === 'efficient' && trainingRules >= 6;
-  const scoreLabel = () => mode === 'rubies' ? 'Ruby score' : mode === 'spawn' ? 'Spawn score' : colourDrill() ? 'Colour cleanups' : mode === 'clear' ? 'Chests cleared' : chestMode() || mode === '1' || mode === '2' ? 'Chests hauled' : 'Points';
+  const scoreLabel = () => mode === 'rubies' ? 'Ruby score' : mode === 'spawn' ? 'Spawn score' : colourDrill() ? 'Clears' : mode === 'clear' ? 'Chests cleared' : chestMode() || mode === '1' || mode === '2' ? 'Chests hauled' : 'Points';
   const bestKey = () => `${mode}:${mode === 'clear' ? clearPack + ':' : ''}${roundSecs}` +
     (coinOnlyDrill() || gemRates.every((rate) => rate === 200 / 308) ? '' : `:gems:${gemRates.join('-')}`) +
     (spawnDrill() && spawnDelay ? ':delay' : '') +
@@ -1253,7 +1253,7 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
     const perEach = (n: number) => (n ? (tally.moves / n).toFixed(1) : '—');
     if (mode === 'spawn') return [...rows, ['Chests in middle', `${tally.middle} / ${tally.spawned}`]];
     if (mode === 'rubies') return [...rows, ['Chests spawned', String(tally.spawned)]];
-    if (colourDrill()) return [...rows, ['Moves per cleanup', perEach(tally.cleanups)]];
+    if (colourDrill()) return [...rows, ['Moves per clear', perEach(tally.cleanups)]];
     if (mode === 'clear') return [...rows, ['Moves per chest', perEach(tally.chests)], ...(clearPack === 'standard' ? [] : [['Gems used', String(tally.gems)]])];
     if (mode === '0') return [...rows, ['Best move', String(tally.bestMove)], ['Coins', String(tally.coins)], ['Gems', String(tally.gems)]];
     return [...rows, ['Gems', String(tally.gems)], ['Rubies spawned', String(tally.rubiesSpawned)], ['Emeralds spawned', String(tally.emeraldsSpawned)]];
