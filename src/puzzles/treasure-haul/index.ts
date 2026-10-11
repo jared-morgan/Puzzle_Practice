@@ -33,6 +33,7 @@ import {
   type Step,
   W,
 } from './logic';
+import { colourAboveChest } from './colour-training';
 import { createDrill, createRubyBoard, rubySpawnScore, type ClearPack } from './training';
 import delarobbUrl from './delarobb.ttf?url';
 
@@ -271,8 +272,9 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
   let chestEarned = false;
   let chestRules: 1 | 2 | 3 | 4 = 4;
   let trainingRules: 1 | 2 | 3 | 4 | 5 | 6 = 6;
-  /** Colour Cleanup: the colour this scenario is about, or null in other drills. */
+  /** Colour Cleanup: the colour this scenario is about (or null in other drills), and the chest's column. */
   let colourGoal: number | null = null;
+  let colourChestX = 0;
   let dismissRules: 1 | 2 = 2;
   let dismissRequested = false;
   let chestSupply = new ChestSupply(coinsPerChest, ticks());
@@ -355,7 +357,7 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
   const actionCount = () => movers.length + fades.length;
   const inFlight = () => flyers.length + minis.length;
   const presetDrill = () => mode === 'clear' && trainingRules >= 2 && (clearPack === 'emeralds' || clearPack === 'edges' || colourDrill());
-  const coinOnlyDrill = () => mode === 'rubies' || colourDrill() || (mode === 'clear' && trainingRules >= 2 &&
+  const coinOnlyDrill = () => mode === 'rubies' || (mode === 'clear' && !colourDrill() && trainingRules >= 2 &&
     (clearPack === 'edges' || (trainingRules >= 3 && clearPack === 'emeralds')));
 
   function playLater(sound: Sound, ms: number): void {
@@ -424,6 +426,7 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
       const drill = createDrill(random, clearPack, trainingRules, { impossibleChests });
       board = drill.board;
       colourGoal = drill.colourGoal ?? null;
+      colourChestX = drill.chest.x;
       if (!presetDrill()) trainingChest = drill.chest;
     } else if (mode === 'rubies') {
       board = createRubyBoard(random);
@@ -802,8 +805,8 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
     tally.bestMove = Math.max(tally.bestMove, points);
     awardChests(points);
     if (landing) scoreSpawn(landing);
-    else if (mode === 'clear' && colourGoal !== null && !board.cells.includes(colourGoal)) {
-      // Colour Cleanup: every coin of the problem colour is gone, so the scenario is done.
+    else if (mode === 'clear' && colourGoal !== null && !colourAboveChest(board.cells, colourChestX, colourGoal)) {
+      // Colour Cleanup: no coin of the problem colour is left above the chest, so the scenario is done.
       tally.cleanups++;
       sounds.play('big_combo');
       colourGoal = null;
@@ -1187,7 +1190,7 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
   }, { hidden: () => !inChallenges(), disabled: () => running });
   const actions = panel.group();
   actions.note(() => mode === 'rubies' ? 'Spawn a chest below a ruby: 1 point per ruby column. Its blast must leave no blockers above the chest in the outer two columns on either side.' : '');
-  actions.note(() => colourDrill() ? 'One chest column holds three coins of a problem colour and its neighbour some more. Clear every coin of that colour, however you like.' : '');
+  actions.note(() => colourDrill() ? 'Above the chest, one column holds three coins of a problem colour and the other some more. Clear that colour from above the chest as efficiently as you can.' : '');
   actions.note(() => mode === 'clear' && !colourDrill() ? presetDrill() ? 'Start with the chest in position. Haul as many as you can.' : 'A practice move brings in each chest. Haul as many as you can.' : '');
   // Starting while a replay is open closes it and starts a game of your own.
   actions.button('Start', () => { if (replays.isPlaying) { replays.stop(); if (replays.isPlaying) return; } if (running) stop(); else start(); }, { variant: 'primary', label: () => (replays?.isPlaying ? 'Start' : running ? 'Stop' : finished ? 'Play again' : 'Start') });

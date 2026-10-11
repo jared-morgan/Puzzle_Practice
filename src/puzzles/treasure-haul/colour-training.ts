@@ -1,9 +1,15 @@
 import { HaulBoard, H } from './logic';
 import { PyRandom } from '../../core/pyrandom';
 import { solveColourDrill } from './edge-training';
+
+export { colourAboveChest } from './edge-training';
 import type { Drill } from './training';
 
-/** Three problem coins in one chest column, and one to four in its neighbour. */
+/**
+ * Three problem coins above the chest in one of its columns, and one to four above it in the
+ * other. The rest of the board and its refills are ordinary; the drill is about the coins above
+ * the chest, so it ends when none of that colour is left there.
+ */
 export function createColourDrill(random: () => number): Drill {
   // Each attempt picks a fresh layout, so an unsolvable one doesn't sink the whole drill.
   for (let attempt = 0; attempt < 400; attempt++) {
@@ -15,7 +21,6 @@ export function createColourDrill(random: () => number): Drill {
 
 function tryColourDrill(random: () => number): Drill | null {
   const colour = Math.floor(random() * 4);
-  const others = [0, 1, 2, 3].filter((piece) => piece !== colour);
   const x = 2 + Math.floor(random() * 3);
   const y = 1 + Math.floor(random() * 2);
   const main = x + Math.floor(random() * 2);
@@ -29,11 +34,14 @@ function tryColourDrill(random: () => number): Drill | null {
     }
     return values;
   };
-  const withoutGoal = (draw: number) => (others[Math.floor(draw * others.length)] + 0.5) / 4;
   for (let attempt = 0; attempt < 8; attempt++) {
-    let nextPiece = () => withoutGoal(random());
+    let nextPiece = () => random();
     const board = new HaulBoard(() => nextPiece());
     board.populate(); board.placeChest(x, y, Math.floor(random() * 3)); board.gemRates = [0, 0];
+    // Above the chest, only the placed coins are the problem colour.
+    for (const column of [x, x + 1]) for (let row = y + 1; row < H; row++) {
+      if (board.get(column, row) === colour) board.set(column, row, (colour + 1 + Math.floor(random() * 3)) % 4);
+    }
     const put = (column: number, coins: number, aboveChest: boolean) => {
       const rows = shuffle(Array.from({ length: aboveChest ? H - y - 1 : H }, (_, i) => aboveChest ? y + 1 + i : i));
       for (const row of rows.slice(0, coins)) board.set(column, row, colour);
@@ -48,7 +56,7 @@ function tryColourDrill(random: () => number): Drill | null {
     const refillRng = new PyRandom(Math.floor(random() * 0x100000000));
     const refills: number[] = [];
     const draw = (index: number) => {
-      while (refills.length <= index) refills.push(withoutGoal(refillRng.random()));
+      while (refills.length <= index) refills.push(refillRng.random());
       return refills[index];
     };
     const solution = solveColourDrill(board, x, colour, draw);

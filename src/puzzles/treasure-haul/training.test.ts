@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { PyRandom } from '../../core/pyrandom';
 import { createDrill, createRubyBoard, rubySpawnScore, emeraldRowsInColumn, type ClearPack } from './training';
+import { colourAboveChest } from './colour-training';
 import { HaulBoard, isChestOrigin, EMERALD, RUBY, EMPTY, W, H } from './logic';
 
 describe('Rubies spawn practice', () => {
@@ -105,7 +106,7 @@ describe('Clear Chests packs', () => {
     }
   });
 
-  it('Colour Cleanup puts three problem coins in one chest column and more in the other, and its solution clears them all', () => {
+  it('Colour Cleanup puts three problem coins above the chest in one column and more in the other, and its solution clears them from above it', () => {
     for (let seed = 0; seed < 40; seed++) {
       const rng = new PyRandom(seed);
       const { board, chest, colourGoal, solution } = createDrill(() => rng.random(), 'efficient');
@@ -120,7 +121,7 @@ describe('Clear Chests packs', () => {
         expect(board.swap(...move).kind).toBe('swap');
         for (let step = 0; step < 300 && board.step(); step++);
       }
-      expect(board.cells, `seed ${seed}`).not.toContain(colourGoal);
+      expect(colourAboveChest(board.cells, chest.x, colourGoal!), `seed ${seed}`).toBe(0);
     }
   });
 

@@ -44,6 +44,15 @@ export function createVariedEdgeDrill(random: () => number): Drill {
   throw new Error('Unable to generate a solvable edge drill');
 }
 
+/** Colour Cleanup's goal: coins of the colour still above the chest in its two columns (none once it's hauled). */
+export function colourAboveChest(cells: readonly number[], chestX: number, colour: number): number {
+  const origin = cells.findIndex(isChestOrigin);
+  if (origin < 0) return 0;
+  let count = 0;
+  for (let y = Math.floor(origin / W) + 1; y < H; y++) for (const x of [chestX, chestX + 1]) if (cells[y * W + x] === colour) count++;
+  return count;
+}
+
 /** Search coin matches and emerald blasts rather than choosing a fixed layout. */
 export function solveColourDrill(original: HaulBoard, chestX: number, colour: number, draw: (index: number) => number): Move[] | null {
   return solve(original, chestX, false, draw, 16, colour);
@@ -60,7 +69,7 @@ function solve(original: HaulBoard, chestX: number, useGem: boolean, draw: (inde
   };
   const chestRow = (cells: number[]) => Math.floor(cells.findIndex(isChestOrigin) / W);
   const rank = (position: Position) => {
-    if (goal !== undefined) return -position.cells.filter((piece) => piece === goal).length * 30 - position.moves.length / 10;
+    if (goal !== undefined) return -colourAboveChest(position.cells, chestX, goal) * 30 - position.moves.length / 10;
     const row = chestRow(position.cells);
     let blocked = 0;
     for (let y = row + 1; y < H; y++) for (const x of [chestX, chestX + 1]) {
@@ -127,7 +136,7 @@ function solve(original: HaulBoard, chestX: number, useGem: boolean, draw: (inde
         }
         if (illegal || !cleared) continue;
         if (goal !== undefined) {
-          if (!trial.board.cells.includes(goal)) return moves;
+          if (!colourAboveChest(trial.board.cells, chestX, goal)) return moves;
         } else if (hauled) { if (!useGem || gemsUsed) return moves; continue; }
         const candidate = { cells: [...trial.board.cells], refill: trial.refill(), moves, gems: gemsUsed };
         const key = candidate.cells.join(',') + ':' + candidate.refill + ':' + !!gemsUsed;
