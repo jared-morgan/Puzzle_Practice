@@ -1240,16 +1240,24 @@ export default (async ({ screen, input, panel, store, ticks: rawTicks, setReplay
     report: duty.last,
     averages: duty.averages(timed() ? store.history(bestKey()) : null,
       { scoreLabel: scoreLabel() }),
-    rows: [
+    rows: resultRows(),
+  } : null);
+
+  /** The session's stats, only those that mean something for the mode or challenge. */
+  function resultRows(): string[][] {
+    const rows = [
       [scoreLabel(), String(score())],
       ['Time', `${(clockStart ? Math.max(0, stoppedAt - clockStart) / 1000 : 0).toFixed(2)}s`],
       ['Moves', String(tally.moves)],
-      ...(mode === '0' ? [['Best move', String(tally.bestMove)], ['Coins', String(tally.coins)]] : []),
-      ['Gems', String(tally.gems)], ['Chests hauled', String(tally.chests)],
-      ['Rubies spawned', String(tally.rubiesSpawned)], ['Emeralds spawned', String(tally.emeraldsSpawned)],
-      ...(mode === 'spawn' ? [['Chests in middle', `${tally.middle} / ${tally.spawned}`]] : []),
-    ],
-  } : null);
+    ];
+    const perEach = (n: number) => (n ? (tally.moves / n).toFixed(1) : '—');
+    if (mode === 'spawn') return [...rows, ['Chests in middle', `${tally.middle} / ${tally.spawned}`]];
+    if (mode === 'rubies') return [...rows, ['Chests spawned', String(tally.spawned)]];
+    if (colourDrill()) return [...rows, ['Moves per cleanup', perEach(tally.cleanups)]];
+    if (mode === 'clear') return [...rows, ['Moves per chest', perEach(tally.chests)], ...(clearPack === 'standard' ? [] : [['Gems used', String(tally.gems)]])];
+    if (mode === '0') return [...rows, ['Best move', String(tally.bestMove)], ['Coins', String(tally.coins)], ['Gems', String(tally.gems)]];
+    return [...rows, ['Gems', String(tally.gems)], ['Rubies spawned', String(tally.rubiesSpawned)], ['Emeralds spawned', String(tally.emeraldsSpawned)]];
+  }
   const replayAction = {
     available: (game: GameRecord) => typeof game.replayAt === 'number' && (replays?.hasPlayableAt(game.replayAt, typeof game.replayId === 'string' ? game.replayId : undefined) ?? false),
     play: (game: GameRecord) => { if (typeof game.replayAt === 'number') replays?.playAt(game.replayAt, typeof game.replayId === 'string' ? game.replayId : undefined); },
