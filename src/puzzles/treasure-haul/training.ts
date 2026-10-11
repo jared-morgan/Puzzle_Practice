@@ -1,4 +1,4 @@
-import { HaulBoard, W, H, RUBY, EMERALD, EMPTY, isChestOrigin } from './logic';
+import { HaulBoard, W, H, RUBY, EMERALD, EMPTY, isChest, isChestOrigin } from './logic';
 import { PyRandom } from '../../core/pyrandom';
 import { createVariedEdgeDrill } from './edge-training';
 import { createColourDrill } from './colour-training';
@@ -60,8 +60,10 @@ export function rubySpawnScore(original: HaulBoard, chestX: number): number {
 }
 
 /** Practice boards have no automatic matches, and never overwrite another chest. */
-export function createDrill(random: () => number, pack: ClearPack, rules: 1 | 2 | 3 | 4 | 5 | 6 = 6, options: DrillOptions = {}): Drill {
+export function createDrill(random: () => number, pack: ClearPack, rules: 1 | 2 | 3 | 4 | 5 | 6 | 7 = 7, options: DrillOptions = {}): Drill {
   if (pack === 'efficient' && rules >= 6) return createColourDrill(random);
+  if (pack === 'standard' && rules >= 7) return createMiddleDrill(random);
+  if (pack === 'emeralds' && rules >= 7) return createEdgeEmeraldsDrill(random);
   if (rules === 1 || pack === 'standard' || pack === 'efficient') return createLegacyDrill(random, pack);
   if (pack === 'edges') {
     if (rules >= 5) {
@@ -85,6 +87,39 @@ export function createDrill(random: () => number, pack: ClearPack, rules: 1 | 2 
   }
   const fallback = new PyRandom(0);
   return createDrill(() => fallback.random(), pack, rules);
+}
+
+/** A random board with a chest already sitting in the middle four columns, in the middle rows. */
+function createMiddleDrill(random: () => number): Drill {
+  const x = 2 + Math.floor(random() * 3);
+  const y = 3 + Math.floor(random() * 3);
+  for (let attempt = 0; attempt < 500; attempt++) {
+    const board = new HaulBoard(random);
+    board.populate();
+    board.placeChest(x, y, Math.floor(random() * 3));
+    if (!board.findRuns().length) return { board, chest: { x, y } };
+  }
+  throw new Error('Unable to generate a middle chest drill');
+}
+
+/**
+ * An ordinary board with an emerald somewhere on each edge to practise with. The chest can be in
+ * any column, with its top on row 4 to 6, so at least 6 pieces sit beneath it.
+ */
+function createEdgeEmeraldsDrill(random: () => number): Drill {
+  const x = Math.floor(random() * (W - 1));
+  const y = 4 + Math.floor(random() * 3);
+  for (let attempt = 0; attempt < 500; attempt++) {
+    const board = new HaulBoard(random);
+    board.populate();
+    board.placeChest(x, y, Math.floor(random() * 3));
+    for (const edge of [0, W - 1]) {
+      const rows = Array.from({ length: H }, (_, row) => row).filter((row) => !isChest(board.get(edge, row)));
+      board.set(edge, rows[Math.floor(random() * rows.length)], EMERALD);
+    }
+    if (!board.findRuns().length) return { board, chest: { x, y } };
+  }
+  throw new Error('Unable to generate an edge emeralds drill');
 }
 
 /** High chests over random coins; low emeralds offer diagonal clears rather than prepared matches. */

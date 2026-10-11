@@ -411,7 +411,7 @@ describe('preset Treasure Haul drills', () => {
     const { readReplayFile } = await import('../core/replay-storage');
     const { decodeReplayBlob } = await import('../core/replay');
     const tape = (await decodeReplayBlob((await readReplayFile(replay))!))!;
-    expect(tape).toMatchObject({ settingsVersion: 10, settings: { trainingRules: 6, impossibleChests: true } });
+    expect(tape).toMatchObject({ settingsVersion: 11, settings: { trainingRules: 7, impossibleChests: true } });
     toggles.get(setting)!(false);
     const data = JSON.parse(exportAll()).data;
     const perf = vi.spyOn(performance, 'now').mockReturnValue(0);
@@ -434,7 +434,7 @@ describe('preset Treasure Haul drills', () => {
     instance.dispose?.();
   });
 
-  it.each(['emeralds', 'edges'] as const)('%s starts immediately and reproduces its moves during replay', async (pack) => {
+  it.each(['edges'] as const)('%s starts immediately and reproduces its moves during replay', async (pack) => {
     vi.spyOn(PyRandom.prototype, 'seedFromCrypto').mockImplementation(function (this: PyRandom) { this.seed(1234); });
     const store = new Store('treasure-haul');
     store.set('mode', 'clear');
@@ -462,7 +462,6 @@ describe('preset Treasure Haul drills', () => {
       const before = swaps.mock.calls.length;
       instance.frame([{ type: 'mousedown', button: 1, pos: input.mouse as [number, number] }]);
       expect(swaps.mock.calls[before]).toEqual([x, y]);
-      if (pack === 'emeralds') expect(swaps.mock.results[before].value.kind).toBe('gem');
       for (let frame = 0; frame < 150; frame++) { now += 50; instance.frame([]); }
     }
     now = Math.max(now, 300100);
@@ -471,7 +470,7 @@ describe('preset Treasure Haul drills', () => {
     const finalStats = stats();
     if (pack === 'edges') expect(finalStats[0]).toContainEqual(['Chests cleared', '1', expect.any(String)]);
     const [replay] = await listReplayFiles('treasure-haul');
-    expect(replay.settingsVersion).toBe(10);
+    expect(replay.settingsVersion).toBe(11);
     const data = JSON.parse(exportAll()).data;
     const perf = vi.spyOn(performance, 'now').mockReturnValue(0);
     expect(await captured.recorders[0].playAt(replay.at, replay.runId)).toBe(true);
@@ -519,8 +518,7 @@ describe('preset Treasure Haul drills', () => {
     buttons.get('Play::Start')!();
     const board = boards.mock.contexts.at(-1)! as HaulBoard;
     if (pack === 'emeralds') {
-      expect([board.get(0, 0), board.get(0, 1)]).toContain(EMERALD);
-      expect([board.get(7, 0), board.get(7, 1)]).toContain(EMERALD);
+      for (const x of [0, 7]) expect(Array.from({ length: 8 }, (_, y) => board.get(x, y))).toContain(EMERALD);
     } else expect(Math.floor(board.cells.findIndex(isChestOrigin) / 8)).toBeLessThanOrEqual(2);
     instance.dispose?.();
   });
@@ -634,7 +632,7 @@ describe('Rubies spawn mode', () => {
     expect((results()[0] as { rows: string[][] }).rows).toContainEqual(['Ruby score', String(points)]);
     await replayWrites.idle();
     const [replay] = await listReplayFiles('treasure-haul');
-    expect(replay.settingsVersion).toBe(10);
+    expect(replay.settingsVersion).toBe(11);
     const data = JSON.parse(exportAll()).data;
     const perf = vi.spyOn(performance, 'now').mockReturnValue(0);
     const recorder = captured.recorders[0];
@@ -709,7 +707,7 @@ describe('Treasure Haul vacant-board chest wait', () => {
     const expectedStats = stats();
     await replayWrites.idle();
     const [replay] = await listReplayFiles('treasure-haul');
-    expect(replay.settingsVersion).toBe(10);
+    expect(replay.settingsVersion).toBe(11);
     const data = JSON.parse(exportAll()).data;
     const perf = vi.spyOn(performance, 'now').mockReturnValue(0);
     const recorder = captured.recorders[0];

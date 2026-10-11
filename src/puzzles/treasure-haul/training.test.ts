@@ -125,11 +125,43 @@ describe('Clear Chests packs', () => {
     }
   });
 
+  it('Middle chests start with the chest already in the middle four columns and rows', () => {
+    for (let seed = 0; seed < 50; seed++) {
+      const rng = new PyRandom(seed);
+      const { board, chest } = createDrill(() => rng.random(), 'standard');
+      expect(board.findRuns()).toHaveLength(0);
+      expect(isChestOrigin(board.get(chest.x, chest.y))).toBe(true);
+      expect(chest.x).toBeGreaterThanOrEqual(2);
+      expect(chest.x).toBeLessThanOrEqual(4);
+      expect(chest.y).toBeGreaterThanOrEqual(3);
+      expect(chest.y).toBeLessThanOrEqual(5);
+    }
+  });
+
+  it('Edge emeralds puts an emerald on each edge and the chest anywhere with at least 6 pieces beneath it', () => {
+    const columns = new Set<number>();
+    const heights = new Set<number>();
+    for (let seed = 0; seed < 200; seed++) {
+      const rng = new PyRandom(seed);
+      const { board, chest } = createDrill(() => rng.random(), 'emeralds');
+      expect(board.findRuns()).toHaveLength(0);
+      expect(isChestOrigin(board.get(chest.x, chest.y))).toBe(true);
+      // The chest's bottom row is chest.y - 1, so 2 × (chest.y - 1) pieces are beneath it.
+      expect(2 * (chest.y - 1)).toBeGreaterThanOrEqual(6);
+      expect(chest.y).toBeLessThanOrEqual(6);
+      for (const x of [0, W - 1]) expect(Array.from({ length: H }, (_, y) => board.get(x, y))).toContain(EMERALD);
+      columns.add(chest.x);
+      heights.add(chest.y);
+    }
+    expect([...columns].sort()).toEqual([0, 1, 2, 3, 4, 5, 6]);
+    expect([...heights].sort()).toEqual([4, 5, 6]);
+  });
+
   it('every pack is stable, with middle placement or a solvable edge opening', () => {
     for (const pack of ['standard', 'efficient', 'emeralds', 'edges'] as ClearPack[]) {
       for (let seed = 0; seed < 30; seed++) {
         const rng = new PyRandom(seed);
-        const drill = createDrill(() => rng.random(), pack, pack === 'efficient' ? 5 : undefined);
+        const drill = createDrill(() => rng.random(), pack, pack === 'efficient' ? 5 : pack === 'edges' ? undefined : 6);
         const { board, chest, solution } = drill;
         expect(board.findRuns()).toHaveLength(0);
         expect(board.cells.filter(isChestOrigin)).toHaveLength(1);
@@ -163,7 +195,7 @@ describe('Clear Chests packs', () => {
     let edgeCount = 0;
     for (let seed = 0; seed < 500; seed++) {
       const rng = new PyRandom(seed);
-      const { board, chest, opening } = createDrill(() => rng.random(), 'emeralds');
+      const { board, chest, opening } = createDrill(() => rng.random(), 'emeralds', 6);
       positions.add(chest.x);
       underneath.add([2, 3, 4].flatMap((y) => [board.get(chest.x, y), board.get(chest.x + 1, y)]).join(''));
       expect(board.findRuns()).toHaveLength(0);
