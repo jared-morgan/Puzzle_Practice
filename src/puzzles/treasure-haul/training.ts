@@ -103,11 +103,12 @@ function createMiddleDrill(random: () => number): Drill {
 }
 
 /**
- * An ordinary board with an emerald somewhere on each edge to practise with. The chest can be in
- * any column, with its top on row 4 to 6, so at least 6 pieces sit beneath it.
+ * An ordinary board with an emerald somewhere on each edge to practise with. The chest sits in
+ * the good columns (the middle four, never the outer two on either side), with its top on row 4
+ * to 6, so at least 6 pieces sit beneath it.
  */
 function createEdgeEmeraldsDrill(random: () => number): Drill {
-  const x = Math.floor(random() * (W - 1));
+  const x = 2 + Math.floor(random() * 3);
   const y = 4 + Math.floor(random() * 3);
   for (let attempt = 0; attempt < 500; attempt++) {
     const board = new HaulBoard(random);

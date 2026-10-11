@@ -138,7 +138,7 @@ describe('Clear Chests packs', () => {
     }
   });
 
-  it('Edge emeralds puts an emerald on each edge and the chest anywhere with at least 6 pieces beneath it', () => {
+  it('Edge emeralds puts an emerald on each edge and the chest in the good columns with at least 6 pieces beneath it', () => {
     const columns = new Set<number>();
     const heights = new Set<number>();
     for (let seed = 0; seed < 200; seed++) {
@@ -153,7 +153,7 @@ describe('Clear Chests packs', () => {
       columns.add(chest.x);
       heights.add(chest.y);
     }
-    expect([...columns].sort()).toEqual([0, 1, 2, 3, 4, 5, 6]);
+    expect([...columns].sort()).toEqual([2, 3, 4]);
     expect([...heights].sort()).toEqual([4, 5, 6]);
   });
 
